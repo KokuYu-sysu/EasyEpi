@@ -85,6 +85,7 @@ These versions were checked against the npm registry on 2026-07-18. Keep React a
 - `tests/unit/renderer/routes.test.tsx`, `pages.test.tsx`: route inventory, development gate and memory-only interactions.
 - `tests/e2e/app.spec.ts`: source-built navigation, preference restart, viewport and accessibility flows.
 - `tests/e2e/packaged.spec.ts`: production route/security and packaged persistence checks.
+- `docs/milestones/M2_ACCESSIBILITY_SMOKE.md`: dated manual keyboard, focus, viewport, text and motion verification checklist.
 - `docs/milestones/M2_VERIFICATION.md`: commands, test counts, artifact sizes/hashes, unsigned limitation.
 
 ### Task 1: Lock dependencies, version, and Tailwind token foundation
@@ -575,6 +576,7 @@ git commit -m "feat: add single-question entry demo"
 - Create: `src/renderer/stores/admin-data-demo-store.ts`
 - Create: `src/renderer/pages/AdminDataPage.tsx`
 - Create: `tests/unit/renderer/admin-data-demo.test.tsx`
+- Modify: `src/renderer/demo/demo-data.ts`
 - Modify: `src/renderer/app/routes.tsx`
 - Delete: `src/renderer/pages/RoutePlaceholderPage.tsx` (after all nine final M2 pages are wired)
 
@@ -596,7 +598,7 @@ Keep seed records in `demo-data.ts`; store filter/page/selected IDs and memory o
 Run focused test, coverage and typecheck; expected PASS.
 
 ```powershell
-git add src/renderer/stores/admin-data-demo-store.ts src/renderer/pages/AdminDataPage.tsx src/renderer/pages/RoutePlaceholderPage.tsx src/renderer/app/routes.tsx tests/unit/renderer/admin-data-demo.test.tsx
+git add src/renderer/demo/demo-data.ts src/renderer/stores/admin-data-demo-store.ts src/renderer/pages/AdminDataPage.tsx src/renderer/pages/RoutePlaceholderPage.tsx src/renderer/app/routes.tsx tests/unit/renderer/admin-data-demo.test.tsx
 git commit -m "feat: add data administration demo"
 ```
 
@@ -607,6 +609,7 @@ git commit -m "feat: add data administration demo"
 - Modify: `playwright.config.ts`
 - Modify: `src/renderer/styles/global.css`
 - Modify: renderer files only when tests expose a concrete defect
+- Create: `docs/milestones/M2_ACCESSIBILITY_SMOKE.md`
 
 - [ ] **Step 1: Write failing E2E scenarios**
 
@@ -642,10 +645,16 @@ pnpm build
 
 Expected: all PASS; coverage meets configured thresholds and axe has zero A/AA violations in tested states.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 5: Perform and record the manual accessibility smoke test**
+
+Launch the source-built application and complete the following checklist at both 1024×700 and 1366×768, first with normal text and then large text. Use only Tab, Shift+Tab, Enter, Space, arrow keys and Escape to reach every top-bar/navigation action, open/operate/close Settings, Select, Modal and ConfirmDialog, and complete the entry demo. Confirm the skip link becomes visible and moves focus to main content; focus is always visibly outlined; Modal focus enters and returns to its trigger; ConfirmDialog opens with cancel focused; no text/action is clipped or hidden by horizontal page overflow; tooltip content also appears on keyboard focus; status/error text is understandable without color; and switching Windows/browser emulation to reduced motion produces no non-essential animation.
+
+Write `docs/milestones/M2_ACCESSIBILITY_SMOKE.md` with the date, tested commit, tester, exact viewport/mode matrix, one PASS/FAIL row per check above, any defect commit references, and an explicit final result. A FAIL blocks Task 13 completion; fix it with a focused regression test and repeat the failed row. This is a human-observed smoke record, not a restatement of axe/Playwright output.
+
+- [ ] **Step 6: Commit**
 
 ```powershell
-git add tests/e2e playwright.config.ts src/renderer
+git add tests/e2e playwright.config.ts src/renderer docs/milestones/M2_ACCESSIBILITY_SMOKE.md
 git commit -m "test: verify M2 accessibility and responsive flows"
 ```
 
@@ -688,7 +697,7 @@ For the installer, resolve `.tmp/m2-install`, verify it starts with the worktree
 
 - [ ] **Step 4: Record reproducible evidence**
 
-Update README commands/version and M2 status in `docs/IMPLEMENTATION_PLAN.md`. In `docs/milestones/M2_VERIFICATION.md`, record date, commit, exact commands/exit codes, unit test count, coverage summary, source and two packaged E2E results, both artifact byte sizes and SHA-256 hashes, publisher `KokuYu-EasyEpi Team`, and `NotSigned`/SmartScreen limitation.
+Update README commands/version and M2 status in `docs/IMPLEMENTATION_PLAN.md`. In `docs/milestones/M2_VERIFICATION.md`, record date, commit, exact commands/exit codes, unit test count, coverage summary, source and two packaged E2E results, link and final PASS result from `M2_ACCESSIBILITY_SMOKE.md`, both artifact byte sizes and SHA-256 hashes, publisher `KokuYu-EasyEpi Team`, and `NotSigned`/SmartScreen limitation.
 
 - [ ] **Step 5: Commit evidence and independently review implementation**
 
