@@ -14,21 +14,20 @@ const PREFERENCES_FILE_NAME = 'preferences.json'
 const TEMP_FILE_PREFIX = 'EasyEpi-preferences-'
 const TEMP_FILE_SUFFIX = '.tmp'
 const MAX_TEMP_FILE_ATTEMPTS = 16
-const MAX_STALE_TEMP_REMOVALS = 32
-const OWN_TEMP_FILE_NAME = new RegExp(
-  `^EasyEpi-preferences-${process.pid}-\\d+\\.tmp$`
-)
+const MAX_ABANDONED_TEMP_REMOVALS = 32
 let temporaryFileCounter = randomInt(1_000_000, 2_000_000_000)
-
-interface DirectoryCoordinator {
-  tail: Promise<void>
-  activeTemporaryNames: Set<string>
-}
-
-const directoryCoordinators = new Map<string, DirectoryCoordinator>()
+let globalWriteTail: Promise<void> = Promise.resolve()
+const activeTemporaryPaths = new Set<string>()
+const abandonedOwnedTemporaryPaths = new Map<string, PreferencesFileSystem>()
 
 export interface PreferencesFileSystem {
   readFile(filePath: string): Promise<string>
+  /**
+   * Exclusively creates `filePath` and writes `data`. If creation succeeds but
+   * writing or closing later fails, reject with
+   * `PreferencesTemporaryFileCreatedError` so the store can safely remove only
+   * the exact path this adapter proved it created.
+   */
   writeFile(filePath: string, data: string): Promise<void>
   syncFile(filePath: string): Promise<void>
   rename(from: string, to: string): Promise<void>
@@ -45,6 +44,12 @@ export interface PreferencesStore {
   update(request: unknown): Promise<PreferencesResult>
 }
 
+/**
+ * Path-free marker for an adapter failure after exclusive temp-file creation.
+ * Injected adapters must use this marker when `writeFile` created the requested
+ * path before failing; ordinary failures and collisions must use their native
+ * error classification instead.
+ */
 export class PreferencesTemporaryFileCreatedError extends Error {
   constructor() {
     super('PREFERENCES_TEMP_FILE_CREATED')
@@ -94,26 +99,6 @@ export const nodePreferencesFileSystem: PreferencesFileSystem = {
   remove: unlink
 }
 
-function coordinatorKey(directory: string): string {
-  const resolved = path.normalize(path.resolve(directory))
-  return process.platform === 'win32' ? resolved.toLowerCase() : resolved
-}
-
-function getDirectoryCoordinator(directory: string): DirectoryCoordinator {
-  const key = coordinatorKey(directory)
-  const existing = directoryCoordinators.get(key)
-  if (existing !== undefined) {
-    return existing
-  }
-
-  const coordinator: DirectoryCoordinator = {
-    tail: Promise.resolve(),
-    activeTemporaryNames: new Set<string>()
-  }
-  directoryCoordinators.set(key, coordinator)
-  return coordinator
-}
-
 function isMissingFile(error: unknown): boolean {
   return (
     typeof error === 'object' &&
@@ -146,7 +131,14 @@ export function createPreferencesStore(
   logger: PreferencesLogger = defaultLogger
 ): PreferencesStore {
   const preferencesPath = path.join(directory, PREFERENCES_FILE_NAME)
-  const coordinator = getDirectoryCoordinator(directory)
+
+  function safeWarn(operation: 'list' | 'remove'): void {
+    try {
+      logger.warn('PREFERENCES_TEMP_CLEANUP_FAILED', operation)
+    } catch {
+      // Diagnostics must never change a stable persistence result.
+    }
+  }
 
   async function get(): Promise<PreferencesResult> {
     let contents: string
@@ -168,34 +160,24 @@ export function createPreferencesStore(
   async function removeCreatedTemporaryFile(temporaryPath: string): Promise<void> {
     try {
       await fileSystem.remove(temporaryPath)
+      abandonedOwnedTemporaryPaths.delete(temporaryPath)
     } catch {
-      logger.warn('PREFERENCES_TEMP_CLEANUP_FAILED', 'remove')
+      abandonedOwnedTemporaryPaths.set(temporaryPath, fileSystem)
+      safeWarn('remove')
     }
   }
 
-  async function cleanStaleTemporaryFiles(excludedNames: ReadonlySet<string>): Promise<void> {
-    let names: string[]
-    try {
-      names = await fileSystem.list(directory)
-    } catch {
-      logger.warn('PREFERENCES_TEMP_CLEANUP_FAILED', 'list')
-      return
-    }
+  async function cleanAbandonedOwnedTemporaryFiles(): Promise<void> {
+    const entries = [...abandonedOwnedTemporaryPaths.entries()]
+      .filter(([temporaryPath]) => !activeTemporaryPaths.has(temporaryPath))
+      .slice(0, MAX_ABANDONED_TEMP_REMOVALS)
 
-    const removableNames = names
-      .filter(
-        (name) =>
-          OWN_TEMP_FILE_NAME.test(name) &&
-          !coordinator.activeTemporaryNames.has(name) &&
-          !excludedNames.has(name)
-      )
-      .slice(0, MAX_STALE_TEMP_REMOVALS)
-
-    for (const name of removableNames) {
+    for (const [temporaryPath, owningFileSystem] of entries) {
       try {
-        await fileSystem.remove(path.join(directory, name))
+        await owningFileSystem.remove(temporaryPath)
+        abandonedOwnedTemporaryPaths.delete(temporaryPath)
       } catch {
-        logger.warn('PREFERENCES_TEMP_CLEANUP_FAILED', 'remove')
+        safeWarn('remove')
       }
     }
   }
@@ -209,9 +191,7 @@ export function createPreferencesStore(
     }
 
     const canonicalContents = `${JSON.stringify(preferences)}\n`
-    const collisionNames = new Set<string>()
     let temporaryPath: string | undefined
-    let temporaryName: string | undefined
     let committedPreferences: PreferencesV1
 
     try {
@@ -223,20 +203,17 @@ export function createPreferencesStore(
         try {
           await fileSystem.writeFile(candidatePath, canonicalContents)
           temporaryPath = candidatePath
-          temporaryName = candidateName
-          coordinator.activeTemporaryNames.add(candidateName)
+          activeTemporaryPaths.add(candidatePath)
           break
         } catch (error) {
           if (error instanceof PreferencesTemporaryFileCreatedError) {
             temporaryPath = candidatePath
-            temporaryName = candidateName
-            coordinator.activeTemporaryNames.add(candidateName)
+            activeTemporaryPaths.add(candidatePath)
             throw error
           }
           if (!isExistingFile(error)) {
             throw error
           }
-          collisionNames.add(candidateName)
         }
       }
 
@@ -251,26 +228,24 @@ export function createPreferencesStore(
     } catch {
       if (temporaryPath !== undefined) {
         await removeCreatedTemporaryFile(temporaryPath)
-      }
-      if (temporaryName !== undefined) {
-        coordinator.activeTemporaryNames.delete(temporaryName)
+        activeTemporaryPaths.delete(temporaryPath)
       }
       return { ok: false, code: 'PREFERENCES_SAVE_FAILED' }
     }
 
-    if (temporaryName !== undefined) {
-      coordinator.activeTemporaryNames.delete(temporaryName)
+    if (temporaryPath !== undefined) {
+      activeTemporaryPaths.delete(temporaryPath)
     }
-    await cleanStaleTemporaryFiles(collisionNames)
+    await cleanAbandonedOwnedTemporaryFiles()
     return { ok: true, preferences: committedPreferences }
   }
 
   function update(request: unknown): Promise<PreferencesResult> {
-    const operation = coordinator.tail.then(
+    const operation = globalWriteTail.then(
       () => save(request),
       () => save(request)
     )
-    coordinator.tail = operation.then(
+    globalWriteTail = operation.then(
       () => undefined,
       () => undefined
     )
