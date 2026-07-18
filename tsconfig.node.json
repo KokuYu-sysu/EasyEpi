@@ -1,0 +1,18 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "types": ["node", "vitest/globals"]
+  },
+  "include": [
+    "electron.vite.config.ts",
+    "playwright.config.ts",
+    "vitest.config.ts",
+    "src/main/**/*.ts",
+    "src/preload/**/*.ts",
+    "src/shared/**/*.ts",
+    "tests/e2e/**/*.ts",
+    "tests/unit/main/**/*.ts",
+    "tests/unit/preload/**/*.ts",
+    "tests/unit/shared/**/*.ts"
+  ]
+}

@@ -89,6 +89,7 @@ Create `package.json` with private package name `easyepi`, product version `0.1.
 {
   "scripts": {
     "dev": "electron-vite dev",
+    "install:electron": "install-electron",
     "build": "electron-vite build",
     "preview": "electron-vite preview",
     "lint": "eslint .",
@@ -114,7 +115,7 @@ pnpm add --save-exact react@18.3.1 react-dom@18.3.1
 pnpm add --save-dev --save-exact electron@43.1.1 electron-vite@5.0.0 electron-builder@26.15.3 typescript@5.9.3 vite@8.1.5 vitest@4.1.10 @vitest/coverage-v8@4.1.10 jsdom@29.1.1 @vitejs/plugin-react@6.0.3 @types/node@24.13.3 @types/react@18.3.31 @types/react-dom@18.3.7 @testing-library/react@16.3.2 @testing-library/jest-dom@6.9.1 @playwright/test@1.61.1 eslint@10.7.0 @eslint/js@10.0.1 typescript-eslint@8.64.0 eslint-plugin-react-hooks@7.1.1 prettier@3.9.5 png-to-ico@3.0.2 sharp@0.35.3
 ```
 
-Expected: `package.json` contains the exact versions above and `pnpm-lock.yaml` is created. These versions were read from the npm registry on 2026-07-18, while TypeScript and Node types were deliberately held to the approved TypeScript 5 / Node 24 majors. If peer resolution rejects this exact set, stop and diagnose the conflicting peer range; update this plan and decision evidence before changing versions.
+Run `pnpm install:electron` after dependency installation because Electron 43 exposes an explicit runtime installer rather than a package `postinstall` script. Expected: `package.json` contains the exact versions above, `pnpm-lock.yaml` is created, and `node_modules/electron/dist/electron.exe` exists. These versions were read from the npm registry on 2026-07-18, while TypeScript and Node types were deliberately held to the approved TypeScript 5 / Node 24 majors. If peer resolution rejects this exact set, stop and diagnose the conflicting peer range; update this plan and decision evidence before changing versions.
 
 - [ ] **Step 3: Add build and quality configuration**
 
@@ -134,9 +135,9 @@ Configure electron-vite inputs as `src/main/index.ts`, `src/preload/index.ts`, a
 Run:
 
 ```powershell
-pnpm exec eslint --version
-pnpm exec vitest --version
-pnpm exec electron-vite --version
+.\node_modules\.bin\eslint.CMD --version
+.\node_modules\.bin\vitest.CMD --version
+.\node_modules\.bin\electron-vite.CMD --version
 ```
 
 Expected: every command prints a version and exits 0. Coverage thresholds become a required passing gate after Tasks 2–6 add covered production modules.

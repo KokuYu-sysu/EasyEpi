@@ -1,2 +1,10 @@
 .worktrees/
+node_modules/
+out/
+release/
+coverage/
+test-results/
+playwright-report/
+.tmp/
+*.log
 
