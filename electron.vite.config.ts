@@ -2,13 +2,12 @@ import { resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import react from '@vitejs/plugin-react'
-import { defineConfig, externalizeDepsPlugin } from 'electron-vite'
+import { defineConfig } from 'electron-vite'
 
 const projectRoot = fileURLToPath(new URL('.', import.meta.url))
 
 export default defineConfig({
   main: {
-    plugins: [externalizeDepsPlugin()],
     build: {
       rollupOptions: {
         input: resolve(projectRoot, 'src/main/index.ts')
@@ -21,10 +20,13 @@ export default defineConfig({
     }
   },
   preload: {
-    plugins: [externalizeDepsPlugin()],
     build: {
       rollupOptions: {
-        input: resolve(projectRoot, 'src/preload/index.ts')
+        input: resolve(projectRoot, 'src/preload/index.ts'),
+        output: {
+          format: 'cjs',
+          entryFileNames: 'index.cjs'
+        }
       }
     },
     resolve: {
