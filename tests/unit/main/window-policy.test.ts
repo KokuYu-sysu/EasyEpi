@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest'
 
-import { createWindowOptions, isTrustedRendererUrl } from '../../../src/main/window-policy'
+import {
+  createWindowOptions,
+  isTrustedRendererUrl,
+  resolveDevelopmentRendererUrl
+} from '../../../src/main/window-policy'
 
 describe('createWindowOptions', () => {
   it('enforces renderer isolation and sandboxing', () => {
@@ -49,5 +53,17 @@ describe('isTrustedRendererUrl', () => {
     'not a url'
   ])('rejects untrusted or malformed URL %s', (candidate) => {
     expect(isTrustedRendererUrl(candidate, packagedRendererUrl, developmentOrigin)).toBe(false)
+  })
+})
+
+describe('resolveDevelopmentRendererUrl', () => {
+  it('ignores the development renderer URL in packaged applications', () => {
+    expect(resolveDevelopmentRendererUrl(true, 'https://attacker.example')).toBeUndefined()
+  })
+
+  it('uses the configured renderer URL only during development', () => {
+    expect(resolveDevelopmentRendererUrl(false, 'http://127.0.0.1:5173')).toBe(
+      'http://127.0.0.1:5173'
+    )
   })
 })

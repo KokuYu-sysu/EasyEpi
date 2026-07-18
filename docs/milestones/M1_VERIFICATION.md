@@ -36,18 +36,18 @@ Vite 固定为 electron-vite 5 支持的 Vite 7 系列；React 插件固定为 `
 | `pnpm check` | 通过；lint、类型检查、覆盖率与生产构建全部通过 |
 | `pnpm test:e2e` | 通过；1/1 源码态 Electron E2E |
 | `pnpm build:win` | 通过；生成 NSIS 与 portable x64 产物 |
-| 便携版 `pnpm test:e2e:packaged` | 通过；1/1，使用包装器转发的本机 CDP 测试端口 |
-| 安装版 `pnpm test:e2e:packaged` | 通过；1/1，安装目录限定为仓库内 `.tmp/m1-install` |
+| 便携版 `pnpm test:e2e:packaged` | 通过；1/1，使用包装器转发的本机 CDP 测试端口，并确认忽略恶意 `ELECTRON_RENDERER_URL` |
+| 安装版 `pnpm test:e2e:packaged` | 通过；1/1，安装目录限定为仓库内 `.tmp/m1-install`，并确认忽略恶意 `ELECTRON_RENDERER_URL` |
 | 静默卸载 | 通过；`EasyEpi.exe` 已移除 |
 
-单元测试结果：5 个测试文件、27 项测试全部通过。覆盖率为 statements 100%、branches 91.17%、functions 100%、lines 100%。
+单元测试结果：5 个测试文件、29 项测试全部通过。覆盖率为 statements 100%、branches 91.66%、functions 100%、lines 100%。安全回归同时保留了红灯证据：修复前的打包程序在恶意开发 URL 环境变量下无法显示本地 EasyEpi 页面，修复后同一测试通过。
 
 ## 4. 最终产物
 
 | 文件 | 字节数 | SHA-256 | Authenticode |
 |---|---:|---|---|
-| `release/EasyEpi-0.1.0-setup-x64.exe` | 100401515 | `FDE66518EC67B6D0E8D2652705696EE46D6E02A58ABAB9650E992AA8974720E4` | NotSigned |
-| `release/EasyEpi-0.1.0-portable-x64.exe` | 100183547 | `DC7D6B024B9C4E1BDABB833342761B8E1BFA4C430E63F9F5AB60843377913A89` | NotSigned |
+| `release/EasyEpi-0.1.0-setup-x64.exe` | 100401681 | `ECD8CF103756A8B49A8B72BC753F3357FE9644B2CFD699D33521A2B053A40ECC` | NotSigned |
+| `release/EasyEpi-0.1.0-portable-x64.exe` | 100183615 | `F064B8EE9464E0EFC6C7CA59494CA30D9D773E7DDE108B4B0C2BBC3EA45EB87F` | NotSigned |
 | `resources/icon.ico` | 285478 | `2AD3A67D84C1A9D56DDCFB379A838344369085D0F8085C142FF3674EEF7CF72E` | 不适用 |
 
 ## 5. 已知发行限制

@@ -6,6 +6,8 @@ import { basename, dirname, isAbsolute } from 'node:path'
 
 import { chromium, expect, test, _electron as electron, type Page } from '@playwright/test'
 
+const hostileDevelopmentUrl = 'https://attacker.invalid/easyepi'
+
 async function assertEasyEpiWindow(window: Page): Promise<void> {
   await expect(window).toHaveTitle('EasyEpi')
   await expect(window.getByText('桌面运行环境已连接')).toBeVisible()
@@ -58,6 +60,7 @@ async function testPortableExecutable(executablePath: string): Promise<void> {
   const port = await reserveLoopbackPort()
   const child = spawn(executablePath, [`--remote-debugging-port=${port}`], {
     cwd: dirname(executablePath),
+    env: { ...process.env, ELECTRON_RENDERER_URL: hostileDevelopmentUrl },
     stdio: 'ignore',
     windowsHide: true
   })
@@ -96,7 +99,10 @@ test('launches a packaged EasyEpi executable', async () => {
     return
   }
 
-  const electronApp = await electron.launch({ executablePath })
+  const electronApp = await electron.launch({
+    executablePath,
+    env: { ...process.env, ELECTRON_RENDERER_URL: hostileDevelopmentUrl }
+  })
   try {
     await assertEasyEpiWindow(await electronApp.firstWindow())
   } finally {

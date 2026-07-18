@@ -4,10 +4,17 @@ import { pathToFileURL } from 'node:url'
 import { app, BrowserWindow, ipcMain, session } from 'electron'
 
 import { registerSystemIpc } from './system-ipc'
-import { createWindowOptions, isTrustedRendererUrl } from './window-policy'
+import {
+  createWindowOptions,
+  isTrustedRendererUrl,
+  resolveDevelopmentRendererUrl
+} from './window-policy'
 
 const APP_ID = 'com.kokuyu.easyepi'
-const developmentUrl = process.env['ELECTRON_RENDERER_URL']
+const developmentUrl = resolveDevelopmentRendererUrl(
+  app.isPackaged,
+  process.env['ELECTRON_RENDERER_URL']
+)
 const packagedRendererPath = join(__dirname, '../renderer/index.html')
 const packagedRendererUrl = pathToFileURL(packagedRendererPath).href
 const preloadPath = join(__dirname, '../preload/index.cjs')

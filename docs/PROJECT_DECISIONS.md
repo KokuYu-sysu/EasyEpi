@@ -95,3 +95,10 @@
 - Windows 代码签名证书。
 - GitHub 或其他更新发布地址。
 - 真实脱敏 EpiData `.qes` / `.rec` 兼容性样本。
+
+## 11. M1 工具链兼容性决策
+
+- M1 固定使用 `electron-vite@5.0.0`、`vite@7.3.6` 与 `@vitejs/plugin-react@5.2.0`。
+- 不采用 Vite 8 / React 插件 6 组合，因为 electron-vite 5 的 peer 范围仅覆盖 Vite 5-7；实测不兼容组合会把 npm Electron 启动器错误打入主进程产物。
+- Electron 43 不通过包级 `postinstall` 自动准备运行时；任何干净安装都必须在 `pnpm install --frozen-lockfile` 后执行 `pnpm install:electron`。
+- 正式打包程序必须忽略 `ELECTRON_RENDERER_URL`；该变量仅允许在 `app.isPackaged === false` 的开发运行中生效。

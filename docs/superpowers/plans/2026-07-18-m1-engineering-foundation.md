@@ -18,6 +18,7 @@ M1 is accepted when all of the following succeed on Windows:
 
 ```powershell
 pnpm install --frozen-lockfile
+pnpm install:electron
 pnpm lint
 pnpm typecheck
 pnpm test:unit
@@ -112,10 +113,10 @@ Run:
 
 ```powershell
 pnpm add --save-exact react@18.3.1 react-dom@18.3.1
-pnpm add --save-dev --save-exact electron@43.1.1 electron-vite@5.0.0 electron-builder@26.15.3 typescript@5.9.3 vite@8.1.5 vitest@4.1.10 @vitest/coverage-v8@4.1.10 jsdom@29.1.1 @vitejs/plugin-react@6.0.3 @types/node@24.13.3 @types/react@18.3.31 @types/react-dom@18.3.7 @testing-library/react@16.3.2 @testing-library/jest-dom@6.9.1 @playwright/test@1.61.1 eslint@10.7.0 @eslint/js@10.0.1 typescript-eslint@8.64.0 eslint-plugin-react-hooks@7.1.1 prettier@3.9.5 png-to-ico@3.0.2 sharp@0.35.3
+pnpm add --save-dev --save-exact electron@43.1.1 electron-vite@5.0.0 electron-builder@26.15.3 typescript@5.9.3 vite@7.3.6 vitest@4.1.10 @vitest/coverage-v8@4.1.10 jsdom@29.1.1 @vitejs/plugin-react@5.2.0 @types/node@24.13.3 @types/react@18.3.31 @types/react-dom@18.3.7 @testing-library/react@16.3.2 @testing-library/jest-dom@6.9.1 @playwright/test@1.61.1 eslint@10.7.0 @eslint/js@10.0.1 typescript-eslint@8.64.0 eslint-plugin-react-hooks@7.1.1 prettier@3.9.5 png-to-ico@3.0.2 sharp@0.35.3
 ```
 
-Run `pnpm install:electron` after dependency installation because Electron 43 exposes an explicit runtime installer rather than a package `postinstall` script. Expected: `package.json` contains the exact versions above, `pnpm-lock.yaml` is created, and `node_modules/electron/dist/electron.exe` exists. These versions were read from the npm registry on 2026-07-18, while TypeScript and Node types were deliberately held to the approved TypeScript 5 / Node 24 majors. If peer resolution rejects this exact set, stop and diagnose the conflicting peer range; update this plan and decision evidence before changing versions.
+Run `pnpm install:electron` after dependency installation because Electron 43 exposes an explicit runtime installer rather than a package `postinstall` script. Expected: `package.json` contains the exact versions above, `pnpm-lock.yaml` is created, and `node_modules/electron/dist/electron.exe` exists. Vite 7.3.6 and `@vitejs/plugin-react` 5.2.0 replace the initially evaluated Vite 8/plugin 6 pair because electron-vite 5 declares support only through Vite 7; the unsupported pair bundled the npm Electron launcher into the main process. These versions were verified on 2026-07-18, while TypeScript and Node types were deliberately held to the approved TypeScript 5 / Node 24 majors.
 
 - [ ] **Step 3: Add build and quality configuration**
 
@@ -361,7 +362,7 @@ git commit -m "feat: show desktop connection status"
 
 - [ ] **Step 1: Write the failing Electron smoke test**
 
-Launch the built app with Playwright `_electron.launch({ args: [projectRoot] })`. Assert the first window has title `EasyEpi`, `nodeIntegration` is unavailable in the renderer (`typeof require === 'undefined'`), and the page displays `桌面运行环境已连接`. Close the Electron application in `finally`.
+Launch the built main entry with Playwright `_electron.launch({ args: [mainEntry], cwd: projectRoot })`. Assert the first window has title `EasyEpi`, `nodeIntegration` is unavailable in the renderer (`typeof require === 'undefined'`), and the page displays `桌面运行环境已连接`. Close the Electron application in `finally`.
 
 - [ ] **Step 2: Build and verify RED**
 
@@ -498,7 +499,7 @@ git commit -m "build: package Windows installer and portable app"
 
 - [ ] **Step 1: Run final verification from a clean dependency state**
 
-Remove only generated `node_modules`, `out`, `coverage`, `test-results`, `release`, and repository-local `.tmp/m1-install` directories after resolving their absolute paths inside the repository. Reinstall with `pnpm install --frozen-lockfile`, then run `pnpm generate:icon`, `pnpm check`, `pnpm test:e2e`, `pnpm build:win`, and repeat Task 8 Step 6 for both packaged artifacts.
+Remove only generated `node_modules`, `out`, `coverage`, `test-results`, `release`, and repository-local `.tmp/m1-install` directories after resolving their absolute paths inside the repository. Reinstall with `pnpm install --frozen-lockfile`, prepare the Electron runtime with `pnpm install:electron`, then run `pnpm generate:icon`, `pnpm check`, `pnpm test:e2e`, `pnpm build:win`, and repeat Task 8 Step 6 for both packaged artifacts.
 
 - [ ] **Step 2: Record objective evidence**
 

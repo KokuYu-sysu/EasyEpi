@@ -18,6 +18,13 @@ export function createWindowOptions(preloadPath: string): BrowserWindowConstruct
   }
 }
 
+export function resolveDevelopmentRendererUrl(
+  isPackaged: boolean,
+  configuredUrl: string | undefined
+): string | undefined {
+  return isPackaged ? undefined : configuredUrl
+}
+
 export function isTrustedRendererUrl(
   candidate: string,
   packagedRendererUrl: string,
