@@ -1,0 +1,22 @@
+appId: com.kokuyu.easyepi
+productName: EasyEpi
+directories:
+  output: release
+  buildResources: resources
+files:
+  - out/**
+  - package.json
+win:
+  executableName: EasyEpi
+  icon: resources/icon.ico
+  target:
+    - target: nsis
+      arch: [x64]
+    - target: portable
+      arch: [x64]
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+  artifactName: EasyEpi-${version}-setup-${arch}.${ext}
+portable:
+  artifactName: EasyEpi-${version}-portable-${arch}.${ext}

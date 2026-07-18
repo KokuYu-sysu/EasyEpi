@@ -16,6 +16,7 @@
   "scripts": {
     "dev": "electron-vite dev",
     "install:electron": "install-electron",
+    "generate:icon": "node scripts/generate-icon.mjs",
     "build": "electron-vite build",
     "preview": "electron-vite preview",
     "lint": "eslint .",
