@@ -1,3 +1,5 @@
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import os from 'node:os'
 import path from 'node:path'
 
 import { describe, expect, it, vi } from 'vitest'
@@ -29,6 +31,7 @@ class MemoryFileSystem implements PreferencesFileSystem {
   tempReadError: unknown
   corruptTempRead = false
   invalidTempRead = false
+  replacementTempContents: string | undefined
   removeError: unknown
   beforeWrite?: (filePath: string) => Promise<void>
 
@@ -46,6 +49,10 @@ class MemoryFileSystem implements PreferencesFileSystem {
     if (filePath.endsWith('.tmp') && this.invalidTempRead) {
       return JSON.stringify({ ...validPreferences, theme: 'blue' })
     }
+    if (filePath.endsWith('.tmp') && this.replacementTempContents !== undefined) {
+      this.files.set(filePath, this.replacementTempContents)
+      return this.replacementTempContents
+    }
     const contents = this.files.get(filePath)
     if (contents === undefined) {
       throw fileError('ENOENT')
@@ -58,6 +65,9 @@ class MemoryFileSystem implements PreferencesFileSystem {
     await this.beforeWrite?.(filePath)
     if (this.failOperation === 'write') {
       throw new Error('write details')
+    }
+    if (this.files.has(filePath)) {
+      throw fileError('EEXIST')
     }
     this.files.set(filePath, data)
   }
@@ -196,6 +206,22 @@ describe('preferences store updates', () => {
     expect(result).toEqual({ ok: true, preferences: validPreferences })
   })
 
+  it('returns the normalized snapshot that was re-read and committed', async () => {
+    const fileSystem = new MemoryFileSystem()
+    const committedPreferences: PreferencesV1 = {
+      ...validPreferences,
+      theme: 'light',
+      largeText: false
+    }
+    const committedContents = `${JSON.stringify(committedPreferences)}\n`
+    fileSystem.replacementTempContents = committedContents
+
+    const result = await createPreferencesStore(directory, fileSystem).update(validPreferences)
+
+    expect(fileSystem.files.get(preferencesPath)).toBe(committedContents)
+    expect(result).toEqual({ ok: true, preferences: committedPreferences })
+  })
+
   it.each([
     ['write', { failOperation: 'write' as const }],
     ['sync', { failOperation: 'sync' as const }],
@@ -243,6 +269,54 @@ describe('preferences store updates', () => {
       .filter((call) => call.startsWith('write:'))
       .map((call) => path.basename(call.slice('write:'.length).split(':').at(0)!))
     expect(new Set(temporaryNames).size).toBe(2)
+  })
+
+  it('uses exclusive default-adapter creation and never overwrites a collision', async () => {
+    const temporaryDirectory = await mkdtemp(path.join(os.tmpdir(), 'easyepi-preferences-'))
+    const actualPreferencesPath = path.join(temporaryDirectory, 'preferences.json')
+    const collisionPath = path.join(
+      temporaryDirectory,
+      `EasyEpi-preferences-${process.pid}-1.tmp`
+    )
+    const priorBytes = '{"prior":"bytes"}\n'
+    const collisionBytes = 'do not overwrite or follow'
+
+    try {
+      await writeFile(actualPreferencesPath, priorBytes, 'utf8')
+      await writeFile(collisionPath, collisionBytes, { encoding: 'utf8', flag: 'wx' })
+      vi.resetModules()
+      const { createPreferencesStore: createFreshStore } = await import(
+        '../../../src/main/preferences-store'
+      )
+
+      const result = await createFreshStore(temporaryDirectory).update(validPreferences)
+
+      expect(result).toEqual({ ok: true, preferences: validPreferences })
+      await expect(readFile(collisionPath, 'utf8')).resolves.toBe(collisionBytes)
+      await expect(readFile(actualPreferencesPath, 'utf8')).resolves.toBe(
+        `${JSON.stringify(validPreferences)}\n`
+      )
+    } finally {
+      await rm(temporaryDirectory, { recursive: true, force: true })
+    }
+  })
+
+  it('bounds exclusive-create collisions and preserves prior preferences bytes', async () => {
+    const fileSystem = new MemoryFileSystem()
+    const priorBytes = '{"prior":"must survive"}\n'
+    fileSystem.files.set(preferencesPath, priorBytes)
+    fileSystem.beforeWrite = async (filePath) => {
+      fileSystem.files.set(filePath, 'collision')
+    }
+
+    const result = await createPreferencesStore(directory, fileSystem).update(validPreferences)
+
+    const writeCalls = fileSystem.calls.filter((call) => call.startsWith('write:'))
+    expect(result).toEqual({ ok: false, code: 'PREFERENCES_SAVE_FAILED' })
+    expect(writeCalls.length).toBeGreaterThan(1)
+    expect(writeCalls.length).toBeLessThanOrEqual(16)
+    expect(fileSystem.files.get(preferencesPath)).toBe(priorBytes)
+    expect(fileSystem.calls.some((call) => call.startsWith('remove:'))).toBe(false)
   })
 
   it('cleans only safely recognized stale temporary files without using a glob', async () => {
