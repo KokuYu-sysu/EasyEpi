@@ -168,8 +168,10 @@ interface PreferencesV1 {
 2. 写入规范化 JSON 并同步文件；
 3. 重新读取并使用同一解析器验证；
 4. 在同一卷内原子替换 `preferences.json`；
-5. 成功后清理可识别的临时文件；
-6. 任一步失败保留旧文件并返回 `PREFERENCES_SAVE_FAILED`。
+5. 原子替换成功即视为提交完成并返回成功；
+6. 提交后以 best-effort 方式清理带 EasyEpi 固定前缀的陈旧临时文件，清理失败只记录非敏感诊断，不把已提交的保存改判为失败。
+
+步骤 1-4 任一步失败都必须保留旧 `preferences.json` 并返回 `PREFERENCES_SAVE_FAILED`。应用下次启动时可再次 best-effort 清理可安全识别的陈旧临时文件；不得使用宽泛 glob 删除其他文件。
 
 同一进程内通过串行写队列避免快速切换产生乱序覆盖。应用退出前不阻塞等待无限重试；调用方获得失败响应并回滚乐观状态。
 
@@ -181,6 +183,32 @@ interface PreferencesV1 {
 - `preferences:update`
 
 共享契约定义请求、响应、运行时解析器和稳定错误码。`preferences:update` 只接受完整、规范化的三个用户偏好字段，不接受任意路径、任意键或部分对象注入。`sidebarCollapsed` 可包含在完整偏好中。
+
+wire contract 固定为：
+
+```ts
+type PreferencesWarning = 'PREFERENCES_RECOVERED'
+
+type PreferencesErrorCode =
+  | 'INVALID_PREFERENCES_REQUEST'
+  | 'PREFERENCES_READ_FAILED'
+  | 'PREFERENCES_SAVE_FAILED'
+
+type PreferencesResult =
+  | {
+      ok: true
+      preferences: PreferencesV1
+      warning?: PreferencesWarning
+    }
+  | {
+      ok: false
+      code: PreferencesErrorCode
+    }
+```
+
+`preferences:get` 在文件缺失时返回默认偏好且无 warning；内容损坏、schema 未知或字段非法时返回默认偏好和 `PREFERENCES_RECOVERED`；无法读取且不能判定为文件缺失时返回 `PREFERENCES_READ_FAILED`。`preferences:update` 成功时回传主进程重新读取并规范化后的偏好；请求非法时返回 `INVALID_PREFERENCES_REQUEST`；步骤 1-4 保存失败时返回 `PREFERENCES_SAVE_FAILED`。失败分支不携带偏好，渲染器只能使用自己持有的最后确认状态，不能猜测主进程状态。
+
+请求和响应都必须在共享层提供运行时解析器。preload 在发送前解析请求、收到后解析响应；主进程在 handler 入口再次解析请求，不能只依赖 TypeScript 类型。
 
 主进程复用 M1 的 sender URL 信任检查。preload 只暴露：
 
@@ -195,11 +223,23 @@ preferences: {
 
 ## 10. 状态更新与错误处理
 
-偏好 Store 启动时处于 `loading`，成功后进入 `ready`；恢复默认值时仍进入 `ready` 并携带一次性警告。用户切换设置时先更新 UI，再调用主进程保存：
+偏好 Store 启动时处于 `loading`，成功后进入 `ready`；恢复默认值时仍进入 `ready` 并携带一次性警告。Store 明确维护三个值：
 
-- 保存成功：保留新状态；
-- 保存失败：回滚到上一个确认状态，显示错误 Toast；
-- 新切换发生在旧保存期间：按触发顺序排队，以最后一次成功响应为确认状态。
+- `confirmed`：最近一次由主进程成功读取或保存并回传的完整偏好；
+- `desired`：包含用户最新选择、当前实际渲染的完整偏好；
+- `inFlight`：当前发送给主进程的不可变完整快照，空值表示没有保存请求。
+
+确定性保存状态机：
+
+1. 用户切换设置时把变更合并进 `desired`，立即用 `desired` 更新 UI；
+2. 若没有 `inFlight`，复制当前 `desired` 为 `inFlight` 并发送；
+3. 请求期间的新切换只更新 `desired`，不修改当前 `inFlight`；
+4. 保存成功时以主进程响应更新 `confirmed`，清空 `inFlight`；若 `desired` 与新 `confirmed` 不同，立即复制最新 `desired` 开始下一次保存，中间状态可以合并跳过；
+5. 保存失败时保持 `confirmed` 不变并清空 `inFlight`，显示错误 Toast；若失败快照之后已有更新（`desired` 与失败的 `inFlight` 不同），继续尝试保存最新 `desired`，期间不回滚可见 UI；
+6. 若保存失败且没有更新的 `desired`，把 `desired` 回滚为 `confirmed` 并重新应用已确认主题；
+7. 每个后续请求都以发起瞬间的完整 `desired` 为快照，不基于失败请求的快照做增量合并。
+
+该规则保证 A 保存期间发生 B 时：A 失败不会短暂抹掉 B；系统随后尝试完整保存 B。只有最新可见状态本身失败且没有更新值等待时，界面才回滚到最后确认状态。
 
 页面级异常由 Router 错误边界捕获，显示可恢复错误页和返回欢迎页操作。组件错误不得导致 Electron 主进程退出。
 
