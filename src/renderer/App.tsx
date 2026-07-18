@@ -1,11 +1,11 @@
 import { useEffect, useState } from 'react'
 
-import type { SystemDesktopApi } from '@shared/desktop-api'
+import type { DesktopApi } from '@shared/desktop-api'
 
 type ConnectionState = 'connecting' | 'connected' | 'failed'
 
 export interface AppProps {
-  api?: SystemDesktopApi
+  api?: DesktopApi
 }
 
 export function App({ api = window.easyEpi }: AppProps) {

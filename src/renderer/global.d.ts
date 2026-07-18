@@ -1,8 +1,8 @@
-import type { SystemDesktopApi } from '@shared/desktop-api'
+import type { DesktopApi } from '@shared/desktop-api'
 
 declare global {
   interface Window {
-    easyEpi: SystemDesktopApi
+    easyEpi: DesktopApi
   }
 }
 
