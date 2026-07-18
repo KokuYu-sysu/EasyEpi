@@ -6,9 +6,28 @@ import {
   PREFERENCES_UPDATE_CHANNEL
 } from '@shared/preferences-contract'
 import { SYSTEM_PING_CHANNEL } from '@shared/system-contract'
+import type { DesktopInvoke } from '../../../src/preload/desktop-api'
 import { createDesktopApi } from '../../../src/preload/desktop-api'
 
+function assertDesktopInvokeShape(invoke: DesktopInvoke, checkCalls: boolean): void {
+  if (checkCalls) {
+    void invoke(SYSTEM_PING_CHANNEL, { nonce: 'typed' })
+    void invoke(PREFERENCES_GET_CHANNEL)
+    void invoke(PREFERENCES_UPDATE_CHANNEL, DEFAULT_PREFERENCES)
+
+    // @ts-expect-error preferences:get never accepts a request payload
+    void invoke(PREFERENCES_GET_CHANNEL, DEFAULT_PREFERENCES)
+    // @ts-expect-error preferences:update always requires a complete snapshot
+    void invoke(PREFERENCES_UPDATE_CHANNEL)
+    // @ts-expect-error no caller-selected channels are available
+    void invoke('preferences:delete')
+  }
+}
+
 describe('createDesktopApi', () => {
+  it('uses a channel-specific invoke contract', () => {
+    expect(assertDesktopInvokeShape).toBeTypeOf('function')
+  })
   it('invokes only the fixed system ping channel', async () => {
     const invoke = vi.fn().mockResolvedValue({
       nonce: 'n',

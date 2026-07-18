@@ -121,6 +121,20 @@ describe('registerPreferencesIpc', () => {
     expect(JSON.stringify(result)).not.toContain('secret')
   })
 
+  it('maps malformed resolved read results to the stable read failure', async () => {
+    const store = createStore()
+    vi.mocked(store.get).mockResolvedValue({
+      ok: false,
+      code: 'EACCES at C:\\Users\\secret\\preferences.json'
+    } as never)
+    const { handlers } = setup(store)
+
+    await expect(handlers.get(PREFERENCES_GET_CHANNEL)!(trustedEvent)).resolves.toEqual({
+      ok: false,
+      code: 'PREFERENCES_READ_FAILED'
+    })
+  })
+
   it('maps unexpected update exceptions to a stable path-free result', async () => {
     const store = createStore()
     vi.mocked(store.update).mockRejectedValue(new Error('save failed at D:\\private'))
@@ -130,6 +144,16 @@ describe('registerPreferencesIpc', () => {
 
     expect(result).toEqual({ ok: false, code: 'PREFERENCES_SAVE_FAILED' })
     expect(JSON.stringify(result)).not.toContain('private')
+  })
+
+  it('maps malformed resolved update results to the stable save failure', async () => {
+    const store = createStore()
+    vi.mocked(store.update).mockResolvedValue({ ok: true, preferences: null } as never)
+    const { handlers } = setup(store)
+
+    await expect(
+      handlers.get(PREFERENCES_UPDATE_CHANNEL)!(trustedEvent, validPreferences)
+    ).resolves.toEqual({ ok: false, code: 'PREFERENCES_SAVE_FAILED' })
   })
 
   it('removes both preference handlers without touching the system handler', () => {

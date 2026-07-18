@@ -1,23 +1,16 @@
 import { render, screen } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 
-import type { DesktopApi } from '@shared/desktop-api'
-import { DEFAULT_PREFERENCES } from '@shared/preferences-contract'
+import type { SystemDesktopApi } from '@shared/desktop-api'
 import { App } from '@renderer/App'
 
-function createApi(ping: DesktopApi['system']['ping']): DesktopApi {
-  return {
-    system: { ping },
-    preferences: {
-      get: vi.fn().mockResolvedValue({ ok: true, preferences: DEFAULT_PREFERENCES }),
-      update: vi.fn().mockResolvedValue({ ok: true, preferences: DEFAULT_PREFERENCES })
-    }
-  }
+function createApi(ping: SystemDesktopApi['system']['ping']): SystemDesktopApi {
+  return { system: { ping } }
 }
 
 describe('App', () => {
   it('shows the product heading while connecting', () => {
-    const pendingPing: DesktopApi['system']['ping'] = () => new Promise(() => undefined)
+    const pendingPing: SystemDesktopApi['system']['ping'] = () => new Promise(() => undefined)
     const api = createApi(pendingPing)
 
     render(<App api={api} />)
