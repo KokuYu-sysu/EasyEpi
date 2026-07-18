@@ -32,7 +32,6 @@ export default defineConfig({
         'src/preload/index.ts',
         'src/renderer/main.tsx',
         'src/renderer/global.d.ts',
-        'src/renderer/app/routes.tsx',
         'src/renderer/demo/demo-data.ts'
       ],
       reporter: ['text', 'html', 'json-summary'],

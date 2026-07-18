@@ -1,5 +1,5 @@
 :root {
-  color-scheme: light dark;
+  color-scheme: light;
 
   --space-1: 4px;
   --space-2: 8px;
@@ -43,6 +43,10 @@
   --motion-ease: cubic-bezier(0.2, 0, 0, 1);
 }
 
+[data-theme='light'] {
+  color-scheme: light;
+}
+
 :root,
 [data-theme='light'] {
   --color-brand: #146b5a;
@@ -69,7 +73,7 @@
 
   --color-text-primary: #18212f;
   --color-text-secondary: #3f5f59;
-  --color-text-muted: #647b77;
+  --color-text-muted: #526a65;
   --color-text-inverse: #ffffff;
   --color-text-link: #0d6755;
   --color-text-disabled: #8a9b98;
@@ -87,6 +91,8 @@
 }
 
 [data-theme='dark'] {
+  color-scheme: dark;
+
   --color-brand: #5fc2aa;
   --color-brand-hover: #7bd0bc;
   --color-brand-active: #9cddce;
