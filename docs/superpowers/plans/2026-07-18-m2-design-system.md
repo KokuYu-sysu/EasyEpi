@@ -50,7 +50,7 @@ These versions were checked against the npm registry on 2026-07-18. Keep React a
 - `src/renderer/styles/global.css`: Tailwind import, reset, root/body behavior, focus and reduced-motion rules.
 - `src/renderer/app/theme.ts`: resolves system theme/motion and applies root data attributes.
 - `src/renderer/stores/preferences-store.ts`: `loading/ready`, `confirmed/desired/inFlight`, optimistic serialized save state machine.
-- `src/renderer/app/AppBootstrap.tsx`: blocks the shell on preference load and shows recovery/failure feedback.
+- `src/renderer/app/AppBootstrap.tsx`: after Toast exists, blocks child content on preference load and shows recovery/failure feedback.
 - `src/renderer/app/routes.tsx`: route metadata, production/dev conditional routes, NotFound and route error boundary.
 - `src/renderer/app/AppShell.tsx`: skip link, top bar, responsive sidebar, settings trigger, outlet, toast viewport.
 - `src/renderer/components/common/SettingsDialog.tsx`: theme, large-text, and sidebar controls.
@@ -62,6 +62,7 @@ These versions were checked against the npm registry on 2026-07-18. Keep React a
 - `src/renderer/components/ui/Select.tsx`, `Checkbox.tsx`, `Radio.tsx`, `Modal.tsx`, `ConfirmDialog.tsx`, `Toast.tsx`, `Tooltip.tsx`: token-styled Radix wrappers.
 - `src/renderer/components/ui/index.ts`: public exports only.
 - `src/renderer/pages/ComponentGalleryPage.tsx`: development-only state/variant gallery.
+- `src/renderer/pages/RoutePlaceholderPage.tsx`: temporary truthful route target created with the router and removed after the last rich page replaces it.
 
 ### Pages and demo state
 
@@ -308,14 +309,11 @@ git add src/main src/preload src/renderer/global.d.ts tests/unit/main tests/unit
 git commit -m "feat: expose trusted preference IPC"
 ```
 
-### Task 5: Build the deterministic preference store and bootstrap
+### Task 5: Build the deterministic preference state machine
 
 **Files:**
 - Create: `src/renderer/stores/preferences-store.ts`
 - Create: `tests/unit/renderer/preferences-store.test.ts`
-- Create: `src/renderer/app/AppBootstrap.tsx`
-- Create: `tests/unit/renderer/AppBootstrap.test.tsx`
-- Modify: `src/renderer/App.tsx`
 
 - [ ] **Step 1: Write state-machine tests with deferred promises**
 
@@ -330,25 +328,23 @@ expect(store.getState()).toMatchObject({ confirmed: A, desired: B, inFlight: B }
 
 - [ ] **Step 2: Verify RED**
 
-Run the two focused test files.  
-Expected: FAIL because the store/bootstrap do not exist.
+Run: `pnpm test:unit tests/unit/renderer/preferences-store.test.ts`
+Expected: FAIL because the store does not exist.
 
 - [ ] **Step 3: Implement `confirmed / desired / inFlight` exactly**
 
 Use a vanilla Zustand store factory for injection in tests and a React context/provider for production. `load()` moves `loading` to `ready`; a read error uses defaults and queues a non-blocking warning. `setPreferences(patch)` immediately replaces `desired`, applies appearance, and calls `pump()`. `pump()` sends one immutable complete snapshot; on success updates `confirmed`, on failure either sends a newer `desired` or rolls visible state back. Never incrementally merge from a failed snapshot.
 
-`AppBootstrap` renders an application Skeleton plus visible `正在加载界面设置` status until ready. It then renders the router even after recovery and emits one recovery/error toast.
-
 - [ ] **Step 4: Verify GREEN**
 
-Run focused tests, full unit suite and typecheck.  
+Run the focused test, full unit suite and typecheck.
 Expected: PASS without React act warnings or unresolved promises.
 
 - [ ] **Step 5: Commit**
 
 ```powershell
-git add src/renderer/app src/renderer/stores src/renderer/App.tsx tests/unit/renderer
-git commit -m "feat: bootstrap persistent interface preferences"
+git add src/renderer/stores tests/unit/renderer/preferences-store.test.ts
+git commit -m "feat: manage persistent interface preferences"
 ```
 
 ### Task 6: Implement native core components
@@ -402,6 +398,8 @@ git commit -m "feat: add native design system components"
 - Modify: `src/renderer/components/ui/index.ts`
 - Create: `tests/unit/renderer/components/form-components.test.tsx`
 - Create: `tests/unit/renderer/components/overlay-components.test.tsx`
+- Create: `src/renderer/app/AppBootstrap.tsx`
+- Create: `tests/unit/renderer/AppBootstrap.test.tsx`
 
 - [ ] **Step 1: Write failing interaction tests**
 
@@ -414,7 +412,9 @@ Expected: FAIL because wrappers are missing.
 
 - [ ] **Step 3: Implement narrow Radix wrappers**
 
-Expose product-level props rather than Radix internals. Use `Dialog`, `AlertDialog`, `Select`, `Checkbox`, `RadioGroup`, `Toast`, and `Tooltip` primitives. Put a single `ToastProvider` and viewport at application-shell level; expose `useToast().push({ title, description?, tone?, duration? })`. Queue duplicate message types rather than replacing them. All portals use token surfaces/Z-layers and all overlays have accessible titles/descriptions.
+Expose product-level props rather than Radix internals. Use `Dialog`, `AlertDialog`, `Select`, `Checkbox`, `RadioGroup`, `Toast`, and `Tooltip` primitives. Expose `useToast().push({ title, description?, tone?, duration? })`; queue duplicate message types rather than replacing them. All portals use token surfaces/Z-layers and all overlays have accessible titles/descriptions.
+
+Create `AppBootstrap({ children })` in this task so it can be tested without depending on the Task 8 router. It owns the single `ToastProvider` and viewport, renders an application Skeleton plus visible `正在加载界面设置` status until preferences are ready, then renders `children`. Recovery and read-failure states still enter `ready` and enqueue exactly one non-blocking recovery/error Toast. Task 8 will pass the router provider as its child.
 
 - [ ] **Step 4: Verify GREEN**
 
@@ -424,7 +424,7 @@ Expected: PASS; no timer leaks and no focus left inside removed portals.
 - [ ] **Step 5: Commit**
 
 ```powershell
-git add src/renderer/components/ui tests/unit/renderer/components
+git add src/renderer/components/ui src/renderer/app/AppBootstrap.tsx tests/unit/renderer/components tests/unit/renderer/AppBootstrap.test.tsx
 git commit -m "feat: add accessible Radix design components"
 ```
 
@@ -440,6 +440,7 @@ git commit -m "feat: add accessible Radix design components"
 - Create: `src/renderer/pages/ComponentGalleryPage.tsx`
 - Create: `src/renderer/pages/NotFoundPage.tsx`
 - Create: `src/renderer/pages/RouteErrorPage.tsx`
+- Create: `src/renderer/pages/RoutePlaceholderPage.tsx`
 - Create: `tests/unit/renderer/routes.test.tsx`
 - Create: `tests/unit/renderer/AppShell.test.tsx`
 - Modify: `src/renderer/App.tsx`
@@ -455,7 +456,7 @@ Expected: FAIL because router/shell modules are missing.
 
 - [ ] **Step 3: Implement the shell and routes**
 
-Use React Router `createHashRouter` because the packaged renderer loads from `file:` and must deep-link without an HTTP server. Route registration must be produced by `createAppRouter({ isDevelopment: import.meta.env.DEV })`; include `ComponentGalleryPage` only inside the true branch so the production route table has no navigable entry. Use Lucide icons with text labels. At widths near 1024, collapse the sidebar but keep every destination reachable from a labelled menu. Quick controls call the preference state machine, never localStorage.
+Use React Router `createHashRouter` because the packaged renderer loads from `file:` and must deep-link without an HTTP server. Route registration must be produced by `createAppRouter({ isDevelopment: import.meta.env.DEV })`; include `ComponentGalleryPage` only inside the true branch so the production route table has no navigable entry. At this task boundary, point the nine production paths to `RoutePlaceholderPage` instances whose visible title and `演示骨架，后续任务替换` text are supplied from route metadata; this keeps Task 8 buildable before Tasks 9–12 create final pages. Tasks 9–12 replace only their owned route elements, and Task 12 deletes the placeholder after the last three rich routes are replaced. Use Lucide icons with text labels. At widths near 1024, collapse the sidebar but keep every destination reachable from a labelled menu. Quick controls call the preference state machine, never localStorage. `App.tsx` renders the router provider as the child of the Task 7 `AppBootstrap`.
 
 - [ ] **Step 4: Build the complete gallery**
 
@@ -469,7 +470,7 @@ Expected: PASS.
 - [ ] **Step 6: Commit**
 
 ```powershell
-git add src/renderer/app src/renderer/components/common src/renderer/pages/ComponentGalleryPage.tsx src/renderer/pages/NotFoundPage.tsx src/renderer/pages/RouteErrorPage.tsx src/renderer/App.tsx tests/unit/renderer
+git add src/renderer/app src/renderer/components/common src/renderer/pages/ComponentGalleryPage.tsx src/renderer/pages/NotFoundPage.tsx src/renderer/pages/RouteErrorPage.tsx src/renderer/pages/RoutePlaceholderPage.tsx src/renderer/App.tsx tests/unit/renderer
 git commit -m "feat: add responsive application shell and routes"
 ```
 
@@ -575,6 +576,7 @@ git commit -m "feat: add single-question entry demo"
 - Create: `src/renderer/pages/AdminDataPage.tsx`
 - Create: `tests/unit/renderer/admin-data-demo.test.tsx`
 - Modify: `src/renderer/app/routes.tsx`
+- Delete: `src/renderer/pages/RoutePlaceholderPage.tsx` (after all nine final M2 pages are wired)
 
 - [ ] **Step 1: Write failing administration flows**
 
@@ -587,14 +589,14 @@ Expected: FAIL.
 
 - [ ] **Step 3: Implement deterministic derived selectors**
 
-Keep seed records in `demo-data.ts`; store filter/page/selected IDs and memory overrides. Derive filtered/paged rows rather than duplicating them. Clamp page after filters/deletes. Export simulates a short cancellable loading state, then says `演示：未生成文件`; it must not create a Blob/download or invoke preload.
+Keep seed records in `demo-data.ts`; store filter/page/selected IDs and memory overrides. Derive filtered/paged rows rather than duplicating them. Clamp page after filters/deletes. Export simulates a short cancellable loading state, then says `演示：未生成文件`; it must not create a Blob/download or invoke preload. After wiring `/admin/data`, confirm all nine paths now use their final M2 page components and delete `RoutePlaceholderPage.tsx`.
 
 - [ ] **Step 4: Verify GREEN and commit**
 
 Run focused test, coverage and typecheck; expected PASS.
 
 ```powershell
-git add src/renderer/stores/admin-data-demo-store.ts src/renderer/pages/AdminDataPage.tsx src/renderer/app/routes.tsx tests/unit/renderer/admin-data-demo.test.tsx
+git add src/renderer/stores/admin-data-demo-store.ts src/renderer/pages/AdminDataPage.tsx src/renderer/pages/RoutePlaceholderPage.tsx src/renderer/app/routes.tsx tests/unit/renderer/admin-data-demo.test.tsx
 git commit -m "feat: add data administration demo"
 ```
 
@@ -710,4 +712,3 @@ git show --no-patch --decorate v0.2.0-m2
 ```
 
 Expected: `v0.2.0-m2` points to the verified M2 master commit; no remote push is attempted because the repository has no configured remote.
-
