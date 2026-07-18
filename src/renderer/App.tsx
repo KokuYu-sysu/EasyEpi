@@ -2,8 +2,6 @@ import { useEffect, useState } from 'react'
 
 import type { DesktopApi } from '@shared/desktop-api'
 
-import './app.css'
-
 type ConnectionState = 'connecting' | 'connected' | 'failed'
 
 export interface AppProps {

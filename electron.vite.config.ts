@@ -2,6 +2,7 @@ import { resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import react from '@vitejs/plugin-react'
+import tailwindcss from '@tailwindcss/vite'
 import { defineConfig } from 'electron-vite'
 
 const projectRoot = fileURLToPath(new URL('.', import.meta.url))
@@ -37,7 +38,7 @@ export default defineConfig({
   },
   renderer: {
     root: resolve(projectRoot, 'src/renderer'),
-    plugins: [react()],
+    plugins: [react(), tailwindcss()],
     resolve: {
       alias: {
         '@renderer': resolve(projectRoot, 'src/renderer'),
