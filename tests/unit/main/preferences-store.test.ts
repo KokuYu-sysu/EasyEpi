@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { lstat, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 
@@ -7,6 +7,8 @@ import { describe, expect, it, vi } from 'vitest'
 import { DEFAULT_PREFERENCES, type PreferencesV1 } from '@shared/preferences-contract'
 import {
   createPreferencesStore,
+  nodePreferencesFileSystem,
+  PreferencesTemporaryFileCreatedError,
   type PreferencesFileSystem
 } from '../../../src/main/preferences-store'
 
@@ -28,12 +30,17 @@ class MemoryFileSystem implements PreferencesFileSystem {
   readonly calls: string[] = []
   readError: unknown
   failOperation: 'write' | 'sync' | 'rename' | undefined
+  failWriteAfterCreate = false
   tempReadError: unknown
   corruptTempRead = false
   invalidTempRead = false
   replacementTempContents: string | undefined
+  listError: unknown
   removeError: unknown
   beforeWrite?: (filePath: string) => Promise<void>
+  beforeSync?: (filePath: string) => Promise<void>
+  removeInFlight = 0
+  maxRemoveInFlight = 0
 
   async readFile(filePath: string): Promise<string> {
     this.calls.push(`read:${filePath}`)
@@ -70,10 +77,14 @@ class MemoryFileSystem implements PreferencesFileSystem {
       throw fileError('EEXIST')
     }
     this.files.set(filePath, data)
+    if (this.failWriteAfterCreate) {
+      throw new PreferencesTemporaryFileCreatedError()
+    }
   }
 
   async syncFile(filePath: string): Promise<void> {
     this.calls.push(`sync:${filePath}`)
+    await this.beforeSync?.(filePath)
     if (this.failOperation === 'sync') {
       throw new Error('sync details')
     }
@@ -94,6 +105,9 @@ class MemoryFileSystem implements PreferencesFileSystem {
 
   async list(listDirectory: string): Promise<string[]> {
     this.calls.push(`list:${listDirectory}`)
+    if (this.listError !== undefined) {
+      throw this.listError
+    }
     return [...this.files.keys()]
       .filter((filePath) => path.dirname(filePath) === listDirectory)
       .map((filePath) => path.basename(filePath))
@@ -101,10 +115,17 @@ class MemoryFileSystem implements PreferencesFileSystem {
 
   async remove(filePath: string): Promise<void> {
     this.calls.push(`remove:${filePath}`)
-    if (this.removeError !== undefined) {
-      throw this.removeError
+    this.removeInFlight += 1
+    this.maxRemoveInFlight = Math.max(this.maxRemoveInFlight, this.removeInFlight)
+    try {
+      await Promise.resolve()
+      if (this.removeError !== undefined) {
+        throw this.removeError
+      }
+      this.files.delete(filePath)
+    } finally {
+      this.removeInFlight -= 1
     }
-    this.files.delete(filePath)
   }
 }
 
@@ -224,6 +245,7 @@ describe('preferences store updates', () => {
 
   it.each([
     ['write', { failOperation: 'write' as const }],
+    ['write after exclusive create', { failWriteAfterCreate: true }],
     ['sync', { failOperation: 'sync' as const }],
     ['re-read', { tempReadError: new Error('read details') }],
     ['JSON validation', { corruptTempRead: true }],
@@ -239,6 +261,7 @@ describe('preferences store updates', () => {
 
     expect(result).toEqual({ ok: false, code: 'PREFERENCES_SAVE_FAILED' })
     expect(fileSystem.files.get(preferencesPath)).toBe(priorBytes)
+    expect([...fileSystem.files.keys()].filter((filePath) => filePath.endsWith('.tmp'))).toEqual([])
     expect(JSON.stringify(result)).not.toContain(directory)
   })
 
@@ -271,28 +294,38 @@ describe('preferences store updates', () => {
     expect(new Set(temporaryNames).size).toBe(2)
   })
 
-  it('uses exclusive default-adapter creation and never overwrites a collision', async () => {
+  it('does not follow or truncate a real symlink collision and advances safely', async () => {
     const temporaryDirectory = await mkdtemp(path.join(os.tmpdir(), 'easyepi-preferences-'))
     const actualPreferencesPath = path.join(temporaryDirectory, 'preferences.json')
-    const collisionPath = path.join(
-      temporaryDirectory,
-      `EasyEpi-preferences-${process.pid}-1.tmp`
-    )
+    const targetPath = path.join(temporaryDirectory, 'symlink-target')
+    const targetMarkerPath = path.join(targetPath, 'marker.txt')
+    let collisionPath: string | undefined
     const priorBytes = '{"prior":"bytes"}\n'
-    const collisionBytes = 'do not overwrite or follow'
+    const targetBytes = 'do not truncate or follow'
 
     try {
       await writeFile(actualPreferencesPath, priorBytes, 'utf8')
-      await writeFile(collisionPath, collisionBytes, { encoding: 'utf8', flag: 'wx' })
-      vi.resetModules()
-      const { createPreferencesStore: createFreshStore } = await import(
-        '../../../src/main/preferences-store'
+      await mkdir(targetPath)
+      await writeFile(targetMarkerPath, targetBytes, 'utf8')
+      const fileSystem: PreferencesFileSystem = {
+        ...nodePreferencesFileSystem,
+        async writeFile(filePath, data) {
+          if (collisionPath === undefined) {
+            collisionPath = filePath
+            await symlink(targetPath, collisionPath, 'junction')
+          }
+          await nodePreferencesFileSystem.writeFile(filePath, data)
+        }
+      }
+
+      const result = await createPreferencesStore(temporaryDirectory, fileSystem).update(
+        validPreferences
       )
 
-      const result = await createFreshStore(temporaryDirectory).update(validPreferences)
-
       expect(result).toEqual({ ok: true, preferences: validPreferences })
-      await expect(readFile(collisionPath, 'utf8')).resolves.toBe(collisionBytes)
+      expect(collisionPath).toBeDefined()
+      expect((await lstat(collisionPath!)).isSymbolicLink()).toBe(true)
+      await expect(readFile(targetMarkerPath, 'utf8')).resolves.toBe(targetBytes)
       await expect(readFile(actualPreferencesPath, 'utf8')).resolves.toBe(
         `${JSON.stringify(validPreferences)}\n`
       )
@@ -321,17 +354,18 @@ describe('preferences store updates', () => {
 
   it('cleans only safely recognized stale temporary files without using a glob', async () => {
     const fileSystem = new MemoryFileSystem()
-    const safeNames = [
-      'EasyEpi-preferences-123-1.tmp',
-      `EasyEpi-preferences-${process.pid}-999.tmp`
-    ]
+    const ownNames = Array.from(
+      { length: 40 },
+      (_, index) => `EasyEpi-preferences-${process.pid}-${3_000_000_000 + index}.tmp`
+    )
+    const otherProcessName = 'EasyEpi-preferences-123-1.tmp'
     const unsafeNames = [
       'notes.tmp',
       'EasyEpi-preferences-secret.tmp',
       'EasyEpi-preferences-1-2.tmp.bak',
       'prefix-EasyEpi-preferences-1-2.tmp'
     ]
-    for (const name of [...safeNames, ...unsafeNames]) {
+    for (const name of [...ownNames, otherProcessName, ...unsafeNames]) {
       fileSystem.files.set(path.join(directory, name), name)
     }
 
@@ -340,24 +374,74 @@ describe('preferences store updates', () => {
     const removedNames = fileSystem.calls
       .filter((call) => call.startsWith('remove:'))
       .map((call) => path.basename(call.slice('remove:'.length)))
-    expect(removedNames.sort()).toEqual(safeNames.sort())
+    expect(removedNames).toHaveLength(32)
+    expect(removedNames.every((name) => ownNames.includes(name))).toBe(true)
+    expect(fileSystem.maxRemoveInFlight).toBe(1)
     expect(fileSystem.calls).toContain(`list:${directory}`)
     expect(fileSystem.calls.every((call) => !call.includes('*'))).toBe(true)
     for (const name of unsafeNames) {
       expect(fileSystem.files.has(path.join(directory, name))).toBe(true)
     }
+    expect(fileSystem.files.has(path.join(directory, otherProcessName))).toBe(true)
   })
 
-  it('keeps a successful result when post-commit cleanup fails', async () => {
+  it.each(['list', 'remove'] as const)(
+    'keeps success and emits a path-free diagnostic when cleanup %s fails',
+    async (operation) => {
     const fileSystem = new MemoryFileSystem()
-    fileSystem.files.set(path.join(directory, 'EasyEpi-preferences-123-4.tmp'), 'stale')
-    fileSystem.removeError = new Error('cleanup failure')
+      fileSystem.files.set(
+        path.join(directory, `EasyEpi-preferences-${process.pid}-999.tmp`),
+        'stale'
+      )
+      if (operation === 'list') {
+        fileSystem.listError = new Error('sensitive list details')
+      } else {
+        fileSystem.removeError = new Error('sensitive remove details')
+      }
+      const logger = { warn: vi.fn() }
 
-    await expect(createPreferencesStore(directory, fileSystem).update(validPreferences)).resolves.toEqual({
-      ok: true,
-      preferences: validPreferences
+      await expect(
+        createPreferencesStore(directory, fileSystem, logger).update(validPreferences)
+      ).resolves.toEqual({ ok: true, preferences: validPreferences })
+      expect(logger.warn).toHaveBeenCalledWith('PREFERENCES_TEMP_CLEANUP_FAILED', operation)
+      const diagnostics = JSON.stringify(logger.warn.mock.calls)
+      expect(diagnostics).not.toContain(directory)
+      expect(diagnostics).not.toContain('sensitive')
+    }
+  )
+
+  it('serializes two stores for the same directory and protects the active temp', async () => {
+    const fileSystem = new MemoryFileSystem()
+    let releaseFirstSync: (() => void) | undefined
+    const firstSyncBlocked = new Promise<void>((resolve) => {
+      releaseFirstSync = resolve
     })
-    expect(fileSystem.files.get(preferencesPath)).toBe(`${JSON.stringify(validPreferences)}\n`)
+    let syncs = 0
+    fileSystem.beforeSync = async () => {
+      syncs += 1
+      if (syncs === 1) {
+        await firstSyncBlocked
+      }
+    }
+    const storeA = createPreferencesStore(directory, fileSystem)
+    const storeB = createPreferencesStore(path.resolve(directory), fileSystem)
+
+    const first = storeA.update(validPreferences)
+    await vi.waitFor(() => expect(syncs).toBe(1))
+    const second = storeB.update({ ...validPreferences, theme: 'light' })
+    await Promise.resolve()
+
+    expect(fileSystem.calls.filter((call) => call.startsWith('write:'))).toHaveLength(1)
+    const activePath = fileSystem.calls
+      .find((call) => call.startsWith('write:'))!
+      .slice('write:'.length)
+      .split(':')
+      .at(0)!
+    expect(fileSystem.files.has(activePath)).toBe(true)
+
+    releaseFirstSync!()
+    await Promise.all([first, second])
+    expect(fileSystem.calls.filter((call) => call.startsWith('write:'))).toHaveLength(2)
   })
 
   it('serializes concurrent updates in invocation order', async () => {
