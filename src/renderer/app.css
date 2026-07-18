@@ -1,0 +1,80 @@
+:root {
+  color: #18212f;
+  background: #eef5f3;
+  font-family:
+    Inter, "Segoe UI", "Microsoft YaHei UI", sans-serif;
+  font-synthesis: none;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+  min-height: 100vh;
+}
+
+button,
+input,
+textarea,
+select {
+  font: inherit;
+}
+
+.app-shell {
+  display: grid;
+  min-height: 100vh;
+  place-items: center;
+  padding: 32px;
+}
+
+.welcome-card {
+  display: flex;
+  width: min(620px, 100%);
+  align-items: center;
+  gap: 24px;
+  padding: 36px;
+  border: 1px solid rgb(21 105 88 / 14%);
+  border-radius: 24px;
+  background: rgb(255 255 255 / 92%);
+  box-shadow: 0 24px 70px rgb(25 63 56 / 12%);
+}
+
+.product-mark {
+  display: grid;
+  width: 76px;
+  height: 76px;
+  flex: 0 0 auto;
+  place-items: center;
+  border-radius: 22px;
+  color: white;
+  background: #146b5a;
+  font-size: 40px;
+  font-weight: 700;
+}
+
+.eyebrow {
+  margin: 0 0 6px;
+  color: #51716b;
+  font-size: 14px;
+}
+
+h1 {
+  margin: 0 0 14px;
+  font-size: clamp(36px, 6vw, 54px);
+  line-height: 1;
+}
+
+.welcome-card p:last-child {
+  margin-bottom: 0;
+}
+
+.status-connected {
+  color: #087a55;
+}
+
+.status-failed {
+  color: #b42318;
+}
