@@ -3,7 +3,7 @@ import { type ReactNode } from 'react'
 export interface ModalProps {
   trigger: ReactNode
   title: string
-  description?: string
+  description: string
   children: ReactNode
   open?: boolean
   defaultOpen?: boolean
@@ -28,7 +28,7 @@ export function Modal({ trigger, title, description, children, className, ...pro
             .join(' ')}
         >
           <R.Title>{title}</R.Title>
-          {description && <R.Description>{description}</R.Description>}
+          <R.Description>{description}</R.Description>
           <div>{children}</div>
           <R.Close aria-label="关闭对话框">×</R.Close>
         </R.Content>

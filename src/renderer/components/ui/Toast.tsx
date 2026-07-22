@@ -12,6 +12,15 @@ interface Item extends ToastInput {
 }
 const Context = createContext<{ push: (v: ToastInput) => void } | null>(null)
 let nextId = 0
+const toneClasses: Record<ToastTone, string> = {
+  info: 'border-[var(--color-info)] bg-[var(--color-info-soft)] text-[var(--color-text-primary)]',
+  success:
+    'border-[var(--color-success)] bg-[var(--color-success-soft)] text-[var(--color-text-primary)]',
+  warning:
+    'border-[var(--color-warning)] bg-[var(--color-warning-soft)] text-[var(--color-text-primary)]',
+  danger:
+    'border-[var(--color-danger)] bg-[var(--color-danger-soft)] text-[var(--color-text-primary)]'
+}
 export function ToastProvider({ children }: PropsWithChildren) {
   const [items, setItems] = useState<Item[]>([])
   const push = useCallback((v: ToastInput) => setItems((xs) => [...xs, { ...v, id: ++nextId }]), [])
@@ -27,7 +36,7 @@ export function ToastProvider({ children }: PropsWithChildren) {
             onOpenChange={(open) => {
               if (!open) setItems((xs) => xs.filter((x) => x.id !== item.id))
             }}
-            className="rounded-[var(--radius-1)] border border-[var(--color-border-default)] bg-[var(--color-surface-raised)] p-[var(--space-3)] shadow-[var(--shadow-z3)]"
+            className={`rounded-[var(--radius-1)] border p-[var(--space-3)] shadow-[var(--shadow-z3)] ${toneClasses[item.tone ?? 'info']}`}
             data-tone={item.tone ?? 'info'}
           >
             <R.Title>{item.title}</R.Title>
