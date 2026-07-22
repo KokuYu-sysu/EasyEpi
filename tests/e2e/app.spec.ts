@@ -155,12 +155,21 @@ test.describe('built Electron application', () => {
 
       await expect(page.locator('header').first()).toBeVisible()
       await expect(page.locator('main')).toBeVisible()
-      await expect(page.getByLabel('通知')).toBeAttached()
       await expect
         .poll(() => page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth))
         .toBe(true)
 
       if (viewport.width === 1024) {
+        for (const action of [
+          page.getByRole('button', { name: '新建项目' }),
+          page.getByRole('button', { name: '打开项目' }),
+          page.getByRole('link', { name: '开始问卷设计' }),
+          page.getByRole('link', { name: '进入录入演示' }),
+          page.getByRole('link', { name: '查看数据管理演示' })
+        ]) {
+          await action.scrollIntoViewIfNeeded()
+          await expect(action).toBeVisible()
+        }
         await expect(page.getByRole('button', { name: /切换主题/ })).toBeVisible()
         await expect(page.getByRole('button', { name: /大字模式/ })).toBeVisible()
         await expect(page.getByRole('button', { name: '打开设置' })).toBeVisible()
@@ -170,6 +179,13 @@ test.describe('built Electron application', () => {
       } else {
         await expect(page.getByRole('navigation', { name: '主要导航' })).toBeVisible()
         await expect(page.getByRole('navigation', { name: '主要导航' }).locator('..')).toBeVisible()
+        await navigateHash(page, '/designer')
+        await expect(page.getByRole('heading', { level: 1, name: '问卷设计' })).toBeVisible()
+        await page.getByRole('button', { name: '保存问卷' }).click()
+        await expect(
+          page.locator('li[role="status"]').filter({ hasText: '保存功能尚未保存' })
+        ).toBeVisible()
+        await expect(page.getByRole('list', { name: '通知' })).toBeVisible()
       }
     })
   }
@@ -220,9 +236,17 @@ test.describe('built Electron application', () => {
   test('has no automated WCAG A/AA violations in key pages and settings', async () => {
     running = await launchBuiltApp(userDataDir)
     const { page } = running
-    for (const path of ['/', '/designer', '/entry', '/admin/data']) {
+    for (const { path, heading } of [
+      { path: '/', heading: '欢迎页' },
+      { path: '/designer', heading: '问卷设计' },
+      { path: '/entry', heading: '单题录入' },
+      { path: '/admin/data', heading: '数据管理' }
+    ]) {
       await navigateHash(page, path)
-      await expect(page.getByRole('heading', { level: 1 })).toBeVisible()
+      await expect
+        .poll(() => page.evaluate(() => window.location.hash))
+        .toBe(`#${path}`)
+      await expect(page.getByRole('heading', { level: 1, name: heading })).toBeVisible()
       await assertNoAxeViolations(page)
     }
     await page.getByRole('button', { name: '打开设置' }).click()
