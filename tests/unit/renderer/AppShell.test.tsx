@@ -1,6 +1,6 @@
 import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { MemoryRouter } from 'react-router-dom'
+import { createMemoryRouter, RouterProvider } from 'react-router-dom'
 import { vi } from 'vitest'
 
 import { AppShell } from '@renderer/app/AppShell'
@@ -12,7 +12,7 @@ import {
 } from '@renderer/stores/preferences-store'
 import { DEFAULT_PREFERENCES, type PreferencesV1 } from '@shared/preferences-contract'
 
-function renderShell(path = '/entry') {
+function renderShell(path = '/entry', currentTitle = '录入页元数据标题') {
   const update = vi.fn(async (preferences: PreferencesV1) => ({
     ok: true as const,
     preferences
@@ -30,14 +30,20 @@ function renderShell(path = '/entry') {
   })
   store.setState({ status: 'ready', confirmed: DEFAULT_PREFERENCES, desired: DEFAULT_PREFERENCES })
 
+  const router = createMemoryRouter(
+    [
+      {
+        element: <AppShell />,
+        children: [{ path, handle: { title: currentTitle }, element: <p>页面正文</p> }]
+      }
+    ],
+    { initialEntries: [path] }
+  )
+
   render(
     <PreferencesProvider store={store}>
       <ToastProvider>
-        <MemoryRouter initialEntries={[path]}>
-          <AppShell>
-            <p>页面正文</p>
-          </AppShell>
-        </MemoryRouter>
+        <RouterProvider router={router} />
       </ToastProvider>
     </PreferencesProvider>
   )
@@ -48,7 +54,7 @@ describe('AppShell', () => {
   it('shows product and current-page titles with a working skip link', () => {
     renderShell()
     expect(screen.getAllByText('EasyEpi').some((node) => node.textContent === 'EasyEpi')).toBe(true)
-    expect(screen.getAllByText('单题录入').some((node) => node.tagName === 'P')).toBe(true)
+    expect(screen.getByText('录入页元数据标题')).toBeVisible()
     expect(screen.getByRole('link', { name: '跳到主内容' })).toHaveAttribute(
       'href',
       '#main-content'

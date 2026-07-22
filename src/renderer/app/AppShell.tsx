@@ -15,11 +15,12 @@ import {
   Upload
 } from 'lucide-react'
 import { useState, type PropsWithChildren, type ReactNode } from 'react'
-import { Link, NavLink, Outlet, useLocation } from 'react-router-dom'
+import { Link, NavLink, Outlet } from 'react-router-dom'
 
 import { Button, Tooltip } from '@renderer/components/ui'
 import { SettingsDialog } from '@renderer/components/common/SettingsDialog'
 import { usePreferencesStore } from '@renderer/stores/preferences-store'
+import { useCurrentRouteHandle } from './route-metadata'
 
 export interface NavigationItem {
   path: string
@@ -77,12 +78,11 @@ function NavigationLinks({
 }
 
 export function AppShell({ children }: PropsWithChildren) {
-  const location = useLocation()
+  const routeHandle = useCurrentRouteHandle()
   const preferences = usePreferencesStore((state) => state.desired)
   const setPreferences = usePreferencesStore((state) => state.setPreferences)
   const [compactOpen, setCompactOpen] = useState(false)
-  const page = NAVIGATION_ITEMS.find((item) => item.path === location.pathname)
-  const currentTitle = location.pathname === '/__components' ? '组件展厅' : page?.title ?? '未知页面'
+  const currentTitle = routeHandle?.title ?? 'EasyEpi'
   const nextTheme =
     preferences.theme === 'system'
       ? 'light'
