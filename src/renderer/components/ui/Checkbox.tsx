@@ -1,13 +1,8 @@
 import * as R from '@radix-ui/react-checkbox'
-import { forwardRef } from 'react'
-export interface CheckboxProps {
+import { forwardRef, type ComponentPropsWithoutRef } from 'react'
+type RootProps = ComponentPropsWithoutRef<typeof R.Root>
+export type CheckboxProps = Omit<RootProps, 'asChild' | 'children' | 'className'> & {
   label: string
-  checked?: boolean | 'indeterminate'
-  defaultChecked?: boolean | 'indeterminate'
-  onCheckedChange?: (v: boolean | 'indeterminate') => void
-  disabled?: boolean
-  name?: string
-  value?: string
   className?: string
 }
 export const Checkbox = forwardRef<HTMLButtonElement, CheckboxProps>(function Checkbox(

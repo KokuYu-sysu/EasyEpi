@@ -17,7 +17,10 @@ function Harness() {
   )
 }
 
-afterEach(() => vi.useRealTimers())
+afterEach(() => {
+  vi.clearAllTimers()
+  vi.useRealTimers()
+})
 
 test('select skips disabled options and a disabled trigger cannot open', async () => {
   const user = userEvent.setup()
@@ -113,9 +116,9 @@ test('default timer pauses on hover and focus, resumes, manual close works, and 
     await user.click(screen.getByRole('button', { name: '关闭通知' }))
     expect(screen.queryAllByRole('status').filter((node) => node.matches('li'))).toHaveLength(0)
     view.unmount()
-    await act(() => vi.runOnlyPendingTimersAsync())
     expect(vi.getTimerCount()).toBe(0)
   } finally {
+    vi.clearAllTimers()
     vi.useRealTimers()
   }
 })

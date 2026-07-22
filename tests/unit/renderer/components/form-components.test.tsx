@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react'
+import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { Checkbox, Radio, Select } from '@renderer/components/ui'
 
@@ -16,6 +16,7 @@ test('form wrappers expose labelled keyboard-operable controls', async () => {
       <Checkbox label="同意" />
       <Radio
         label="性别"
+        orientation="horizontal"
         options={[
           { value: 'f', label: '女' },
           { value: 'm', label: '男' }
@@ -29,6 +30,7 @@ test('form wrappers expose labelled keyboard-operable controls', async () => {
   await user.click(screen.getByRole('checkbox', { name: '同意' }))
   expect(screen.getByRole('checkbox', { name: '同意' })).toBeChecked()
   await user.click(screen.getByRole('radio', { name: '女' }))
-  await user.keyboard('{ArrowRight}')
-  expect(screen.getByRole('radio', { name: '男' })).toBeChecked()
+  await user.keyboard('{ArrowRight>}')
+  await waitFor(() => expect(screen.getByRole('radio', { name: '男' })).toBeChecked())
+  await user.keyboard('{/ArrowRight}')
 })

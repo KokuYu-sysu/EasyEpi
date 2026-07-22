@@ -1,7 +1,8 @@
 import * as R from '@radix-ui/react-dialog'
-import { type ReactNode } from 'react'
+import { type ReactElement, type ReactNode } from 'react'
 export interface ModalProps {
-  trigger: ReactNode
+  /** Custom triggers must forward their ref and received event/ARIA props. */
+  trigger: ReactElement
   title: string
   description: string
   children: ReactNode
@@ -13,9 +14,7 @@ export interface ModalProps {
 export function Modal({ trigger, title, description, children, className, ...props }: ModalProps) {
   return (
     <R.Root {...props}>
-      <R.Trigger asChild>
-        {typeof trigger === 'string' ? <button>{trigger}</button> : trigger}
-      </R.Trigger>
+      <R.Trigger asChild>{trigger}</R.Trigger>
       <R.Portal>
         <R.Overlay className="fixed inset-0 z-[var(--z-3)] bg-[var(--color-surface-overlay)]" />
         <R.Content

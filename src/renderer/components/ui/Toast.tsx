@@ -1,5 +1,12 @@
 import * as R from '@radix-ui/react-toast'
-import { createContext, useCallback, useContext, useState, type PropsWithChildren } from 'react'
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useMemo,
+  useState,
+  type PropsWithChildren
+} from 'react'
 export type ToastTone = 'info' | 'success' | 'warning' | 'danger'
 export interface ToastInput {
   title: string
@@ -24,8 +31,9 @@ const toneClasses: Record<ToastTone, string> = {
 export function ToastProvider({ children }: PropsWithChildren) {
   const [items, setItems] = useState<Item[]>([])
   const push = useCallback((v: ToastInput) => setItems((xs) => [...xs, { ...v, id: ++nextId }]), [])
+  const contextValue = useMemo(() => ({ push }), [push])
   return (
-    <Context.Provider value={{ push }}>
+    <Context.Provider value={contextValue}>
       <R.Provider duration={4000}>
         {children}
         {items.map((item) => (

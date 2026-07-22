@@ -1,7 +1,8 @@
 import * as R from '@radix-ui/react-alert-dialog'
-import { useRef, type ReactNode } from 'react'
+import { useRef, type ReactElement } from 'react'
 export interface ConfirmDialogProps {
-  trigger: ReactNode
+  /** Custom triggers must forward their ref and received event/ARIA props. */
+  trigger: ReactElement
   title: string
   description: string
   confirmLabel: string
@@ -23,9 +24,7 @@ export function ConfirmDialog({
   const cancel = useRef<HTMLButtonElement>(null)
   return (
     <R.Root {...props}>
-      <R.Trigger asChild>
-        {typeof trigger === 'string' ? <button>{trigger}</button> : trigger}
-      </R.Trigger>
+      <R.Trigger asChild>{trigger}</R.Trigger>
       <R.Portal>
         <R.Overlay className="fixed inset-0 z-[var(--z-3)] bg-[var(--color-surface-overlay)]" />
         <R.Content

@@ -11,11 +11,11 @@ test('modal and confirm manage safe focus', async () => {
   const user = userEvent.setup()
   render(
     <>
-      <Modal trigger="打开" title="编辑" description="说明">
+      <Modal trigger={<button>打开</button>} title="编辑" description="说明">
         内容
       </Modal>
       <ConfirmDialog
-        trigger="删除"
+        trigger={<button>删除</button>}
         title="确认删除"
         description="无法撤销"
         confirmLabel="确认"
