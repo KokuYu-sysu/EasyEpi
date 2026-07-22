@@ -136,6 +136,7 @@ describe('questionnaire designer demo page', () => {
 
   it('reports truthful Save and Preview toasts without any persistence calls', async () => {
     const user = userEvent.setup()
+    const originalEasyEpi = Object.getOwnPropertyDescriptor(window, 'easyEpi')
     const storageWrite = vi.spyOn(Storage.prototype, 'setItem')
     const preferencesGet = vi.fn()
     const preferencesUpdate = vi.fn()
@@ -143,30 +144,35 @@ describe('questionnaire designer demo page', () => {
       configurable: true,
       value: { preferences: { get: preferencesGet, update: preferencesUpdate } }
     })
-    renderDesigner()
+    try {
+      renderDesigner()
 
-    await user.click(screen.getByRole('button', { name: '保存问卷' }))
-    expect(await screen.findByRole('status')).toHaveTextContent(/未保存|后续里程碑/)
-    expect(screen.queryByText(/保存成功/)).not.toBeInTheDocument()
-    await user.click(screen.getByRole('button', { name: '预览问卷' }))
-    expect(screen.getByText('预览功能尚未保存').closest('[role="status"]')).toHaveTextContent(
-      /未保存|后续里程碑/
-    )
+      await user.click(screen.getByRole('button', { name: '保存问卷' }))
+      expect(await screen.findByRole('status')).toHaveTextContent(/未保存|后续里程碑/)
+      expect(screen.queryByText(/保存成功/)).not.toBeInTheDocument()
+      await user.click(screen.getByRole('button', { name: '预览问卷' }))
+      expect(screen.getByText('预览功能尚未保存').closest('[role="status"]')).toHaveTextContent(
+        /未保存|后续里程碑/
+      )
 
-    expect(storageWrite).not.toHaveBeenCalled()
-    expect(preferencesGet).not.toHaveBeenCalled()
-    expect(preferencesUpdate).not.toHaveBeenCalled()
-    storageWrite.mockRestore()
+      expect(storageWrite).not.toHaveBeenCalled()
+      expect(preferencesGet).not.toHaveBeenCalled()
+      expect(preferencesUpdate).not.toHaveBeenCalled()
+    } finally {
+      storageWrite.mockRestore()
+      if (originalEasyEpi) Object.defineProperty(window, 'easyEpi', originalEasyEpi)
+      else Reflect.deleteProperty(window, 'easyEpi')
+    }
   })
 
-  it('replaces only the designer placeholder at the Task 10 boundary', () => {
+  it('keeps the designer route implemented at the Task 11 boundary', () => {
     const childRoutes = createAppRoutes({ isDevelopment: false })[0]?.children ?? []
     const designer = childRoutes.find((route) => route.path === '/designer')
     const entry = childRoutes.find((route) => route.path === '/entry')
     const adminData = childRoutes.find((route) => route.path === '/admin/data')
 
     expect(designer?.handle).not.toHaveProperty('placeholder')
-    expect(entry?.handle).toHaveProperty('placeholder')
+    expect(entry?.handle).not.toHaveProperty('placeholder')
     expect(adminData?.handle).toHaveProperty('placeholder')
     expect(isValidElement(designer?.element) && designer.element.type).toBe(DesignerPage)
   })

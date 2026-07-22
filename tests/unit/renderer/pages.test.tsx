@@ -110,10 +110,10 @@ describe('standard milestone pages', () => {
     expect(screen.getByText(/不执行真实认证/)).toBeVisible()
   })
 
-  it('keeps the completed Task 9 and Task 10 pages off the remaining placeholders', () => {
+  it('keeps completed pages through Task 11 off the remaining placeholder', () => {
     const childRoutes = createAppRoutes({ isDevelopment: false })[0]?.children ?? []
-    const realPaths = ['/', '/designer', '/import', '/work-session', '/admin/login', '/admin/baseline', '/derived']
-    const placeholderPaths = ['/entry', '/admin/data']
+    const realPaths = ['/', '/designer', '/import', '/entry', '/work-session', '/admin/login', '/admin/baseline', '/derived']
+    const placeholderPaths = ['/admin/data']
 
     for (const path of realPaths) {
       const route = childRoutes.find((candidate) => candidate.path === path)
