@@ -1,14 +1,8 @@
 import { useMatches, type UIMatch } from 'react-router-dom'
 
-export interface RoutePlaceholderMetadata {
-  title: string
-  description: string
-}
-
 export interface AppRouteHandle {
   title: string
   description?: string
-  placeholder?: RoutePlaceholderMetadata
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -22,14 +16,7 @@ export function isAppRouteHandle(value: unknown): value is AppRouteHandle {
   if (value.description !== undefined && typeof value.description !== 'string') {
     return false
   }
-  if (value.placeholder === undefined) {
-    return true
-  }
-  return (
-    isRecord(value.placeholder) &&
-    typeof value.placeholder.title === 'string' &&
-    typeof value.placeholder.description === 'string'
-  )
+  return true
 }
 
 export function findCurrentRouteHandle(

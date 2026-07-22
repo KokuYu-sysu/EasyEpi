@@ -8,7 +8,9 @@ import { ToastProvider } from '@renderer/components/ui'
 import { EntryPage } from '@renderer/pages/EntryPage'
 import { createEntryDemoStore } from '@renderer/stores/entry-demo-store'
 
-function renderEntry(options: { strict?: boolean; store?: ReturnType<typeof createEntryDemoStore> } = {}) {
+function renderEntry(
+  options: { strict?: boolean; store?: ReturnType<typeof createEntryDemoStore> } = {}
+) {
   const router = createMemoryRouter(
     [
       {
@@ -23,7 +25,9 @@ function renderEntry(options: { strict?: boolean; store?: ReturnType<typeof crea
   const view = render(
     <ToastProvider>
       {options.strict ? (
-        <StrictMode><RouterProvider router={router} /></StrictMode>
+        <StrictMode>
+          <RouterProvider router={router} />
+        </StrictMode>
       ) : (
         <RouterProvider router={router} />
       )}
@@ -61,7 +65,12 @@ describe('entry demo store', () => {
     expect(store.getState().answers.location).toBe('朝阳区')
 
     store.getState().reset()
-    expect(store.getState()).toMatchObject({ index: 0, answers: {}, validationError: null, completed: false })
+    expect(store.getState()).toMatchObject({
+      index: 0,
+      answers: {},
+      validationError: null,
+      completed: false
+    })
   })
 
   it('rejects radio values that are not one of the declared options', () => {
@@ -187,9 +196,13 @@ describe('single-question entry demo page', () => {
     await user.click(screen.getByRole('radio', { name: '是' }))
     await user.click(screen.getByRole('button', { name: '下一题' }))
     await user.type(screen.getByRole('textbox', { name: /调查地点/ }), '第一次会话')
-    await act(async () => { await view.router.navigate('/away') })
+    await act(async () => {
+      await view.router.navigate('/away')
+    })
     expect(screen.getByText('另一真实页面')).toBeVisible()
-    await act(async () => { await view.router.navigate('/entry') })
+    await act(async () => {
+      await view.router.navigate('/entry')
+    })
     expect(screen.getByRole('progressbar')).toHaveAttribute('aria-valuenow', '1')
     expect(screen.getByRole('radio', { name: '是' })).not.toBeChecked()
     expect(screen.getByRole('radio', { name: '否' })).not.toBeChecked()
@@ -216,13 +229,13 @@ describe('single-question entry demo page', () => {
     expect(screen.getByRole('radio', { name: '是' })).toHaveFocus()
   })
 
-  it('replaces only the entry placeholder at the Task 11 boundary', () => {
+  it('keeps entry and administration on final M2 pages', () => {
     const childRoutes = createAppRoutes({ isDevelopment: false })[0]?.children ?? []
     const entry = childRoutes.find((route) => route.path === '/entry')
     const adminData = childRoutes.find((route) => route.path === '/admin/data')
 
     expect(entry?.handle).not.toHaveProperty('placeholder')
-    expect(adminData?.handle).toHaveProperty('placeholder')
+    expect(adminData?.handle).not.toHaveProperty('placeholder')
     expect(isValidElement(entry?.element) && entry.element.type).toBe(EntryPage)
   })
 })

@@ -63,7 +63,10 @@ describe('welcome page', () => {
 
     expect(screen.getByRole('link', { name: '开始问卷设计' })).toHaveAttribute('href', '/designer')
     expect(screen.getByRole('link', { name: '进入录入演示' })).toHaveAttribute('href', '/entry')
-    expect(screen.getByRole('link', { name: '查看数据管理演示' })).toHaveAttribute('href', '/admin/data')
+    expect(screen.getByRole('link', { name: '查看数据管理演示' })).toHaveAttribute(
+      'href',
+      '/admin/data'
+    )
 
     await user.click(screen.getByRole('link', { name: /继续合成演示项目/ }))
     expect(await screen.findByRole('heading', { name: '设计器目标页' })).toBeVisible()
@@ -80,48 +83,63 @@ describe('standard milestone pages', () => {
     { path: '/derived', title: '衍生变量', milestone: 'M7', Page: DerivedPage }
   ]
 
-  it.each(cases)('renders shared milestone structure and safe recovery for $path', async ({ path, title, milestone, Page }) => {
-    const user = userEvent.setup()
-    renderRoute([{ path, handle: { title, description: `${title}页面说明` }, element: <Page /> }], path)
+  it.each(cases)(
+    'renders shared milestone structure and safe recovery for $path',
+    async ({ path, title, milestone, Page }) => {
+      const user = userEvent.setup()
+      renderRoute(
+        [{ path, handle: { title, description: `${title}页面说明` }, element: <Page /> }],
+        path
+      )
 
-    expect(screen.getByRole('heading', { level: 1, name: title })).toBeVisible()
-    expect(screen.getByLabelText('演示说明')).toBeVisible()
-    expect(screen.getByRole('heading', { level: 2 })).toBeVisible()
-    expect(screen.getAllByText(new RegExp(milestone)).length).toBeGreaterThan(0)
-    expect(screen.getByRole('link', { name: /返回/ })).toHaveAttribute('href')
+      expect(screen.getByRole('heading', { level: 1, name: title })).toBeVisible()
+      expect(screen.getByLabelText('演示说明')).toBeVisible()
+      expect(screen.getByRole('heading', { level: 2 })).toBeVisible()
+      expect(screen.getAllByText(new RegExp(milestone)).length).toBeGreaterThan(0)
+      expect(screen.getByRole('link', { name: /返回/ })).toHaveAttribute('href')
 
-    await user.click(screen.getByRole('button', { name: /了解后续能力/ }))
-    const dialog = screen.getByRole('dialog')
-    expect(within(dialog).getAllByText(new RegExp(milestone)).length).toBeGreaterThan(0)
-    expect(dialog).toHaveTextContent(/尚未实现/)
-  })
+      await user.click(screen.getByRole('button', { name: /了解后续能力/ }))
+      const dialog = screen.getByRole('dialog')
+      expect(within(dialog).getAllByText(new RegExp(milestone)).length).toBeGreaterThan(0)
+      expect(dialog).toHaveTextContent(/尚未实现/)
+    }
+  )
 
   it('does not impersonate authentication on the administrator skeleton', () => {
-    renderRoute([
-      {
-        path: '/admin/login',
-        handle: { title: '管理员验证', description: '了解后续安全管理入口。' },
-        element: <AdminLoginPage />
-      }
-    ], '/admin/login')
+    renderRoute(
+      [
+        {
+          path: '/admin/login',
+          handle: { title: '管理员验证', description: '了解后续安全管理入口。' },
+          element: <AdminLoginPage />
+        }
+      ],
+      '/admin/login'
+    )
 
     expect(screen.queryByLabelText(/密码/)).not.toBeInTheDocument()
     expect(screen.queryByText(/^(验证成功|已登录|默认密码)/)).not.toBeInTheDocument()
     expect(screen.getByText(/不执行真实认证/)).toBeVisible()
   })
 
-  it('keeps completed pages through Task 11 off the remaining placeholder', () => {
+  it('keeps all completed M2 pages off placeholder metadata', () => {
     const childRoutes = createAppRoutes({ isDevelopment: false })[0]?.children ?? []
-    const realPaths = ['/', '/designer', '/import', '/entry', '/work-session', '/admin/login', '/admin/baseline', '/derived']
-    const placeholderPaths = ['/admin/data']
+    const realPaths = [
+      '/',
+      '/designer',
+      '/import',
+      '/entry',
+      '/work-session',
+      '/admin/login',
+      '/admin/data',
+      '/admin/baseline',
+      '/derived'
+    ]
 
     for (const path of realPaths) {
       const route = childRoutes.find((candidate) => candidate.path === path)
       expect(isValidElement(route?.element)).toBe(true)
       expect(route?.handle).not.toHaveProperty('placeholder')
-    }
-    for (const path of placeholderPaths) {
-      expect(childRoutes.find((route) => route.path === path)?.handle).toHaveProperty('placeholder')
     }
   })
 })

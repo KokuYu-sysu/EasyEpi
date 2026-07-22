@@ -51,8 +51,12 @@ describe('designer demo store', () => {
 
   it('uses deterministic IDs and keeps selection valid through CRUD and reset', () => {
     const store = createDesignerDemoStore([])
-    const firstId = store.getState().addQuestion({ title: '第一题', type: 'single', isKey: true, hasCondition: false })
-    const secondId = store.getState().addQuestion({ title: '第二题', type: 'multiple', isKey: false, hasCondition: true })
+    const firstId = store
+      .getState()
+      .addQuestion({ title: '第一题', type: 'single', isKey: true, hasCondition: false })
+    const secondId = store
+      .getState()
+      .addQuestion({ title: '第二题', type: 'multiple', isKey: false, hasCondition: true })
 
     expect([firstId, secondId]).toEqual(['question-1', 'question-2'])
     expect(store.getState().selectedId).toBe(firstId)
@@ -64,7 +68,11 @@ describe('designer demo store', () => {
 
     store.getState().reset()
     expect(store.getState().questions).toEqual([])
-    expect(store.getState().addQuestion({ title: '重置后', type: 'text', isKey: false, hasCondition: false })).toBe('question-1')
+    expect(
+      store
+        .getState()
+        .addQuestion({ title: '重置后', type: 'text', isKey: false, hasCondition: false })
+    ).toBe('question-1')
   })
 })
 
@@ -130,7 +138,9 @@ describe('questionnaire designer demo page', () => {
     await user.click(cancel)
     expect(screen.getByText('唯一题目')).toBeVisible()
     await user.click(screen.getByRole('button', { name: '删除题目：唯一题目' }))
-    await user.click(within(screen.getByRole('alertdialog')).getByRole('button', { name: '确认删除' }))
+    await user.click(
+      within(screen.getByRole('alertdialog')).getByRole('button', { name: '确认删除' })
+    )
     expect(screen.getByRole('heading', { name: '暂无题目' })).toBeVisible()
   })
 
@@ -173,7 +183,7 @@ describe('questionnaire designer demo page', () => {
 
     expect(designer?.handle).not.toHaveProperty('placeholder')
     expect(entry?.handle).not.toHaveProperty('placeholder')
-    expect(adminData?.handle).toHaveProperty('placeholder')
+    expect(adminData?.handle).not.toHaveProperty('placeholder')
     expect(isValidElement(designer?.element) && designer.element.type).toBe(DesignerPage)
   })
 })
