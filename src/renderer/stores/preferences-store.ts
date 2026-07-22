@@ -92,7 +92,20 @@ export function createPreferencesStore({
   let loadPromise: Promise<void> | null = null
   let saveCommitVersion = 0
   let loadSaveCommitVersion = 0
+  let noticeVersion = 0
+  let loadNoticeVersion = 0
   let stopObservingSystemTheme: (() => void) | null = null
+
+  const completeLoadNotice = (
+    nextNotice: PreferencesNotice | null
+  ): Partial<Pick<PreferencesState, 'notice'>> => {
+    if (noticeVersion !== loadNoticeVersion) {
+      return {}
+    }
+
+    noticeVersion += 1
+    return { notice: nextNotice }
+  }
 
   const stopObserving = (): void => {
     stopObservingSystemTheme?.()
@@ -138,6 +151,7 @@ export function createPreferencesStore({
       }
     } else {
       const desired = hasNewerDesired ? current.desired : snapshot(current.confirmed)
+      noticeVersion += 1
       store.setState({
         desired,
         inFlight: null,
@@ -183,16 +197,15 @@ export function createPreferencesStore({
     }
 
     if (saveCommitVersion !== loadSaveCommitVersion) {
-      const currentNotice = store.getState().notice
       store.setState({
         status: 'ready',
-        notice:
-          currentNotice ??
-          (result.ok
+        ...completeLoadNotice(
+          result.ok
             ? result.warning === undefined
               ? null
               : notice('warning', result.warning)
-            : notice('warning', result.code))
+            : notice('warning', result.code)
+        )
       })
       return
     }
@@ -205,8 +218,9 @@ export function createPreferencesStore({
         status: 'ready',
         confirmed: loaded,
         desired: loaded,
-        notice:
+        ...completeLoadNotice(
           result.warning === undefined ? null : notice('warning', result.warning)
+        )
       })
       apply(loaded)
       return
@@ -217,7 +231,7 @@ export function createPreferencesStore({
       status: 'ready',
       confirmed: fallback,
       desired: fallback,
-      notice: notice('warning', result.code)
+      ...completeLoadNotice(notice('warning', result.code))
     })
     apply(fallback)
   }
@@ -234,6 +248,7 @@ export function createPreferencesStore({
       }
 
       loadSaveCommitVersion = saveCommitVersion
+      loadNoticeVersion = noticeVersion
       try {
         loadPromise = api.get().then(
           (result) => completeLoad(result),
@@ -255,9 +270,13 @@ export function createPreferencesStore({
       apply(desired)
       pump(true)
     },
-    clearNotice: () => set({ notice: null }),
+    clearNotice: () => {
+      noticeVersion += 1
+      set({ notice: null })
+    },
     consumeNotice: () => {
       const currentNotice = get().notice
+      noticeVersion += 1
       set({ notice: null })
       return currentNotice
     },
@@ -331,6 +350,8 @@ export function PreferencesProvider({
       }
       store.getState().destroy()
       if (lifecycle !== undefined) {
+        // React replays effects before microtasks in development. Ownership that
+        // remains at zero past this boundary is a genuine, permanent finalization.
         queueMicrotask(() => {
           if (lifecycle.owners === 0) {
             lifecycle.finalized = true

@@ -315,6 +315,49 @@ describe('preferences save pump', () => {
       code: 'PREFERENCES_SAVE_FAILED'
     })
   })
+
+  it.each<[string, PreferencesResult]>([
+    [
+      'successful read without a warning',
+      { ok: true, preferences: preferences({ theme: 'light' }) }
+    ],
+    ['failed read', { ok: false, code: 'PREFERENCES_READ_FAILED' }]
+  ])('preserves a newer save failure after a %s completes', async (_case, loadResult) => {
+    const { gets, saves, store } = setup()
+    const loading = store.getState().load()
+
+    store.getState().setPreferences({ theme: 'dark' })
+    saves[0]!.deferred.resolve({ ok: false, code: 'PREFERENCES_SAVE_FAILED' })
+    await flush()
+    expect(store.getState().notice).toEqual({
+      kind: 'error',
+      code: 'PREFERENCES_SAVE_FAILED'
+    })
+
+    gets[0]!.resolve(loadResult)
+    await loading
+    expect(store.getState().notice).toEqual({
+      kind: 'error',
+      code: 'PREFERENCES_SAVE_FAILED'
+    })
+  })
+
+  it('does not resurrect a consumed save failure when its older load completes', async () => {
+    const { gets, saves, store } = setup()
+    const loading = store.getState().load()
+
+    store.getState().setPreferences({ theme: 'dark' })
+    saves[0]!.deferred.resolve({ ok: false, code: 'PREFERENCES_SAVE_FAILED' })
+    await flush()
+    expect(store.getState().consumeNotice()).toEqual({
+      kind: 'error',
+      code: 'PREFERENCES_SAVE_FAILED'
+    })
+
+    gets[0]!.resolve({ ok: false, code: 'PREFERENCES_READ_FAILED' })
+    await loading
+    expect(store.getState().notice).toBeNull()
+  })
 })
 
 describe('preferences appearance lifecycle', () => {
@@ -431,7 +474,7 @@ describe('preferences React bindings', () => {
   })
 
   it('permanently finalizes an injected store after its final unmount settles', async () => {
-    const { appearance, store } = setup()
+    const { appearance, saves, store } = setup()
     store.getState().setPreferences({ theme: 'system' })
 
     const first = render(createElement(PreferencesProvider, { store }))
@@ -440,6 +483,10 @@ describe('preferences React bindings', () => {
     const second = render(createElement(PreferencesProvider, { store }))
 
     expect(appearance.observeSystemTheme).toHaveBeenCalledTimes(1)
+    const finalizedDesired = store.getState().desired
+    store.getState().setPreferences({ theme: 'dark' })
+    expect(store.getState().desired).toBe(finalizedDesired)
+    expect(saves).toHaveLength(1)
     second.unmount()
   })
 
