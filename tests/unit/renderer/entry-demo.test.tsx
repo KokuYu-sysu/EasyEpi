@@ -1,5 +1,5 @@
 import { StrictMode, isValidElement } from 'react'
-import { render, screen } from '@testing-library/react'
+import { act, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { createMemoryRouter, RouterProvider } from 'react-router-dom'
 
@@ -15,7 +15,8 @@ function renderEntry(options: { strict?: boolean; store?: ReturnType<typeof crea
         path: '/entry',
         handle: { title: '单题录入', description: '以一题一屏方式完成现场录入。' },
         element: <EntryPage store={options.store} />
-      }
+      },
+      { path: '/away', element: <p>另一真实页面</p> }
     ],
     { initialEntries: ['/entry'] }
   )
@@ -62,6 +63,16 @@ describe('entry demo store', () => {
     store.getState().reset()
     expect(store.getState()).toMatchObject({ index: 0, answers: {}, validationError: null, completed: false })
   })
+
+  it('rejects radio values that are not one of the declared options', () => {
+    const store = createEntryDemoStore()
+
+    store.getState().answer('visit', 'forged-value')
+
+    expect(store.getState().answers).toEqual({})
+    expect(store.getState().next()).toBe(false)
+    expect(store.getState().validationError).toMatch(/必答/)
+  })
 })
 
 describe('single-question entry demo page', () => {
@@ -78,6 +89,25 @@ describe('single-question entry demo page', () => {
     expect(screen.getByRole('progressbar')).toHaveAttribute('aria-valuemax', '2')
     expect(screen.getByText('1 / 2')).toBeVisible()
     expect(screen.getByRole('button', { name: '上一题' })).toBeDisabled()
+    expect(screen.getByRole('radio', { name: '是' })).not.toHaveFocus()
+  })
+
+  it('renders injected question definitions from the store as the single source of truth', () => {
+    const store = createEntryDemoStore([
+      {
+        id: 'custom-place',
+        title: '自定义调查地点',
+        required: true,
+        type: 'text',
+        hint: '自定义提示'
+      }
+    ])
+
+    renderEntry({ store })
+
+    expect(screen.getByRole('textbox', { name: /自定义调查地点/ })).toBeVisible()
+    expect(screen.getByText('1 / 1')).toBeVisible()
+    expect(screen.queryByText(/过去两周/)).not.toBeInTheDocument()
   })
 
   it('connects required errors to the radio group and clears them after answering', async () => {
@@ -95,7 +125,7 @@ describe('single-question entry demo page', () => {
     expect(screen.queryByRole('alert')).not.toBeInTheDocument()
     expect(group).not.toHaveAttribute('aria-invalid', 'true')
     await user.click(screen.getByRole('button', { name: '下一题' }))
-    expect(screen.getByRole('textbox', { name: /调查地点/ })).toBeVisible()
+    expect(screen.getByRole('textbox', { name: /调查地点/ })).toHaveFocus()
     expect(screen.queryByRole('group')).not.toBeInTheDocument()
     expect(screen.getByRole('progressbar')).toHaveAttribute('aria-valuenow', '2')
 
@@ -138,6 +168,7 @@ describe('single-question entry demo page', () => {
       await user.click(screen.getByRole('button', { name: '完成演示' }))
 
       expect(screen.getByRole('heading', { name: '演示完成' })).toBeVisible()
+      expect(screen.getByRole('status', { name: '演示完成' })).toHaveFocus()
       expect(screen.getByText(/未提交.*未保存/)).toBeVisible()
       expect(screen.queryByText(/提交成功|保存成功/)).not.toBeInTheDocument()
       expect(storageWrite).not.toHaveBeenCalled()
@@ -150,20 +181,39 @@ describe('single-question entry demo page', () => {
     }
   })
 
-  it('creates fresh page state after unmount and remains isolated under StrictMode', async () => {
+  it('creates fresh page state after leaving and returning through the same router under StrictMode', async () => {
     const user = userEvent.setup()
-    const first = renderEntry({ strict: true })
+    const view = renderEntry({ strict: true })
     await user.click(screen.getByRole('radio', { name: '是' }))
     await user.click(screen.getByRole('button', { name: '下一题' }))
     await user.type(screen.getByRole('textbox', { name: /调查地点/ }), '第一次会话')
-    first.unmount()
-    first.router.dispose()
-
-    const second = renderEntry({ strict: true })
+    await act(async () => { await view.router.navigate('/away') })
+    expect(screen.getByText('另一真实页面')).toBeVisible()
+    await act(async () => { await view.router.navigate('/entry') })
     expect(screen.getByRole('progressbar')).toHaveAttribute('aria-valuenow', '1')
     expect(screen.getByRole('radio', { name: '是' })).not.toBeChecked()
     expect(screen.getByRole('radio', { name: '否' })).not.toBeChecked()
-    second.router.dispose()
+    expect(screen.getByRole('radio', { name: '是' })).not.toHaveFocus()
+    view.router.dispose()
+  })
+
+  it('returns from completion and restarts with focus at the active question', async () => {
+    const user = userEvent.setup()
+    renderEntry()
+    await user.click(screen.getByRole('radio', { name: '否' }))
+    await user.click(screen.getByRole('button', { name: '下一题' }))
+    await user.type(screen.getByRole('textbox', { name: /调查地点/ }), '东城区')
+    await user.click(screen.getByRole('button', { name: '完成演示' }))
+
+    await user.click(screen.getByRole('button', { name: '返回上一题' }))
+    expect(screen.getByRole('textbox', { name: /调查地点/ })).toHaveValue('东城区')
+    expect(screen.getByRole('textbox', { name: /调查地点/ })).toHaveFocus()
+
+    await user.click(screen.getByRole('button', { name: '完成演示' }))
+    await user.click(screen.getByRole('button', { name: '重新开始' }))
+    expect(screen.getByRole('progressbar')).toHaveAttribute('aria-valuenow', '1')
+    expect(screen.getByRole('radio', { name: '是' })).not.toBeChecked()
+    expect(screen.getByRole('radio', { name: '是' })).toHaveFocus()
   })
 
   it('replaces only the entry placeholder at the Task 11 boundary', () => {

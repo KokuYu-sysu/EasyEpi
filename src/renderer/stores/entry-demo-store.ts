@@ -39,6 +39,7 @@ export const ENTRY_DEMO_QUESTIONS: readonly Readonly<EntryQuestion>[] = Object.f
 ])
 
 export interface EntryDemoState {
+  questions: readonly Readonly<EntryQuestion>[]
   index: number
   answers: Readonly<Record<string, string>>
   validationError: string | null
@@ -51,20 +52,44 @@ export interface EntryDemoState {
 
 export type EntryDemoStore = StoreApi<EntryDemoState>
 
-const initialState = {
+const initialSessionState = {
   index: 0,
   answers: Object.freeze({}) as Readonly<Record<string, string>>,
   validationError: null,
   completed: false
 }
 
+function immutableQuestions(
+  questions: readonly Readonly<EntryQuestion>[]
+): readonly Readonly<EntryQuestion>[] {
+  return Object.freeze(
+    questions.map((question) =>
+      question.type === 'radio'
+        ? Object.freeze({
+            ...question,
+            options: Object.freeze(
+              question.options.map((option) => Object.freeze({ ...option }))
+            )
+          })
+        : Object.freeze({ ...question })
+    )
+  )
+}
+
 export function createEntryDemoStore(
   questions: readonly Readonly<EntryQuestion>[] = ENTRY_DEMO_QUESTIONS
 ): EntryDemoStore {
+  const immutableDefinitions = immutableQuestions(questions)
   return createStore<EntryDemoState>()((set, get) => ({
-    ...initialState,
+    questions: immutableDefinitions,
+    ...initialSessionState,
     answer: (questionId, value) => {
-      if (!questions.some((question) => question.id === questionId)) return
+      const question = immutableDefinitions.find((candidate) => candidate.id === questionId)
+      if (!question) return
+      if (
+        question.type === 'radio' &&
+        !question.options.some((option) => option.value === value)
+      ) return
       set((state) => ({
         answers: Object.freeze({ ...state.answers, [questionId]: value }),
         validationError: null
@@ -72,13 +97,13 @@ export function createEntryDemoStore(
     },
     next: () => {
       const state = get()
-      const question = questions[state.index]
+      const question = immutableDefinitions[state.index]
       if (!question || state.completed) return false
       if (question.required && !state.answers[question.id]?.trim()) {
         set({ validationError: '此题为必答题，请完成后继续。' })
         return false
       }
-      if (state.index === questions.length - 1) {
+      if (state.index === immutableDefinitions.length - 1) {
         set({ completed: true, validationError: null })
       } else {
         set({ index: state.index + 1, validationError: null })
@@ -87,11 +112,13 @@ export function createEntryDemoStore(
     },
     previous: () => {
       set((state) => ({
-        index: state.completed ? Math.max(0, questions.length - 1) : Math.max(0, state.index - 1),
+        index: state.completed
+          ? Math.max(0, immutableDefinitions.length - 1)
+          : Math.max(0, state.index - 1),
         completed: false,
         validationError: null
       }))
     },
-    reset: () => set({ ...initialState })
+    reset: () => set({ ...initialSessionState })
   }))
 }

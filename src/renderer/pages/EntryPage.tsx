@@ -1,4 +1,4 @@
-import { useId, useState } from 'react'
+import { useId, useLayoutEffect, useRef, useState } from 'react'
 import { useStore } from 'zustand'
 
 import { useCurrentRouteHandle } from '@renderer/app/route-metadata'
@@ -6,7 +6,6 @@ import { MilestonePage } from '@renderer/components/common/MilestonePage'
 import { Button, EmptyState, Input, Progress, Radio } from '@renderer/components/ui'
 import {
   createEntryDemoStore,
-  ENTRY_DEMO_QUESTIONS,
   type EntryDemoStore
 } from '@renderer/stores/entry-demo-store'
 
@@ -16,6 +15,7 @@ export interface EntryPageProps {
 
 export function EntryPage({ store: injectedStore }: EntryPageProps) {
   const [store] = useState(() => injectedStore ?? createEntryDemoStore())
+  const questions = useStore(store, (state) => state.questions)
   const index = useStore(store, (state) => state.index)
   const answers = useStore(store, (state) => state.answers)
   const validationError = useStore(store, (state) => state.validationError)
@@ -23,10 +23,39 @@ export function EntryPage({ store: injectedStore }: EntryPageProps) {
   const handle = useCurrentRouteHandle()
   const generatedId = useId()
   const errorId = `${generatedId}-error`
+  const questionRegionRef = useRef<HTMLElement>(null)
+  const completionRef = useRef<HTMLElement>(null)
+  const shouldMoveFocusRef = useRef(false)
+
+  const question = questions[index]
+
+  useLayoutEffect(() => {
+    if (!shouldMoveFocusRef.current) return
+    shouldMoveFocusRef.current = false
+    if (completed) {
+      completionRef.current?.focus()
+      return
+    }
+    questionRegionRef.current
+      ?.querySelector<HTMLElement>('input:not(:disabled), [role="radio"]:not([disabled])')
+      ?.focus()
+  }, [completed, index])
+
+  const moveNext = () => {
+    shouldMoveFocusRef.current = store.getState().next()
+  }
+
+  const movePrevious = () => {
+    shouldMoveFocusRef.current = true
+    store.getState().previous()
+  }
+
+  const restart = () => {
+    shouldMoveFocusRef.current = true
+    store.getState().reset()
+  }
 
   if (handle === null) throw new Error('ENTRY_ROUTE_METADATA_MISSING')
-
-  const question = ENTRY_DEMO_QUESTIONS[index]
 
   return (
     <MilestonePage
@@ -36,28 +65,35 @@ export function EntryPage({ store: injectedStore }: EntryPageProps) {
     >
       {completed ? (
         <EmptyState
+          ref={completionRef}
+          role="status"
+          aria-live="polite"
+          aria-atomic="true"
+          tabIndex={-1}
+          className="focus:outline focus:outline-[3px] focus:outline-offset-[3px] focus:outline-[var(--color-border-focus)]"
           title="演示完成"
           description="本次答案仅存在于当前页面内存中，未提交、未保存，也未写入任何业务文件。"
           action={
             <div className="flex flex-wrap justify-center gap-[var(--space-3)]">
-              <Button variant="secondary" onClick={() => store.getState().previous()}>
+              <Button variant="secondary" onClick={movePrevious}>
                 返回上一题
               </Button>
-              <Button onClick={() => store.getState().reset()}>重新开始</Button>
+              <Button onClick={restart}>重新开始</Button>
             </div>
           }
         />
       ) : question ? (
         <section
+          ref={questionRegionRef}
           aria-labelledby={`${generatedId}-question`}
           className="mx-auto grid w-full max-w-3xl gap-[var(--space-5)] rounded-[var(--radius-3)] border border-[var(--color-border-default)] bg-[var(--color-surface-base)] p-[var(--space-5)] shadow-[var(--shadow-z1)]"
         >
           <Progress
             label="录入进度"
-            max={ENTRY_DEMO_QUESTIONS.length}
+            max={questions.length}
             value={index + 1}
-            valueLabel={`${index + 1} / ${ENTRY_DEMO_QUESTIONS.length}`}
-            valueText={`第 ${index + 1} 题，共 ${ENTRY_DEMO_QUESTIONS.length} 题`}
+            valueLabel={`${index + 1} / ${questions.length}`}
+            valueText={`第 ${index + 1} 题，共 ${questions.length} 题`}
           />
           <div className="grid gap-[var(--space-3)]">
             <h2 id={`${generatedId}-question`} className="m-0 text-[length:var(--font-size-xl)]">
@@ -68,7 +104,13 @@ export function EntryPage({ store: injectedStore }: EntryPageProps) {
               <div className="grid gap-[var(--space-2)]">
                 <Radio
                   label={question.title}
-                  options={[...question.options]}
+                  options={question.options.map((option) => ({
+                    ...option,
+                    itemProps: {
+                      className:
+                        'focus:outline focus:outline-[3px] focus:outline-offset-[2px] focus:outline-[var(--color-border-focus)]'
+                    }
+                  }))}
                   value={answers[question.id] ?? ''}
                   onValueChange={(value) => store.getState().answer(question.id, value)}
                   aria-required={question.required}
@@ -88,6 +130,7 @@ export function EntryPage({ store: injectedStore }: EntryPageProps) {
             ) : (
               <Input
                 label={question.title}
+                className="focus:outline focus:outline-[3px] focus:outline-offset-[2px] focus:outline-[var(--color-border-focus)]"
                 required={question.required}
                 hint={question.hint}
                 value={answers[question.id] ?? ''}
@@ -103,12 +146,12 @@ export function EntryPage({ store: injectedStore }: EntryPageProps) {
             <Button
               variant="secondary"
               disabled={index === 0}
-              onClick={() => store.getState().previous()}
+              onClick={movePrevious}
             >
               上一题
             </Button>
-            <Button onClick={() => store.getState().next()}>
-              {index === ENTRY_DEMO_QUESTIONS.length - 1 ? '完成演示' : '下一题'}
+            <Button onClick={moveNext}>
+              {index === questions.length - 1 ? '完成演示' : '下一题'}
             </Button>
           </div>
         </section>
