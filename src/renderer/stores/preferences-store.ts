@@ -63,6 +63,7 @@ export type PreferencesStore = StoreApi<PreferencesState>
 
 interface PreferencesStoreLifecycle {
   owners: number
+  finalized: boolean
   activate(): void
 }
 
@@ -182,13 +183,16 @@ export function createPreferencesStore({
     }
 
     if (saveCommitVersion !== loadSaveCommitVersion) {
+      const currentNotice = store.getState().notice
       store.setState({
         status: 'ready',
-        notice: result.ok
-          ? result.warning === undefined
-            ? null
-            : notice('warning', result.warning)
-          : notice('warning', result.code)
+        notice:
+          currentNotice ??
+          (result.ok
+            ? result.warning === undefined
+              ? null
+              : notice('warning', result.warning)
+            : notice('warning', result.code))
       })
       return
     }
@@ -267,8 +271,10 @@ export function createPreferencesStore({
 
   preferencesStoreLifecycles.set(store, {
     owners: 0,
+    finalized: false,
     activate: () => {
-      if (destroyed) {
+      const lifecycle = preferencesStoreLifecycles.get(store)
+      if (destroyed && lifecycle?.finalized === false) {
         destroyed = false
         apply(store.getState().desired)
       }
@@ -324,6 +330,13 @@ export function PreferencesProvider({
         }
       }
       store.getState().destroy()
+      if (lifecycle !== undefined) {
+        queueMicrotask(() => {
+          if (lifecycle.owners === 0) {
+            lifecycle.finalized = true
+          }
+        })
+      }
     }
   }, [store])
 

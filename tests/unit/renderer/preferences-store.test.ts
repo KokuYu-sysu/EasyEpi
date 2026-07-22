@@ -296,6 +296,25 @@ describe('preferences save pump', () => {
     })
     expect(saves).toHaveLength(1)
   })
+
+  it('does not let a stale load erase a newer save failure notice', async () => {
+    const { gets, saves, store } = setup()
+
+    store.getState().setPreferences({ theme: 'dark' })
+    store.getState().setPreferences({ largeText: true })
+    const loading = store.getState().load()
+    saves[0]!.deferred.resolve({ ok: true, preferences: preferences({ theme: 'dark' }) })
+    await flush()
+    saves[1]!.deferred.resolve({ ok: false, code: 'PREFERENCES_SAVE_FAILED' })
+    await flush()
+    gets[0]!.resolve({ ok: true, preferences: preferences({ theme: 'light' }) })
+    await loading
+
+    expect(store.getState().notice).toEqual({
+      kind: 'error',
+      code: 'PREFERENCES_SAVE_FAILED'
+    })
+  })
 })
 
 describe('preferences appearance lifecycle', () => {
@@ -408,6 +427,19 @@ describe('preferences React bindings', () => {
     store.getState().setPreferences({ theme: 'dark' })
     expect(saves).toHaveLength(1)
 
+    second.unmount()
+  })
+
+  it('permanently finalizes an injected store after its final unmount settles', async () => {
+    const { appearance, store } = setup()
+    store.getState().setPreferences({ theme: 'system' })
+
+    const first = render(createElement(PreferencesProvider, { store }))
+    first.unmount()
+    await flush()
+    const second = render(createElement(PreferencesProvider, { store }))
+
+    expect(appearance.observeSystemTheme).toHaveBeenCalledTimes(1)
     second.unmount()
   })
 
