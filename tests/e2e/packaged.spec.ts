@@ -175,9 +175,9 @@ test('validates production behavior and preference persistence in a packaged Eas
     try {
       session = await launchPortable(paths)
       await assertEasyEpiWindow(session.window)
-      await assertProductionComponentRouteIsHidden(session.window)
       await enableLargeText(session.window)
       await assertStoredLargeText(paths.userDataDir)
+      await assertProductionComponentRouteIsHidden(session.window)
     } finally {
       await closePortable(session)
     }
@@ -198,9 +198,9 @@ test('validates production behavior and preference persistence in a packaged Eas
     electronApp = await launchInstalled(paths)
     const window = await electronApp.firstWindow()
     await assertEasyEpiWindow(window)
-    await assertProductionComponentRouteIsHidden(window)
     await enableLargeText(window)
     await assertStoredLargeText(paths.userDataDir)
+    await assertProductionComponentRouteIsHidden(window)
   } finally {
     await electronApp?.close()
   }
