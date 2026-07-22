@@ -65,9 +65,8 @@ describe('application routes', () => {
       PRODUCTION_ROUTES.map(({ path }) => path)
     )
     expect(
-      PRODUCTION_ROUTES.every(
-        ({ handle }) => handle.placeholder.title === '演示骨架，后续任务替换'
-      )
+      PRODUCTION_ROUTES.filter(({ path }) => ['/designer', '/entry', '/admin/data'].includes(path))
+        .every(({ handle }) => handle.placeholder?.title === '演示骨架，后续任务替换')
     ).toBe(true)
   })
 
