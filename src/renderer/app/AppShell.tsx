@@ -99,10 +99,10 @@ export function AppShell({ children }: PropsWithChildren) {
       >
         跳到主内容
       </a>
-      <div className="grid min-h-screen grid-cols-[auto_minmax(0,1fr)] max-[1050px]:grid-cols-1">
+      <div className="grid min-h-screen grid-cols-1 min-[1050px]:grid-cols-[auto_minmax(0,1fr)]">
         <aside
           data-collapsed={preferences.sidebarCollapsed}
-          className="w-64 border-r border-[var(--color-border-default)] bg-[var(--color-surface-base)] p-[var(--space-3)] data-[collapsed=true]:w-20 max-[1050px]:hidden"
+          className="hidden w-64 border-r border-[var(--color-border-default)] bg-[var(--color-surface-base)] p-[var(--space-3)] data-[collapsed=true]:w-20 min-[1050px]:block"
         >
           <Link className="mb-[var(--space-5)] flex items-center gap-[var(--space-2)] p-[var(--space-2)] text-[var(--color-text-primary)] no-underline" to="/">
             <span aria-hidden="true" className="grid size-10 place-items-center rounded-[var(--radius-2)] bg-[var(--color-brand)] font-bold text-[var(--color-on-brand)]">E</span>
@@ -128,7 +128,7 @@ export function AppShell({ children }: PropsWithChildren) {
 
         <div className="min-w-0">
           <header className="flex min-h-16 flex-wrap items-center gap-[var(--space-2)] border-b border-[var(--color-border-default)] bg-[var(--color-surface-base)] px-[var(--space-4)] py-[var(--space-2)]">
-            <div className="relative min-[1051px]:hidden">
+            <div className="relative min-[1050px]:hidden">
               <Button
                 variant="ghost"
                 aria-label={compactOpen ? '关闭导航菜单' : '打开导航菜单'}
@@ -146,7 +146,7 @@ export function AppShell({ children }: PropsWithChildren) {
                 </nav>
               ) : null}
             </div>
-            <Link className="mr-auto text-[var(--color-text-primary)] no-underline min-[1051px]:hidden" to="/"><strong>EasyEpi</strong></Link>
+            <Link className="mr-auto text-[var(--color-text-primary)] no-underline min-[1050px]:hidden" to="/"><strong>EasyEpi</strong></Link>
             <p className="m-0 mr-auto font-[var(--font-weight-semibold)]">{currentTitle}</p>
             <Button
               variant="ghost"

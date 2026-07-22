@@ -5,11 +5,11 @@ import type { HTMLAttributes, ReactNode } from 'react'
 export interface EmptyStateProps extends Omit<HTMLAttributes<HTMLElement>, 'title'> {
   action?: ReactNode
   description: ReactNode
-  headingLevel?: 2 | 3 | 4
+  headingLevel?: 1 | 2 | 3 | 4
   title: ReactNode
 }
 
-const headingTags = { 2: 'h2', 3: 'h3', 4: 'h4' } as const
+const headingTags = { 1: 'h1', 2: 'h2', 3: 'h3', 4: 'h4' } as const
 
 export const EmptyState = forwardRef<HTMLElement, EmptyStateProps>(function EmptyState(
   {

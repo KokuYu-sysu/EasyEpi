@@ -118,6 +118,17 @@ describe('AppShell', () => {
     expect(menu.querySelectorAll('a')).toHaveLength(9)
   })
 
+  it('uses one complementary breakpoint for desktop and compact navigation', () => {
+    renderShell()
+    expect(screen.getByRole('complementary')).toHaveClass(
+      'hidden',
+      'min-[1050px]:block'
+    )
+    expect(screen.getByRole('button', { name: '打开导航菜单' }).parentElement).toHaveClass(
+      'min-[1050px]:hidden'
+    )
+  })
+
   it('renders one and only one global toast viewport', () => {
     renderShell()
     expect(screen.getAllByLabelText('通知')).toHaveLength(1)

@@ -3,7 +3,8 @@ import { createMemoryRouter, MemoryRouter, RouterProvider } from 'react-router-d
 
 import {
   PRODUCTION_ROUTES,
-  createAppRouter
+  createAppRouter,
+  createAppRoutes
 } from '@renderer/app/routes'
 import { NotFoundPage } from '@renderer/pages/NotFoundPage'
 import { RouteErrorPage } from '@renderer/pages/RouteErrorPage'
@@ -38,7 +39,7 @@ function renderDataRouter(router: ReturnType<typeof createMemoryRouter> | Return
   )
 }
 
-function flattenPaths(routes: ReturnType<typeof createAppRouter>['routes']): string[] {
+function flattenPaths(routes: ReturnType<typeof createAppRoutes>): string[] {
   return routes.flatMap((route) => [
     route.path ?? '',
     ...flattenPaths(route.children ?? [])
@@ -59,7 +60,7 @@ describe('application routes', () => {
       '/derived'
     ])
 
-    const paths = flattenPaths(createAppRouter({ isDevelopment: false }).routes)
+    const paths = flattenPaths(createAppRoutes({ isDevelopment: false }))
     expect(paths.filter((path) => path.startsWith('/') && path !== '*')).toEqual(
       PRODUCTION_ROUTES.map(({ path }) => path)
     )
@@ -71,10 +72,10 @@ describe('application routes', () => {
   })
 
   it('gates the component gallery behind the development flag', () => {
-    expect(flattenPaths(createAppRouter({ isDevelopment: true }).routes)).toContain(
+    expect(flattenPaths(createAppRoutes({ isDevelopment: true }))).toContain(
       '/__components'
     )
-    expect(flattenPaths(createAppRouter({ isDevelopment: false }).routes)).not.toContain(
+    expect(flattenPaths(createAppRoutes({ isDevelopment: false }))).not.toContain(
       '/__components'
     )
   })
@@ -85,6 +86,7 @@ describe('application routes', () => {
     renderDataRouter(router)
 
     expect(screen.getByRole('heading', { name: '页面未找到' })).toBeVisible()
+    expect(screen.getByRole('heading', { level: 1, name: '页面未找到' })).toBeVisible()
     expect(screen.getByRole('link', { name: '返回欢迎页' })).toBeVisible()
     expect(screen.queryByRole('heading', { name: '设计系统组件展厅' })).not.toBeInTheDocument()
     router.dispose()
@@ -113,6 +115,7 @@ describe('application routes', () => {
     expect(screen.getByRole('heading', { name: '元数据页面标题' })).toBeVisible()
     expect(screen.getByRole('heading', { name: '演示骨架，后续任务替换' })).toBeVisible()
     expect(screen.getByText('来自路由元数据的占位说明')).toBeVisible()
+    router.dispose()
   })
 
   it('offers a welcome-page recovery action for unknown routes', () => {
@@ -125,13 +128,24 @@ describe('application routes', () => {
     expect(screen.getByRole('link', { name: '返回欢迎页' })).toHaveAttribute('href', '/')
   })
 
-  it('offers a welcome-page recovery action after a route error', () => {
-    render(
-      <MemoryRouter>
-        <RouteErrorPage error={new Error('boom')} />
-      </MemoryRouter>
+  it('renders the route error boundary for a thrown child route with recovery', async () => {
+    const router = createMemoryRouter(
+      [
+        {
+          path: '/broken',
+          loader: () => { throw new Error('boom') },
+          element: <p>不应显示</p>,
+          errorElement: <RouteErrorPage />
+        }
+      ],
+      { initialEntries: ['/broken'] }
     )
-    expect(screen.getByRole('heading', { name: '页面暂时无法显示' })).toBeVisible()
+    renderDataRouter(router)
+
+    expect(
+      await screen.findByRole('heading', { level: 1, name: '页面暂时无法显示' })
+    ).toBeVisible()
     expect(screen.getByRole('link', { name: '返回欢迎页' })).toHaveAttribute('href', '/')
+    router.dispose()
   })
 })
