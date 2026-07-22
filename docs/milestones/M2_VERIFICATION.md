@@ -58,7 +58,7 @@
 - axe WCAG 2.1 A/AA 自动检查包含欢迎页、问卷设计、单题录入、数据管理和设置对话框，source E2E 通过。
 - 1024×700 与 1366×768 的 normal/large 自动响应式检查通过。
 - 人工键盘、焦点、Tooltip、Modal、ConfirmDialog、Select、错误/状态文本和 reduced-motion 证据见 [M2 可访问性人工冒烟记录](M2_ACCESSIBILITY_SMOKE.md)。
-- 精确四组合的最终完整录入复核尚在收口；完成前不以本报告代替人工证据。
+- 1024×700 与 1366×768 的 normal/large 四组合均已完成人工完整录入复核；自动化证据不替代人工记录。
 
 ## 产物与完整性
 
