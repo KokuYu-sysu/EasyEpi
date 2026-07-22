@@ -2,7 +2,9 @@ import { createRef } from 'react'
 
 import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { describe, expect, it, vi } from 'vitest'
+import { describe, expect, expectTypeOf, it, vi } from 'vitest'
+
+import type { InputProps, TextareaProps } from '@renderer/components/ui'
 
 import {
   Badge,
@@ -146,12 +148,36 @@ describe.each([
     expect(screen.getByRole('alert')).toHaveTextContent('请输入有效年龄')
   })
 
+  it('emits exactly one mutually exclusive border color for an error', () => {
+    render(<Field label="年龄" error="请输入有效年龄" />)
+
+    const classes = screen.getByLabelText('年龄').className.split(' ')
+    expect(classes).toContain('border-[var(--color-border-danger)]')
+    expect(classes).not.toContain('border-[var(--color-border-default)]')
+  })
+
+  it('treats empty hint and error strings as absent', () => {
+    render(<Field label="年龄" hint="" error="" />)
+
+    const control = screen.getByLabelText('年龄')
+    expect(control).not.toHaveAttribute('aria-describedby')
+    expect(control).not.toHaveAttribute('aria-invalid')
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+  })
+
   it('composes a custom class without dropping token defaults', () => {
     render(<Field label="备注" className="wide-field" />)
     const control = screen.getByLabelText('备注')
     expect(control.className).toContain('wide-field')
     expect(control.className).toContain('border-[var(--color-border-default)]')
   })
+})
+
+it('keeps field feedback props constrained to supported text', () => {
+  expectTypeOf<InputProps['hint']>().toEqualTypeOf<string | undefined>()
+  expectTypeOf<InputProps['error']>().toEqualTypeOf<string | undefined>()
+  expectTypeOf<TextareaProps['hint']>().toEqualTypeOf<string | undefined>()
+  expectTypeOf<TextareaProps['error']>().toEqualTypeOf<string | undefined>()
 })
 
 describe('Badge', () => {
@@ -179,12 +205,26 @@ describe('Badge', () => {
 })
 
 describe('Progress', () => {
-  it('forwards root native props and its ref', () => {
+  it('makes its ref/native props the progressbar root while computed values stay authoritative', () => {
     const ref = createRef<HTMLDivElement>()
-    render(<Progress ref={ref} label="上传进度" value={2} data-job="upload" />)
+    render(
+      <Progress
+        ref={ref}
+        label="上传进度"
+        value={2}
+        data-job="upload"
+        className="upload-progress"
+        aria-describedby="upload-note"
+        aria-valuenow={999}
+      />
+    )
 
+    expect(ref.current).toHaveAttribute('role', 'progressbar')
     expect(ref.current).toHaveAttribute('data-job', 'upload')
+    expect(ref.current).toHaveAttribute('aria-describedby', 'upload-note')
+    expect(ref.current).toHaveAttribute('aria-valuenow', '2')
     expect(ref.current?.className).toContain('gap-[var(--space-2)]')
+    expect(ref.current?.className).toContain('upload-progress')
   })
 
   it('clamps values and exposes visible and programmatic progress information', () => {
@@ -196,18 +236,49 @@ describe('Progress', () => {
     expect(progress).toHaveAttribute('aria-valuenow', '80')
     expect(screen.getByText('导入进度')).toBeVisible()
     expect(screen.getByText('80 / 80')).toBeVisible()
-    expect(progress.firstElementChild).toHaveStyle({ width: '100%' })
+    expect(progress.lastElementChild?.firstElementChild).toHaveStyle({ width: '100%' })
   })
 
-  it('handles non-positive maxima without division by zero', () => {
-    render(<Progress label="准备数据" max={0} value={12} />)
+  it('provides matching custom visible and accessible value text', () => {
+    render(
+      <Progress
+        label="问卷处理进度"
+        max={10}
+        value={3}
+        valueLabel="已完成三份"
+        valueText="已完成三份，共十份"
+      />
+    )
 
-    const progress = screen.getByRole('progressbar', { name: '准备数据' })
-    expect(progress).toHaveAttribute('aria-valuemax', '1')
-    expect(progress).toHaveAttribute('aria-valuenow', '1')
-    expect(progress.firstElementChild).toHaveStyle({ width: '100%' })
-    expect(progress.firstElementChild?.getAttribute('style')).not.toContain('Infinity')
+    const progress = screen.getByRole('progressbar', { name: '问卷处理进度' })
+    expect(screen.getByText('已完成三份')).toBeVisible()
+    expect(progress).toHaveAttribute('aria-valuetext', '已完成三份，共十份')
   })
+
+  it.each([
+    { value: Number.NaN, max: 10, safeValue: 0, safeMax: 10, width: '0%' },
+    { value: Number.POSITIVE_INFINITY, max: 10, safeValue: 0, safeMax: 10, width: '0%' },
+    { value: Number.NEGATIVE_INFINITY, max: 10, safeValue: 0, safeMax: 10, width: '0%' },
+    { value: -4, max: 10, safeValue: 0, safeMax: 10, width: '0%' },
+    { value: 12, max: 0, safeValue: 1, safeMax: 1, width: '100%' },
+    { value: 3, max: Number.NaN, safeValue: 1, safeMax: 1, width: '100%' },
+    { value: 3, max: Number.POSITIVE_INFINITY, safeValue: 1, safeMax: 1, width: '100%' },
+    { value: 3, max: Number.NEGATIVE_INFINITY, safeValue: 1, safeMax: 1, width: '100%' },
+    { value: 3, max: -2, safeValue: 1, safeMax: 1, width: '100%' }
+  ])(
+    'normalizes value $value and max $max without invalid percentages',
+    ({ value, max, safeValue, safeMax, width }) => {
+      render(<Progress label="准备数据" max={max} value={value} />)
+
+      const progress = screen.getByRole('progressbar', { name: '准备数据' })
+      const fill = progress.lastElementChild?.firstElementChild
+      expect(progress).toHaveAttribute('aria-valuemin', '0')
+      expect(progress).toHaveAttribute('aria-valuemax', String(safeMax))
+      expect(progress).toHaveAttribute('aria-valuenow', String(safeValue))
+      expect(fill).toHaveStyle({ width })
+      expect(fill?.getAttribute('style')).not.toMatch(/Infinity|NaN/)
+    }
+  )
 })
 
 describe('EmptyState', () => {
@@ -240,6 +311,27 @@ describe('EmptyState', () => {
     expect(screen.getByRole('heading', { name: '暂无问卷' })).toBeInTheDocument()
     expect(screen.getByText('创建第一份问卷以开始收集数据。')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '创建问卷' })).toBeInTheDocument()
+  })
+
+  it('composes caller labelling and supports constrained heading levels', () => {
+    render(
+      <>
+        <span id="empty-context">问卷区域</span>
+        <EmptyState
+          aria-labelledby="empty-context"
+          headingLevel={3}
+          title="暂无问卷"
+          description="还没有问卷。"
+        />
+      </>
+    )
+
+    const heading = screen.getByRole('heading', { level: 3, name: '暂无问卷' })
+    const section = heading.closest('section')
+    expect(section?.getAttribute('aria-labelledby')?.split(' ')).toEqual([
+      'empty-context',
+      heading.id
+    ])
   })
 })
 
