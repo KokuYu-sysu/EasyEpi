@@ -173,8 +173,15 @@ test.describe('built Electron application', () => {
         await expect(page.getByRole('button', { name: /切换主题/ })).toBeVisible()
         await expect(page.getByRole('button', { name: /大字模式/ })).toBeVisible()
         await expect(page.getByRole('button', { name: '打开设置' })).toBeVisible()
-        await expect(page.getByRole('button', { name: '打开导航菜单' })).toBeVisible()
-        await page.getByRole('button', { name: '打开导航菜单' }).click()
+        const compactMenuTrigger = page.getByRole('button', { name: '打开导航菜单' })
+        await expect(compactMenuTrigger).toBeVisible()
+        await page.locator('body').focus()
+        await pressTabUntil(page, '打开导航菜单')
+        await expect(compactMenuTrigger).toBeFocused()
+        await expect(page.getByRole('tooltip')).toHaveText(
+          '打开导航菜单，显示全部九个页面入口'
+        )
+        await page.keyboard.press('Enter')
         await expect(page.getByRole('navigation', { name: '紧凑导航' }).getByRole('link')).toHaveCount(9)
       } else {
         await expect(page.getByRole('navigation', { name: '主要导航' })).toBeVisible()

@@ -133,14 +133,16 @@ export function AppShell({ children }: PropsWithChildren) {
         <div className="min-w-0">
           <header className="flex min-h-16 flex-wrap items-center gap-[var(--space-2)] border-b border-[var(--color-border-default)] bg-[var(--color-surface-base)] px-[var(--space-4)] py-[var(--space-2)]">
             <div className="relative min-[1050px]:hidden">
-              <Button
-                variant="ghost"
-                aria-label={compactOpen ? '关闭导航菜单' : '打开导航菜单'}
-                aria-expanded={compactOpen}
-                onClick={() => setCompactOpen((open) => !open)}
-              >
-                <Menu aria-hidden="true" />
-              </Button>
+              <Tooltip content="打开导航菜单，显示全部九个页面入口">
+                <Button
+                  variant="ghost"
+                  aria-label={compactOpen ? '关闭导航菜单' : '打开导航菜单'}
+                  aria-expanded={compactOpen}
+                  onClick={() => setCompactOpen((open) => !open)}
+                >
+                  <Menu aria-hidden="true" />
+                </Button>
+              </Tooltip>
               {compactOpen ? (
                 <nav
                   aria-label="紧凑导航"

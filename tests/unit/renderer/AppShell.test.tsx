@@ -119,6 +119,17 @@ describe('AppShell', () => {
     expect(menu.querySelectorAll('a')).toHaveLength(9)
   })
 
+  it('shows supplemental compact-navigation help on keyboard focus', async () => {
+    renderShell()
+    const trigger = screen.getByRole('button', { name: '打开导航菜单' })
+
+    trigger.focus()
+
+    expect(await screen.findByRole('tooltip')).toHaveTextContent(
+      '打开导航菜单，显示全部九个页面入口'
+    )
+  })
+
   it('uses one complementary breakpoint for desktop and compact navigation', () => {
     renderShell()
     expect(screen.getByRole('complementary')).toHaveClass(
