@@ -1,7 +1,7 @@
 # M2 可访问性人工冒烟记录
 
 - 日期：2026-07-22
-- 被测提交：Task 13 提交前工作树（基于 `808aed5`；提交后回填精确哈希）
+- 被测提交：`fb02565`（本次后续提交仅回填该哈希，不改变被测程序）
 - 测试者：Codex computer-use assisted manual observation
 - 应用：本工作树 `out/main/index.js` 启动的 source-built EasyEpi Electron 应用
 - 说明：本记录中的人工项必须来自 Windows 窗口内的实际观察，不以 Playwright 或 axe 结果代替。
@@ -40,8 +40,8 @@
 
 | 缺陷 | 修复引用 | 复测 |
 | --- | --- | --- |
-| 运行中切换 `prefers-reduced-motion` 时根节点 `data-motion` 未更新 | Task 13 待提交工作树 | 自动化 PASS；实际 Electron CDP 复测 PASS |
-| Skip link 的 `#main-content` 与 HashRouter 路由 hash 冲突，激活后进入 NotFound | Task 13 待提交工作树 | 自动化回归 PASS；1280×800 人工复测 PASS |
+| 运行中切换 `prefers-reduced-motion` 时根节点 `data-motion` 未更新 | `fb02565` | 自动化 PASS；实际 Electron CDP 复测 PASS |
+| Skip link 的 `#main-content` 与 HashRouter 路由 hash 冲突，激活后进入 NotFound | `fb02565` | 自动化回归 PASS；1280×800 人工复测 PASS |
 
 Computer Use 完成了默认 1280×800 窗口的完整业务 SendInput 观察，以及精确四视口组合的布局、裁切、导航和代表性焦点检查。Radio 的真实行为为方向键移动焦点、Space 提交选择，符合既定键盘操作流程，因此未修改 Radio。Tooltip 通过键盘聚焦侧栏收起按钮观察；reduced-motion 通过实际 Electron 窗口 CDP 媒体模拟和根属性轮询观察。
 
