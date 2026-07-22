@@ -1,59 +1,24 @@
-import { useEffect, useState } from 'react'
+import { RouterProvider, type RouterProviderProps } from 'react-router-dom'
 
-import type { SystemDesktopApi } from '@shared/desktop-api'
-
-type ConnectionState = 'connecting' | 'connected' | 'failed'
+import { AppBootstrap } from '@renderer/app/AppBootstrap'
+import { createAppRouter } from '@renderer/app/routes'
+import type { PreferencesAppearance } from '@renderer/stores/preferences-store'
+import type { DesktopApi } from '@shared/desktop-api'
 
 export interface AppProps {
-  api?: SystemDesktopApi
+  api?: DesktopApi
+  appearance?: PreferencesAppearance
+  router?: RouterProviderProps['router']
 }
 
-export function App({ api = window.easyEpi }: AppProps) {
-  const [connectionState, setConnectionState] = useState<ConnectionState>('connecting')
-
-  useEffect(() => {
-    let active = true
-
-    api.system
-      .ping({ nonce: 'renderer-startup' })
-      .then(() => {
-        if (active) {
-          setConnectionState('connected')
-        }
-      })
-      .catch(() => {
-        if (active) {
-          setConnectionState('failed')
-        }
-      })
-
-    return () => {
-      active = false
-    }
-  }, [api])
-
+export function App({
+  api = window.easyEpi,
+  appearance,
+  router = createAppRouter({ isDevelopment: import.meta.env.DEV })
+}: AppProps) {
   return (
-    <main className="app-shell">
-      <section className="welcome-card" aria-labelledby="product-name">
-        <span className="product-mark" aria-hidden="true">
-          E
-        </span>
-        <div>
-          <p className="eyebrow">现场调查与问卷信息收集</p>
-          <h1 id="product-name">EasyEpi</h1>
-          {connectionState === 'connecting' && <p role="status">正在连接桌面运行环境…</p>}
-          {connectionState === 'connected' && (
-            <p className="status-connected" role="status">
-              桌面运行环境已连接
-            </p>
-          )}
-          {connectionState === 'failed' && (
-            <p className="status-failed" role="alert">
-              桌面运行环境连接失败
-            </p>
-          )}
-        </div>
-      </section>
-    </main>
+    <AppBootstrap api={api.preferences} appearance={appearance}>
+      <RouterProvider router={router} />
+    </AppBootstrap>
   )
 }

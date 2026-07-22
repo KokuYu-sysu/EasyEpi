@@ -1,44 +1,44 @@
 import { render, screen } from '@testing-library/react'
-import { describe, expect, it, vi } from 'vitest'
+import { createMemoryRouter } from 'react-router-dom'
+import { vi } from 'vitest'
 
-import type { SystemDesktopApi } from '@shared/desktop-api'
 import { App } from '@renderer/App'
+import { createAppRoutes } from '@renderer/app/routes'
+import type { DesktopApi } from '@shared/desktop-api'
+import { DEFAULT_PREFERENCES, type PreferencesV1 } from '@shared/preferences-contract'
 
-function createApi(ping: SystemDesktopApi['system']['ping']): SystemDesktopApi {
-  return { system: { ping } }
+const appearance = { apply: vi.fn(), observeSystemTheme: () => () => undefined }
+
+function createApi(): DesktopApi {
+  return {
+    system: { ping: vi.fn() },
+    preferences: {
+      get: vi.fn().mockResolvedValue({ ok: true, preferences: DEFAULT_PREFERENCES }),
+      update: vi.fn(async (preferences: PreferencesV1) => ({ ok: true as const, preferences }))
+    }
+  }
 }
 
 describe('App', () => {
-  it('shows the product heading while connecting', () => {
-    const pendingPing: SystemDesktopApi['system']['ping'] = () => new Promise(() => undefined)
-    const api = createApi(pendingPing)
+  it('boots preferences before rendering the router shell', async () => {
+    const api = createApi()
+    const router = createMemoryRouter(createAppRoutes({ isDevelopment: false }), {
+      initialEntries: ['/']
+    })
+    render(<App api={api} appearance={appearance} router={router} />)
 
-    render(<App api={api} />)
-
-    expect(screen.getByRole('heading', { name: 'EasyEpi' })).toBeInTheDocument()
-    expect(screen.getByText('正在连接桌面运行环境…')).toBeInTheDocument()
+    expect(screen.getByRole('status')).toHaveTextContent('正在加载界面设置')
+    expect((await screen.findAllByText('EasyEpi')).length).toBeGreaterThan(0)
+    expect(api.preferences.get).toHaveBeenCalledOnce()
   })
 
-  it('shows a connected status after a successful ping', async () => {
-    const api = createApi(
-      vi.fn().mockResolvedValue({
-        nonce: 'renderer-startup',
-        version: '0.1.0',
-        platform: 'win32'
-      })
-    )
+  it('owns one global toast viewport around routed content', async () => {
+    const router = createMemoryRouter(createAppRoutes({ isDevelopment: false }), {
+      initialEntries: ['/entry']
+    })
+    render(<App api={createApi()} appearance={appearance} router={router} />)
 
-    render(<App api={api} />)
-
-    expect(await screen.findByText('桌面运行环境已连接')).toBeInTheDocument()
-    expect(api.system.ping).toHaveBeenCalledWith({ nonce: 'renderer-startup' })
-  })
-
-  it('shows an accessible error when ping fails', async () => {
-    const api = createApi(vi.fn().mockRejectedValue(new Error('offline')))
-
-    render(<App api={api} />)
-
-    expect(await screen.findByRole('alert')).toHaveTextContent('桌面运行环境连接失败')
+    expect(await screen.findByRole('heading', { name: '单题录入' })).toBeVisible()
+    expect(screen.getAllByLabelText('通知')).toHaveLength(1)
   })
 })
