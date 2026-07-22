@@ -14,7 +14,7 @@ import {
   TableProperties,
   Upload
 } from 'lucide-react'
-import { useState, type PropsWithChildren, type ReactNode } from 'react'
+import { useRef, useState, type PropsWithChildren, type ReactNode } from 'react'
 import { Link, NavLink, Outlet } from 'react-router-dom'
 
 import { Button, Tooltip } from '@renderer/components/ui'
@@ -82,6 +82,7 @@ export function AppShell({ children }: PropsWithChildren) {
   const preferences = usePreferencesStore((state) => state.desired)
   const setPreferences = usePreferencesStore((state) => state.setPreferences)
   const [compactOpen, setCompactOpen] = useState(false)
+  const mainContentRef = useRef<HTMLElement>(null)
   const currentTitle = routeHandle?.title ?? 'EasyEpi'
   const nextTheme =
     preferences.theme === 'system'
@@ -95,7 +96,10 @@ export function AppShell({ children }: PropsWithChildren) {
       <a
         href="#main-content"
         className="fixed left-[var(--space-3)] top-[var(--space-3)] z-[var(--z-4)] -translate-y-24 rounded-[var(--radius-1)] bg-[var(--color-surface-raised)] p-[var(--space-3)] focus:translate-y-0"
-        onClick={() => document.getElementById('main-content')?.focus()}
+        onClick={(event) => {
+          event.preventDefault()
+          mainContentRef.current?.focus()
+        }}
       >
         跳到主内容
       </a>
@@ -167,7 +171,7 @@ export function AppShell({ children }: PropsWithChildren) {
             </Button>
             <SettingsDialog />
           </header>
-          <main id="main-content" tabIndex={-1} className="mx-auto w-full max-w-[1500px] p-[var(--space-5)] max-sm:p-[var(--space-3)]">
+          <main ref={mainContentRef} id="main-content" tabIndex={-1} className="mx-auto w-full max-w-[1500px] p-[var(--space-5)] max-sm:p-[var(--space-3)]">
             {children ?? <Outlet />}
           </main>
         </div>

@@ -104,6 +104,7 @@ describe('AppShell', () => {
     await user.click(screen.getByRole('button', { name: '打开设置' }))
     expect(screen.getByRole('dialog', { name: '界面设置' })).toBeVisible()
     await user.click(screen.getByRole('radio', { name: '深色' }))
+    expect(screen.getByRole('radio', { name: '深色' })).toBeChecked()
     await waitFor(() =>
       expect(update).toHaveBeenCalledWith(expect.objectContaining({ theme: 'dark' }))
     )

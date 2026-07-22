@@ -8,6 +8,7 @@ export interface Appearance {
 }
 
 const DARK_THEME_QUERY = '(prefers-color-scheme: dark)'
+const REDUCED_MOTION_QUERY = '(prefers-reduced-motion: reduce)'
 
 export function resolveTheme(theme: ThemePreference, systemDark: boolean): ResolvedTheme {
   return theme === 'system' ? (systemDark ? 'dark' : 'light') : theme
@@ -32,6 +33,17 @@ export function applyAppearance(
 
 export function observeSystemTheme(onChange: (systemDark: boolean) => void): () => void {
   const mediaQuery = window.matchMedia(DARK_THEME_QUERY)
+  const listener = (event: MediaQueryListEvent): void => onChange(event.matches)
+
+  mediaQuery.addEventListener('change', listener)
+
+  return () => mediaQuery.removeEventListener('change', listener)
+}
+
+export function observeReducedMotion(
+  onChange: (systemReducedMotion: boolean) => void
+): () => void {
+  const mediaQuery = window.matchMedia(REDUCED_MOTION_QUERY)
   const listener = (event: MediaQueryListEvent): void => onChange(event.matches)
 
   mediaQuery.addEventListener('change', listener)

@@ -12,6 +12,7 @@ import { useStore } from 'zustand'
 
 import {
   applyAppearance as applyDocumentAppearance,
+  observeReducedMotion,
   observeSystemTheme
 } from '@renderer/app/theme'
 import type { DesktopApi } from '@shared/desktop-api'
@@ -39,6 +40,7 @@ export interface PreferencesApi {
 export interface PreferencesAppearance {
   apply(preferences: PreferencesV1): void
   observeSystemTheme(onChange: () => void): () => void
+  observeReducedMotion?(onChange: () => void): () => void
 }
 
 export interface PreferencesState {
@@ -95,6 +97,7 @@ export function createPreferencesStore({
   let noticeVersion = 0
   let loadNoticeVersion = 0
   let stopObservingSystemTheme: (() => void) | null = null
+  let stopObservingReducedMotion: (() => void) | null = null
 
   const completeLoadNotice = (
     nextNotice: PreferencesNotice | null
@@ -110,13 +113,27 @@ export function createPreferencesStore({
   const stopObserving = (): void => {
     stopObservingSystemTheme?.()
     stopObservingSystemTheme = null
+    stopObservingReducedMotion?.()
+    stopObservingReducedMotion = null
   }
 
   const apply = (preferences: PreferencesV1): void => {
     appearance.apply(preferences)
 
+    if (
+      stopObservingReducedMotion === null &&
+      appearance.observeReducedMotion !== undefined
+    ) {
+      stopObservingReducedMotion = appearance.observeReducedMotion(() => {
+        if (!destroyed) {
+          appearance.apply(store.getState().desired)
+        }
+      })
+    }
+
     if (preferences.theme !== 'system') {
-      stopObserving()
+      stopObservingSystemTheme?.()
+      stopObservingSystemTheme = null
       return
     }
 
@@ -308,7 +325,8 @@ const defaultAppearance: PreferencesAppearance = {
     const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches
     applyDocumentAppearance(document.documentElement, preferences, reducedMotion)
   },
-  observeSystemTheme: (onChange) => observeSystemTheme(() => onChange())
+  observeSystemTheme: (onChange) => observeSystemTheme(() => onChange()),
+  observeReducedMotion: (onChange) => observeReducedMotion(() => onChange())
 }
 
 const PreferencesStoreContext = createContext<PreferencesStore | null>(null)

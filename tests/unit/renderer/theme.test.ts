@@ -1,7 +1,13 @@
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 
-import { applyAppearance, observeSystemTheme, resolveMotion, resolveTheme } from '@renderer/app/theme'
+import {
+  applyAppearance,
+  observeReducedMotion,
+  observeSystemTheme,
+  resolveMotion,
+  resolveTheme
+} from '@renderer/app/theme'
 
 const tokensCss = readFileSync(resolve(process.cwd(), 'src/renderer/styles/tokens.css'), 'utf8')
 
@@ -115,6 +121,28 @@ describe('theme runtime', () => {
 
     expect(matchMedia).toHaveBeenCalledWith('(prefers-color-scheme: dark)')
     expect(addEventListener).toHaveBeenCalledWith('change', expect.any(Function))
+    expect(onChange).toHaveBeenCalledWith(true)
+    expect(removeEventListener).toHaveBeenCalledWith('change', subscribedCallback)
+  })
+
+  it('observes reduced-motion changes and removes its listener during cleanup', () => {
+    const addEventListener = vi.fn()
+    const removeEventListener = vi.fn()
+    const mediaQuery = {
+      matches: false,
+      addEventListener,
+      removeEventListener
+    } as unknown as MediaQueryList
+    const matchMedia = vi.fn().mockReturnValue(mediaQuery)
+    vi.stubGlobal('matchMedia', matchMedia)
+    const onChange = vi.fn()
+
+    const cleanup = observeReducedMotion(onChange)
+    const subscribedCallback = addEventListener.mock.calls[0]?.[1]
+    subscribedCallback?.({ matches: true } as MediaQueryListEvent)
+    cleanup()
+
+    expect(matchMedia).toHaveBeenCalledWith('(prefers-reduced-motion: reduce)')
     expect(onChange).toHaveBeenCalledWith(true)
     expect(removeEventListener).toHaveBeenCalledWith('change', subscribedCallback)
   })
