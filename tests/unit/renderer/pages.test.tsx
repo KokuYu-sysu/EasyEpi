@@ -110,18 +110,15 @@ describe('standard milestone pages', () => {
     expect(screen.getByText(/不执行真实认证/)).toBeVisible()
   })
 
-  it('replaces only the six Task 9 placeholders with real pages', () => {
+  it('keeps the completed Task 9 and Task 10 pages off the remaining placeholders', () => {
     const childRoutes = createAppRoutes({ isDevelopment: false })[0]?.children ?? []
-    const realPaths = ['/', '/import', '/work-session', '/admin/login', '/admin/baseline', '/derived']
-    const placeholderPaths = ['/designer', '/entry', '/admin/data']
+    const realPaths = ['/', '/designer', '/import', '/work-session', '/admin/login', '/admin/baseline', '/derived']
+    const placeholderPaths = ['/entry', '/admin/data']
 
     for (const path of realPaths) {
-      const routeElement = childRoutes.find((route) => route.path === path)?.element
-      const placeholderElement = childRoutes.find((route) => route.path === '/designer')?.element
-      expect(isValidElement(routeElement) && isValidElement(placeholderElement)).toBe(true)
-      if (isValidElement(routeElement) && isValidElement(placeholderElement)) {
-        expect(routeElement.type).not.toBe(placeholderElement.type)
-      }
+      const route = childRoutes.find((candidate) => candidate.path === path)
+      expect(isValidElement(route?.element)).toBe(true)
+      expect(route?.handle).not.toHaveProperty('placeholder')
     }
     for (const path of placeholderPaths) {
       expect(childRoutes.find((route) => route.path === path)?.handle).toHaveProperty('placeholder')

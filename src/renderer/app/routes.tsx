@@ -6,6 +6,7 @@ import { ComponentGalleryPage } from '@renderer/pages/ComponentGalleryPage'
 import { AdminLoginPage } from '@renderer/pages/AdminLoginPage'
 import { BaselinePage } from '@renderer/pages/BaselinePage'
 import { DerivedPage } from '@renderer/pages/DerivedPage'
+import { DesignerPage } from '@renderer/pages/DesignerPage'
 import { ImportPage } from '@renderer/pages/ImportPage'
 import { NotFoundPage } from '@renderer/pages/NotFoundPage'
 import { RouteErrorPage } from '@renderer/pages/RouteErrorPage'
@@ -25,7 +26,7 @@ const placeholder = (description: string): NonNullable<AppRouteHandle['placehold
 
 export const PRODUCTION_ROUTES: ProductionRouteDefinition[] = [
   { path: '/', handle: { title: '欢迎页', description: '选择项目并开始现场调查。' } },
-  { path: '/designer', handle: { title: '问卷设计', description: '组织题目、规则与问卷结构。', placeholder: placeholder('此路由已接入统一应用框架；问卷设计交互将在后续任务中实现。') } },
+  { path: '/designer', handle: { title: '问卷设计', description: '组织题目、规则与问卷结构。' } },
   { path: '/import', handle: { title: 'EpiData 导入', description: '导入并核对 EpiData 问卷结构。' } },
   { path: '/entry', handle: { title: '单题录入', description: '以一题一屏方式完成现场录入。', placeholder: placeholder('此路由已接入统一应用框架；单题录入交互将在后续任务中实现。') } },
   { path: '/work-session', handle: { title: '工作循环', description: '查看调查工作的标准循环。' } },
@@ -37,6 +38,7 @@ export const PRODUCTION_ROUTES: ProductionRouteDefinition[] = [
 
 const taskNineElements: Record<string, React.ReactElement> = {
   '/': <WelcomePage />,
+  '/designer': <DesignerPage />,
   '/import': <ImportPage />,
   '/work-session': <WorkSessionPage />,
   '/admin/login': <AdminLoginPage />,
