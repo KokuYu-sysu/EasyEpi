@@ -1,0 +1,299 @@
+# EasyEpi M2 设计系统与交互骨架规格
+
+> 日期：2026-07-18  
+> 状态：已获用户设计批准，待独立规格评审  
+> 上位约束：`2026-07-18-easyepi-v1-architecture-design.md`、`M2_DECISIONS.md`
+
+## 1. 目标与边界
+
+M2 将 M1 的安全 Electron 空壳升级为可长期承载完整问卷业务的设计系统和可交互页面骨架。交付物包括统一 Token、浅色/深色/跟随系统主题、大字体模式、核心基础组件、应用框架、九类业务路由、四个重点页面的内存交互原型、应用偏好持久化以及 Windows 安装版和便携版。
+
+M2 不创建真实项目，不保存问卷或答卷，不实现管理员认证、业务加密、EpiData 解析、CSV 导出或数据库。所有演示内容必须标记为“演示”，仅存在渲染进程内存中，应用重启后重置。偏好文件只能包含界面设置，不得包含答案、问卷、密码、密钥或身份字段。
+
+M2 版本为 `0.2.0`，里程碑标签为 `v0.2.0-m2`。
+
+## 2. 设计原则
+
+- CSS 变量是设计 Token 的唯一事实来源，Tailwind 映射 Token，业务页面不得硬编码品牌色、阴影、圆角或层级。
+- 基础组件隐藏视觉和可访问性细节，业务页面只组合组件，不复制交互实现。
+- 原生 HTML 语义优先；复杂焦点、浮层和键盘行为使用 Radix UI 原语。
+- 1024×700 必须功能可用，1366×768 为最佳布局基线，宽屏允许提高内容密度。
+- 所有非必要动效遵循 `prefers-reduced-motion`。
+- 渲染进程不接触文件系统；偏好读写只能通过固定 IPC 白名单进入主进程。
+- 离线运行，不增加网络请求、遥测、远程字体或 CDN 资源。
+
+## 3. 渲染层结构
+
+渲染层按职责拆分：
+
+```text
+src/renderer/
+├── app/                 # 启动、Router、AppShell、路由元数据
+├── components/
+│   ├── ui/              # 无业务含义的基础组件
+│   └── common/          # 页面标题、演示横幅、设置弹窗等组合组件
+├── pages/               # 每个业务路由一个页面边界
+├── stores/              # 偏好状态与内存演示状态
+└── styles/              # Token、主题、全局样式和 Tailwind 入口
+```
+
+`AppBootstrap` 在主界面渲染前读取偏好、应用根节点属性并初始化 Router。读取期间显示无闪烁的应用级 Skeleton；偏好加载失败时使用安全默认值启动，并通过非阻塞 Toast 告知用户已恢复默认界面设置。
+
+Zustand 仅保存渲染进程界面状态和内存演示数据。主进程返回的持久化偏好是跨重启事实来源。
+
+## 4. 路由与页面骨架
+
+生产路由固定为：
+
+| 路径 | 页面 | M2 深度 |
+|---|---|---|
+| `/` | 欢迎页 / 项目选择 | 完整交互骨架 |
+| `/designer` | 问卷设计 | 完整交互骨架 |
+| `/import` | EpiData 导入 | 标准骨架 |
+| `/entry` | 单题录入 | 完整交互骨架 |
+| `/work-session` | 工作循环 | 标准骨架 |
+| `/admin/login` | 管理员验证 | 标准骨架 |
+| `/admin/data` | 数据管理 | 完整交互骨架 |
+| `/admin/baseline` | 基线表 | 标准骨架 |
+| `/derived` | 衍生变量 | 标准骨架 |
+
+开发环境额外注册 `/__components` 组件展示页。该路由必须通过构建期 `import.meta.env.DEV` 条件加入路由表，生产构建不得包含可导航入口，E2E 必须验证生产访问该路径进入 NotFound，而不是组件展示页。
+
+未知路由显示应用内 NotFound 页面，提供返回欢迎页按钮，不显示空白窗口。
+
+### 4.1 欢迎页
+
+欢迎页展示产品定位、主操作、最近项目演示卡片和离线状态。新建/打开项目按钮在 M2 打开说明弹窗，明确真实项目能力将在 M3 实现；演示卡片可导航到设计页。主题、大字体和设置入口位于统一顶栏。
+
+### 4.2 问卷设计页
+
+使用内存中的合成题目展示题目列表、选中态、类型 Badge、Key 标记、条件标记、空状态、添加/编辑 Modal 和删除 ConfirmDialog。操作只改变当前内存演示副本，并持续显示“演示模式，未保存”横幅。保存和预览按钮提供明确的后续里程碑 Toast，不制造保存成功假象。
+
+### 4.3 单题录入页
+
+展示一问一屏布局、进度、上一题/下一题、单选输入、验证错误和键盘提示。答案只保存在内存演示状态中；离开页面或刷新时允许丢失。最后一步显示演示完成状态，不写入业务文件。
+
+### 4.4 数据管理页
+
+展示非敏感合成记录、筛选输入、分页状态、选择态和管理标签页布局。编辑、删除和导出操作只演示 Modal、ConfirmDialog、Toast 与加载状态，不声称真实数据已更改或导出。
+
+### 4.5 标准骨架页
+
+导入、工作循环、管理员验证、基线表和衍生变量页面复用 `PageHeader`、`DemoBanner`、EmptyState 和导航结构，展示对应后续里程碑、预期能力和返回路径。管理员验证页不得提供可被误认为真实认证的固定密码。
+
+## 5. 设计 Token 与主题
+
+根节点使用以下属性：
+
+- `data-theme="light|dark"`：实际渲染主题。
+- `data-font-scale="normal|large"`：字体尺度。
+- `data-motion="full|reduced"`：由媒体查询和运行环境解析的动效能力。
+
+持久化主题值是 `light | dark | system`。当值为 `system` 时，渲染器通过 `matchMedia('(prefers-color-scheme: dark)')` 解析实际主题并监听系统变化；监听器在组件卸载时清理。
+
+Token 至少覆盖：
+
+- 品牌色、强调色、成功/警告/危险/信息语义色；
+- 页面、卡片、浮层、输入和反色表面；
+- 主文字、次文字、弱文字和反色文字；
+- 默认、悬停、焦点、禁用和危险边框；
+- 4/8px 间距尺度、8/12/16/24px 圆角；
+- 字号、行高、字重；
+- Z1-Z4 层级和多级阴影；
+- 快速/标准/慢速动效时长和缓动。
+
+大字体模式通过 Token 提高正文、标签、页面标题和录入题面字号，不对整个页面使用 `transform: scale()`，避免裁剪和模糊。布局必须允许文字换行。
+
+## 6. 基础组件契约
+
+M2 实现以下组件：Button、Input、Textarea、Select、Checkbox、Radio、Modal、ConfirmDialog、Toast、Progress、EmptyState、Skeleton、Badge、Tooltip。
+
+共同要求：
+
+- 支持 `className` 组合但保持默认 Token；
+- 原生 `disabled`、`aria-*`、`id` 和表单属性可透传；
+- 可见焦点不能仅依赖颜色变化；
+- 错误状态通过文字和 `aria-describedby` 关联；
+- 加载态禁用重复提交并保留可访问名称；
+- Tooltip 不能承载完成操作所必需的唯一信息；
+- Modal 打开后焦点进入浮层，关闭后返回触发器，Escape 可关闭非强制流程；
+- ConfirmDialog 危险操作默认焦点不得落在确认按钮；
+- Toast 使用 `aria-live`，同类消息可排队，默认 4 秒关闭，用户聚焦或悬停时暂停计时；
+- Progress 同时提供可见文本和数值语义；
+- Skeleton 对辅助技术隐藏，并由相邻状态文本说明加载中。
+
+开发组件展示页覆盖所有视觉变体、禁用/加载/错误状态、长中文文本和浅色/深色/大字体组合。
+
+## 7. 应用框架与导航
+
+`AppShell` 提供：
+
+- 产品标识与当前页面标题；
+- 桌面宽度下的侧栏导航；
+- 1024px 附近可收起侧栏；
+- 主题、字体和设置入口；
+- 主内容跳转链接（skip link）；
+- 全局 Toast viewport；
+- 路由级错误边界。
+
+导航项根据页面所属阶段显示，不伪造权限状态。管理页面使用锁形视觉标识，但 M2 明确标记为演示骨架。键盘 Tab 顺序与视觉顺序一致。
+
+## 8. 偏好模型与主进程存储
+
+偏好文件位于 `app.getPath('userData')/preferences.json`，schema v1：
+
+```ts
+interface PreferencesV1 {
+  schemaVersion: 1
+  theme: 'light' | 'dark' | 'system'
+  largeText: boolean
+  sidebarCollapsed: boolean
+}
+```
+
+默认值：`theme: 'system'`、`largeText: false`、`sidebarCollapsed: false`。
+
+解析规则：
+
+- 只接受普通对象和已知 schema 版本；
+- 每个字段必须严格匹配类型和枚举；
+- 未知字段忽略，不回传渲染器；
+- 文件缺失返回默认值；
+- JSON 损坏、版本未知或字段非法时返回默认值和稳定错误码 `PREFERENCES_RECOVERED`；
+- 错误详情不得包含用户目录的完整路径。
+
+保存协议：
+
+1. 在同一目录创建唯一临时文件；
+2. 写入规范化 JSON 并同步文件；
+3. 重新读取并使用同一解析器验证；
+4. 在同一卷内原子替换 `preferences.json`；
+5. 原子替换成功即视为提交完成并返回成功；
+6. 提交后以 best-effort 方式清理带 EasyEpi 固定前缀的陈旧临时文件，清理失败只记录非敏感诊断，不把已提交的保存改判为失败。
+
+步骤 1-4 任一步失败都必须保留旧 `preferences.json` 并返回 `PREFERENCES_SAVE_FAILED`。应用下次启动时可再次 best-effort 清理可安全识别的陈旧临时文件；不得使用宽泛 glob 删除其他文件。
+
+同一进程内通过串行写队列避免快速切换产生乱序覆盖。应用退出前不阻塞等待无限重试；调用方获得失败响应并回滚乐观状态。
+
+## 9. IPC 与安全边界
+
+新增固定通道：
+
+- `preferences:get`
+- `preferences:update`
+
+共享契约定义请求、响应、运行时解析器和稳定错误码。`preferences:update` 只接受完整、规范化的三个用户偏好字段，不接受任意路径、任意键或部分对象注入。`sidebarCollapsed` 可包含在完整偏好中。
+
+wire contract 固定为：
+
+```ts
+type PreferencesWarning = 'PREFERENCES_RECOVERED'
+
+type PreferencesErrorCode =
+  | 'INVALID_PREFERENCES_REQUEST'
+  | 'PREFERENCES_READ_FAILED'
+  | 'PREFERENCES_SAVE_FAILED'
+
+type PreferencesResult =
+  | {
+      ok: true
+      preferences: PreferencesV1
+      warning?: PreferencesWarning
+    }
+  | {
+      ok: false
+      code: PreferencesErrorCode
+    }
+```
+
+`preferences:get` 在文件缺失时返回默认偏好且无 warning；内容损坏、schema 未知或字段非法时返回默认偏好和 `PREFERENCES_RECOVERED`；无法读取且不能判定为文件缺失时返回 `PREFERENCES_READ_FAILED`。`preferences:update` 成功时回传主进程重新读取并规范化后的偏好；请求非法时返回 `INVALID_PREFERENCES_REQUEST`；步骤 1-4 保存失败时返回 `PREFERENCES_SAVE_FAILED`。失败分支不携带偏好，渲染器只能使用自己持有的最后确认状态，不能猜测主进程状态。
+
+请求和响应都必须在共享层提供运行时解析器。preload 在发送前解析请求、收到后解析响应；主进程在 handler 入口再次解析请求，不能只依赖 TypeScript 类型。
+
+主进程复用 M1 的 sender URL 信任检查。preload 只暴露：
+
+```ts
+preferences: {
+  get(): Promise<PreferencesResult>
+  update(preferences: Preferences): Promise<PreferencesResult>
+}
+```
+
+不得暴露 `ipcRenderer`、文件路径或通用 invoke。偏好存储模块接受目录路径依赖注入，测试不写真实 `userData`。
+
+## 10. 状态更新与错误处理
+
+偏好 Store 启动时处于 `loading`，成功后进入 `ready`；恢复默认值时仍进入 `ready` 并携带一次性警告。Store 明确维护三个值：
+
+- `confirmed`：最近一次由主进程成功读取或保存并回传的完整偏好；
+- `desired`：包含用户最新选择、当前实际渲染的完整偏好；
+- `inFlight`：当前发送给主进程的不可变完整快照，空值表示没有保存请求。
+
+确定性保存状态机：
+
+1. 用户切换设置时把变更合并进 `desired`，立即用 `desired` 更新 UI；
+2. 若没有 `inFlight`，复制当前 `desired` 为 `inFlight` 并发送；
+3. 请求期间的新切换只更新 `desired`，不修改当前 `inFlight`；
+4. 保存成功时以主进程响应更新 `confirmed`，清空 `inFlight`；若 `desired` 与新 `confirmed` 不同，立即复制最新 `desired` 开始下一次保存，中间状态可以合并跳过；
+5. 保存失败时保持 `confirmed` 不变并清空 `inFlight`，显示错误 Toast；若失败快照之后已有更新（`desired` 与失败的 `inFlight` 不同），继续尝试保存最新 `desired`，期间不回滚可见 UI；
+6. 若保存失败且没有更新的 `desired`，把 `desired` 回滚为 `confirmed` 并重新应用已确认主题；
+7. 每个后续请求都以发起瞬间的完整 `desired` 为快照，不基于失败请求的快照做增量合并。
+
+该规则保证 A 保存期间发生 B 时：A 失败不会短暂抹掉 B；系统随后尝试完整保存 B。只有最新可见状态本身失败且没有更新值等待时，界面才回滚到最后确认状态。
+
+页面级异常由 Router 错误边界捕获，显示可恢复错误页和返回欢迎页操作。组件错误不得导致 Electron 主进程退出。
+
+## 11. 依赖策略
+
+M2 引入 Tailwind CSS、Radix UI 所需原语包、Lucide React、React Router 和 Zustand。只安装本规格实际使用的 Radix 包，不引入完整聚合组件库。所有版本必须：
+
+- 与 React 18、Vite 7、electron-vite 5 和 Node 24 peer 范围兼容；
+- 使用精确版本并写入 `pnpm-lock.yaml`；
+- 通过现有供应链策略和干净锁文件安装；
+- 不加载远程资产。
+
+不引入 Storybook、动画框架、CSS-in-JS、表格框架或业务数据库；这些不是 M2 骨架的必要条件。
+
+## 12. 测试策略
+
+### 12.1 单元与组件测试
+
+- Token 和主题解析：浅色、深色、系统变化、大字体、减少动效；
+- 偏好解析：缺失、合法、损坏、未知 schema、非法字段和未知字段；
+- 偏好存储：原子保存、重新读取验证、旧文件保留、临时文件清理、并发串行化；
+- IPC：可信 sender、非法请求、稳定错误响应、handler 注销；
+- 组件：键盘、焦点返回、错误描述、禁用/加载、Toast 计时暂停；
+- Router：九类生产路由、NotFound、开发组件页条件注册；
+- 页面：演示横幅、内存交互、不得显示虚假保存成功。
+
+### 12.2 E2E
+
+- 欢迎页进入设计、录入和管理骨架；
+- 浅色/深色/系统主题切换；
+- 大字体切换；
+- 重启应用后偏好恢复；
+- 1024×700 无阻断性横向溢出；
+- 1366×768 完整应用框架可见；
+- 生产构建访问 `/__components` 不展示组件页；
+- renderer 中仍无 Node `require`，无 Electron 安全警告。
+
+打包态至少对便携版和安装版验证启动、偏好跨重启恢复、恶意 `ELECTRON_RENDERER_URL` 被忽略和卸载成功。
+
+## 13. 验收标准
+
+M2 完成必须同时满足：
+
+1. 九类生产路由可导航，四个重点页面具有明确的内存交互骨架；
+2. 十四类核心组件通过组件测试和开发展示页验收；
+3. 浅色、深色、系统主题和大字体可切换并跨重启恢复；
+4. 偏好文件严格校验、串行原子保存，损坏文件不阻止启动；
+5. 1024×700 功能可用，1366×768 达到 UI 规范布局；
+6. WCAG 2.1 AA 关键要求、键盘焦点和减少动效通过自动化检查及人工冒烟；
+7. `lint`、`typecheck`、覆盖率、生产构建、源码态 E2E 全部通过；
+8. 生成 `EasyEpi-0.2.0-setup-x64.exe` 与 `EasyEpi-0.2.0-portable-x64.exe`；
+9. 两种 EXE 通过打包态测试，并记录大小、SHA-256 和 `NotSigned` 限制；
+10. M2 验证证据提交后创建本地注释标签 `v0.2.0-m2`。
+
+## 14. 后续里程碑接口
+
+M3 在本规格基础上替换演示问卷状态为真实领域模型和加密项目会话，不改变基础组件公开契约。M4 复用录入页骨架，M5 复用管理页骨架。若后续业务需要新增组件，应优先扩展 Token 和基础组件，而不是在页面局部复制样式。

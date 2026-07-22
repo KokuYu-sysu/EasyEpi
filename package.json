@@ -1,7 +1,7 @@
 {
   "name": "easyepi",
   "productName": "EasyEpi",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Offline questionnaire design and field data collection for epidemiological research",
   "author": "KokuYu-EasyEpi Team",
   "license": "UNLICENSED",
@@ -31,14 +31,28 @@
     "build:win": "pnpm build && electron-builder --win nsis portable --x64"
   },
   "dependencies": {
+    "@radix-ui/react-alert-dialog": "1.1.19",
+    "@radix-ui/react-checkbox": "1.3.7",
+    "@radix-ui/react-dialog": "1.1.19",
+    "@radix-ui/react-radio-group": "1.4.3",
+    "@radix-ui/react-select": "2.3.3",
+    "@radix-ui/react-toast": "1.2.19",
+    "@radix-ui/react-tooltip": "1.2.12",
+    "lucide-react": "1.24.0",
     "react": "18.3.1",
-    "react-dom": "18.3.1"
+    "react-dom": "18.3.1",
+    "react-router-dom": "7.18.0",
+    "tailwindcss": "4.3.2",
+    "zustand": "5.0.14"
   },
   "devDependencies": {
+    "@axe-core/playwright": "4.12.1",
     "@eslint/js": "10.0.1",
     "@playwright/test": "1.61.1",
+    "@tailwindcss/vite": "4.3.2",
     "@testing-library/jest-dom": "6.9.1",
     "@testing-library/react": "16.3.2",
+    "@testing-library/user-event": "14.6.1",
     "@types/node": "24.13.3",
     "@types/react": "18.3.31",
     "@types/react-dom": "18.3.7",

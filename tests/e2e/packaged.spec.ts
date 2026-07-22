@@ -1,16 +1,80 @@
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process'
 import { once } from 'node:events'
-import { access } from 'node:fs/promises'
+import { access, mkdir, readFile } from 'node:fs/promises'
 import { createServer } from 'node:net'
-import { basename, dirname, isAbsolute } from 'node:path'
+import { basename, dirname, isAbsolute, join } from 'node:path'
 
-import { chromium, expect, test, _electron as electron, type Page } from '@playwright/test'
+import {
+  chromium,
+  expect,
+  test,
+  _electron as electron,
+  type Browser,
+  type ElectronApplication,
+  type Page
+} from '@playwright/test'
 
 const hostileDevelopmentUrl = 'https://attacker.invalid/easyepi'
 
+interface PackagedPaths {
+  executablePath: string
+  userDataDir: string
+}
+
+interface PortableSession {
+  browser: Browser
+  child: ChildProcess
+  window: Page
+}
+
 async function assertEasyEpiWindow(window: Page): Promise<void> {
   await expect(window).toHaveTitle('EasyEpi')
-  await expect(window.getByText('桌面运行环境已连接')).toBeVisible()
+  await expect(window.getByRole('heading', { level: 1 })).toBeVisible()
+  await expect(window.locator('main')).toBeVisible()
+  expect(new URL(window.url()).protocol).toBe('file:')
+}
+
+async function assertProductionComponentRouteIsHidden(window: Page): Promise<void> {
+  await window.evaluate(() => {
+    globalThis.location.hash = '#/__components'
+  })
+  await expect(window.getByRole('heading', { level: 1, name: '页面未找到' })).toBeVisible()
+  await expect(window.getByText('设计系统组件展厅')).toHaveCount(0)
+}
+
+async function enableLargeText(window: Page): Promise<void> {
+  const toggle = window.locator('button[aria-label*="大字模式"]')
+  await expect(toggle).toBeVisible()
+  if ((await window.locator('html').getAttribute('data-font-scale')) !== 'large') {
+    await toggle.click()
+  }
+  await expect(window.locator('html')).toHaveAttribute('data-font-scale', 'large')
+}
+
+async function assertStoredLargeText(userDataDir: string): Promise<void> {
+  await expect
+    .poll(async () => JSON.parse(await readFile(join(userDataDir, 'preferences.json'), 'utf8')))
+    .toMatchObject({ schemaVersion: 1, largeText: true })
+}
+
+function readPackagedPaths(): PackagedPaths {
+  const executablePath = process.env['EASYEPI_EXECUTABLE']
+  const userDataDir = process.env['EASYEPI_USER_DATA_DIR']
+
+  if (executablePath === undefined || executablePath.length === 0) {
+    throw new Error('EASYEPI_EXECUTABLE must be set to an absolute packaged executable path')
+  }
+  if (!isAbsolute(executablePath)) {
+    throw new Error('EASYEPI_EXECUTABLE must be an absolute path')
+  }
+  if (userDataDir === undefined || userDataDir.length === 0) {
+    throw new Error('EASYEPI_USER_DATA_DIR must be set to an absolute isolated directory path')
+  }
+  if (!isAbsolute(userDataDir)) {
+    throw new Error('EASYEPI_USER_DATA_DIR must be an absolute path')
+  }
+
+  return { executablePath, userDataDir }
 }
 
 async function reserveLoopbackPort(): Promise<number> {
@@ -28,7 +92,7 @@ async function reserveLoopbackPort(): Promise<number> {
   return address.port
 }
 
-async function waitForPortableBrowser(endpoint: string) {
+async function waitForPortableBrowser(endpoint: string): Promise<Browser> {
   const deadline = Date.now() + 30_000
   let lastError: unknown
 
@@ -56,18 +120,21 @@ async function stopProcessTree(child: ChildProcess): Promise<void> {
   }
 }
 
-async function testPortableExecutable(executablePath: string): Promise<void> {
+async function launchPortable(paths: PackagedPaths): Promise<PortableSession> {
   const port = await reserveLoopbackPort()
-  const child = spawn(executablePath, [`--remote-debugging-port=${port}`], {
-    cwd: dirname(executablePath),
-    env: { ...process.env, ELECTRON_RENDERER_URL: hostileDevelopmentUrl },
-    stdio: 'ignore',
-    windowsHide: true
-  })
-  let browser
+  const child = spawn(
+    paths.executablePath,
+    [`--remote-debugging-port=${port}`, `--user-data-dir=${paths.userDataDir}`],
+    {
+      cwd: dirname(paths.executablePath),
+      env: { ...process.env, ELECTRON_RENDERER_URL: hostileDevelopmentUrl },
+      stdio: 'ignore',
+      windowsHide: true
+    }
+  )
 
   try {
-    browser = await waitForPortableBrowser(`http://127.0.0.1:${port}`)
+    const browser = await waitForPortableBrowser(`http://127.0.0.1:${port}`)
     const context = browser.contexts()[0]
     if (context === undefined) {
       throw new Error('PORTABLE_BROWSER_CONTEXT_MISSING')
@@ -77,35 +144,74 @@ async function testPortableExecutable(executablePath: string): Promise<void> {
     if (window === undefined) {
       throw new Error('PORTABLE_WINDOW_MISSING')
     }
-    await assertEasyEpiWindow(window)
-  } finally {
-    await browser?.close()
+    return { browser, child, window }
+  } catch (error) {
     await stopProcessTree(child)
+    throw error
   }
 }
 
-test('launches a packaged EasyEpi executable', async () => {
-  const executablePath = process.env['EASYEPI_EXECUTABLE']
-  if (executablePath === undefined || executablePath.length === 0) {
-    throw new Error('EASYEPI_EXECUTABLE must be set to an absolute packaged executable path')
-  }
-  if (!isAbsolute(executablePath)) {
-    throw new Error('EASYEPI_EXECUTABLE must be an absolute path')
-  }
-  await access(executablePath)
+async function closePortable(session: PortableSession | undefined): Promise<void> {
+  if (session === undefined) return
+  await session.browser.close()
+  await stopProcessTree(session.child)
+}
 
-  if (basename(executablePath).toLowerCase().includes('-portable-')) {
-    await testPortableExecutable(executablePath)
+async function launchInstalled(paths: PackagedPaths): Promise<ElectronApplication> {
+  return electron.launch({
+    executablePath: paths.executablePath,
+    args: [`--user-data-dir=${paths.userDataDir}`],
+    env: { ...process.env, ELECTRON_RENDERER_URL: hostileDevelopmentUrl }
+  })
+}
+
+test('validates production behavior and preference persistence in a packaged EasyEpi executable', async () => {
+  const paths = readPackagedPaths()
+  await access(paths.executablePath)
+  await mkdir(paths.userDataDir, { recursive: true })
+
+  if (basename(paths.executablePath).toLowerCase().includes('-portable-')) {
+    let session: PortableSession | undefined
+    try {
+      session = await launchPortable(paths)
+      await assertEasyEpiWindow(session.window)
+      await enableLargeText(session.window)
+      await assertStoredLargeText(paths.userDataDir)
+      await assertProductionComponentRouteIsHidden(session.window)
+    } finally {
+      await closePortable(session)
+    }
+
+    session = undefined
+    try {
+      session = await launchPortable(paths)
+      await assertEasyEpiWindow(session.window)
+      await expect(session.window.locator('html')).toHaveAttribute('data-font-scale', 'large')
+    } finally {
+      await closePortable(session)
+    }
     return
   }
 
-  const electronApp = await electron.launch({
-    executablePath,
-    env: { ...process.env, ELECTRON_RENDERER_URL: hostileDevelopmentUrl }
-  })
+  let electronApp: ElectronApplication | undefined
   try {
-    await assertEasyEpiWindow(await electronApp.firstWindow())
+    electronApp = await launchInstalled(paths)
+    const window = await electronApp.firstWindow()
+    await assertEasyEpiWindow(window)
+    await enableLargeText(window)
+    await assertStoredLargeText(paths.userDataDir)
+    await assertProductionComponentRouteIsHidden(window)
   } finally {
-    await electronApp.close()
+    await electronApp?.close()
+  }
+
+  electronApp = undefined
+  try {
+    electronApp = await launchInstalled(paths)
+    const window = await electronApp.firstWindow()
+    await assertEasyEpiWindow(window)
+    await expect(window.locator('html')).toHaveAttribute('data-font-scale', 'large')
+  } finally {
+    await electronApp?.close()
   }
 })

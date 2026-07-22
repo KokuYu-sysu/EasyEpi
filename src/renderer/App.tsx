@@ -1,61 +1,54 @@
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
+import { RouterProvider, type RouterProviderProps } from 'react-router-dom'
 
+import { AppBootstrap } from '@renderer/app/AppBootstrap'
+import { createAppRouter } from '@renderer/app/routes'
+import type { PreferencesAppearance } from '@renderer/stores/preferences-store'
 import type { DesktopApi } from '@shared/desktop-api'
-
-import './app.css'
-
-type ConnectionState = 'connecting' | 'connected' | 'failed'
 
 export interface AppProps {
   api?: DesktopApi
+  appearance?: PreferencesAppearance
+  router?: RouterProviderProps['router']
+  routerFactory?: AppRouterFactory
 }
 
-export function App({ api = window.easyEpi }: AppProps) {
-  const [connectionState, setConnectionState] = useState<ConnectionState>('connecting')
+export type AppRouter = RouterProviderProps['router']
+export type AppRouterFactory = () => AppRouter
 
-  useEffect(() => {
-    let active = true
+const defaultRouterFactory: AppRouterFactory = () =>
+  createAppRouter({ isDevelopment: import.meta.env.DEV })
+const routerCache = new WeakMap<AppRouterFactory, AppRouter>()
 
-    api.system
-      .ping({ nonce: 'renderer-startup' })
-      .then(() => {
-        if (active) {
-          setConnectionState('connected')
-        }
-      })
-      .catch(() => {
-        if (active) {
-          setConnectionState('failed')
-        }
-      })
+function getCachedRouter(factory: AppRouterFactory): AppRouter {
+  const cached = routerCache.get(factory)
+  if (cached !== undefined) {
+    return cached
+  }
+  const router = factory()
+  routerCache.set(factory, router)
+  return router
+}
 
-    return () => {
-      active = false
-    }
-  }, [api])
+interface RoutedAppProps {
+  router?: AppRouter
+  routerFactory: AppRouterFactory
+}
 
+function RoutedApp({ router, routerFactory }: RoutedAppProps) {
+  const [activeRouter] = useState(() => router ?? getCachedRouter(routerFactory))
+  return <RouterProvider router={activeRouter} />
+}
+
+export function App({
+  api = window.easyEpi,
+  appearance,
+  router,
+  routerFactory = defaultRouterFactory
+}: AppProps) {
   return (
-    <main className="app-shell">
-      <section className="welcome-card" aria-labelledby="product-name">
-        <span className="product-mark" aria-hidden="true">
-          E
-        </span>
-        <div>
-          <p className="eyebrow">现场调查与问卷信息收集</p>
-          <h1 id="product-name">EasyEpi</h1>
-          {connectionState === 'connecting' && <p role="status">正在连接桌面运行环境…</p>}
-          {connectionState === 'connected' && (
-            <p className="status-connected" role="status">
-              桌面运行环境已连接
-            </p>
-          )}
-          {connectionState === 'failed' && (
-            <p className="status-failed" role="alert">
-              桌面运行环境连接失败
-            </p>
-          )}
-        </div>
-      </section>
-    </main>
+    <AppBootstrap api={api.preferences} appearance={appearance}>
+      <RoutedApp router={router} routerFactory={routerFactory} />
+    </AppBootstrap>
   )
 }

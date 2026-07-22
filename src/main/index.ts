@@ -3,6 +3,8 @@ import { pathToFileURL } from 'node:url'
 
 import { app, BrowserWindow, ipcMain, session } from 'electron'
 
+import { registerPreferencesIpc } from './preferences-ipc'
+import { createPreferencesStore } from './preferences-store'
 import { registerSystemIpc } from './system-ipc'
 import {
   createWindowOptions,
@@ -20,6 +22,7 @@ const packagedRendererUrl = pathToFileURL(packagedRendererPath).href
 const preloadPath = join(__dirname, '../preload/index.cjs')
 
 let mainWindow: BrowserWindow | null = null
+let disposePreferencesIpc: (() => void) | undefined
 let disposeSystemIpc: (() => void) | undefined
 
 app.setAppUserModelId(APP_ID)
@@ -65,6 +68,13 @@ void app.whenReady().then(() => {
     packagedRendererUrl,
     developmentUrl
   )
+  const preferencesStore = createPreferencesStore(app.getPath('userData'))
+  disposePreferencesIpc = registerPreferencesIpc(
+    ipcMain,
+    preferencesStore,
+    packagedRendererUrl,
+    developmentUrl
+  )
   createMainWindow()
 
   app.on('activate', () => {
@@ -81,6 +91,8 @@ app.on('window-all-closed', () => {
 })
 
 app.on('will-quit', () => {
+  disposePreferencesIpc?.()
+  disposePreferencesIpc = undefined
   disposeSystemIpc?.()
   disposeSystemIpc = undefined
 })

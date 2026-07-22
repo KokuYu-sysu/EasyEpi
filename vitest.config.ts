@@ -22,11 +22,17 @@ export default defineConfig({
     coverage: {
       provider: 'v8',
       include: [
-        'src/shared/**/*.ts',
-        'src/main/window-policy.ts',
-        'src/main/system-ipc.ts',
-        'src/preload/desktop-api.ts',
-        'src/renderer/App.tsx'
+        'src/shared/**/*.{ts,tsx}',
+        'src/main/**/*.{ts,tsx}',
+        'src/preload/**/*.{ts,tsx}',
+        'src/renderer/**/*.{ts,tsx}'
+      ],
+      exclude: [
+        'src/main/index.ts',
+        'src/preload/index.ts',
+        'src/renderer/main.tsx',
+        'src/renderer/global.d.ts',
+        'src/renderer/demo/demo-data.ts'
       ],
       reporter: ['text', 'html', 'json-summary'],
       thresholds: {
