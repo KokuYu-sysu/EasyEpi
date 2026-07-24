@@ -1,4 +1,4 @@
-import type { DesktopApi } from '@shared/desktop-api'
+import type { DesktopApi, DialogResult } from '@shared/desktop-api'
 import {
   parsePreferencesResult,
   parsePreferencesUpdateRequest,
@@ -48,6 +48,8 @@ export interface DesktopInvoke {
   (channel: typeof QNAIRE_UPDATE_CONDITION_CHANNEL, args: { id: string; patch: Partial<ConditionRule> }): Promise<unknown>
   (channel: typeof QNAIRE_DELETE_CONDITION_CHANNEL, id: string): Promise<unknown>
   (channel: typeof QNAIRE_UPDATE_META_CHANNEL, args: { name?: string; description?: string }): Promise<unknown>
+  (channel: 'dialog:selectFolder'): Promise<unknown>
+  (channel: 'dialog:selectFile', filters?: { name: string; extensions: string[] }[]): Promise<unknown>
 }
 
 function parsePublicPreferencesResult(value: unknown): PreferencesResult {
@@ -116,6 +118,12 @@ export function createDesktopApi(invoke: DesktopInvoke): DesktopApi {
       (await invoke(QNAIRE_UPDATE_META_CHANNEL, { name, description })) as { ok: boolean }
   })
 
-  const desktopApi = { system, preferences, project, qnaire } satisfies DesktopApi
+  const dialog = Object.freeze({
+    selectFolder: async () => (await invoke('dialog:selectFolder')) as DialogResult,
+    selectFile: async (filters?: { name: string; extensions: string[] }[]) =>
+      (await invoke('dialog:selectFile', filters)) as DialogResult
+  })
+
+  const desktopApi = { system, preferences, dialog, project, qnaire } satisfies DesktopApi
   return Object.freeze(desktopApi)
 }

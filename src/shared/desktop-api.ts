@@ -3,6 +3,11 @@ import type { PingRequest, PingResponse } from './system-contract'
 import type { ProjectCreateRequest, ProjectOpenRequest, ProjectSaveRequest, ProjectResult } from './qnaire-contract'
 import type { QuestionDef, ConditionRule, QuestionnaireDef } from './types/qnaire'
 
+export interface DialogResult {
+  canceled: boolean
+  filePaths: string[]
+}
+
 export interface DesktopApi {
   system: {
     ping(request: PingRequest): Promise<PingResponse>
@@ -10,6 +15,10 @@ export interface DesktopApi {
   preferences: {
     get(): Promise<PreferencesResult>
     update(preferences: PreferencesV1): Promise<PreferencesResult>
+  }
+  dialog: {
+    selectFolder(): Promise<DialogResult>
+    selectFile(filters?: { name: string; extensions: string[] }[]): Promise<DialogResult>
   }
   project: {
     create(request: ProjectCreateRequest): Promise<ProjectResult>

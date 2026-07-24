@@ -2,6 +2,7 @@ import { render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { isValidElement } from 'react'
 import { createMemoryRouter, RouterProvider, type RouteObject } from 'react-router-dom'
+import { vi } from 'vitest'
 
 import { createAppRoutes } from '@renderer/app/routes'
 import { AdminLoginPage } from '@renderer/pages/AdminLoginPage'
@@ -10,10 +11,15 @@ import { DerivedPage } from '@renderer/pages/DerivedPage'
 import { ImportPage } from '@renderer/pages/ImportPage'
 import { WelcomePage } from '@renderer/pages/WelcomePage'
 import { WorkSessionPage } from '@renderer/pages/WorkSessionPage'
+import { ToastProvider } from '@renderer/components/ui'
 
 function renderRoute(routes: RouteObject[], initialEntry = '/') {
   const router = createMemoryRouter(routes, { initialEntries: [initialEntry] })
-  render(<RouterProvider router={router} />)
+  render(
+    <ToastProvider>
+      <RouterProvider router={router} />
+    </ToastProvider>
+  )
   return router
 }
 
@@ -23,36 +29,48 @@ describe('welcome page', () => {
     description: '选择项目并开始现场调查。'
   }
 
-  it('describes the offline product and exposes truthful project actions', async () => {
-    const user = userEvent.setup()
-    const storageWrite = vi.spyOn(Storage.prototype, 'setItem')
-    const preferencesUpdate = vi.fn()
-    Object.defineProperty(window, 'easyepi', {
+  beforeEach(() => {
+    Object.defineProperty(window, 'easyEpi', {
       configurable: true,
-      value: { preferences: { get: vi.fn(), update: preferencesUpdate } }
+      value: {
+        system: { ping: vi.fn() },
+        preferences: { get: vi.fn(), update: vi.fn() },
+        dialog: {
+          selectFolder: vi.fn().mockResolvedValue({ canceled: true, filePaths: [] }),
+          selectFile: vi.fn().mockResolvedValue({ canceled: true, filePaths: [] })
+        },
+        project: { create: vi.fn(), open: vi.fn(), save: vi.fn(), close: vi.fn() },
+        qnaire: {
+          getData: vi.fn(),
+          addQuestion: vi.fn(),
+          updateQuestion: vi.fn(),
+          deleteQuestion: vi.fn(),
+          reorderQuestions: vi.fn(),
+          addConditionRule: vi.fn(),
+          updateConditionRule: vi.fn(),
+          deleteConditionRule: vi.fn(),
+          updateMeta: vi.fn()
+        }
+      }
     })
+  })
 
+  afterEach(() => {
+    Reflect.deleteProperty(window, 'easyEpi')
+  })
+
+  it('describes the offline product and exposes truthful project actions', () => {
     renderRoute([{ path: '/', handle: welcomeHandle, element: <WelcomePage /> }])
 
     expect(screen.getByRole('heading', { level: 1, name: '欢迎页' })).toBeVisible()
     expect(screen.getAllByText(/离线/).length).toBeGreaterThan(0)
     expect(screen.getByText(/现场调查和问卷信息收集/)).toBeVisible()
-    expect(screen.getByRole('heading', { name: '社区健康调查（合成演示）' })).toBeVisible()
-
-    await user.click(screen.getByRole('button', { name: '新建项目' }))
-    expect(screen.getByRole('dialog')).toHaveTextContent('M3')
-    expect(screen.getByRole('dialog')).toHaveTextContent(/不会创建或保存真实项目/)
-    await user.keyboard('{Escape}')
-
-    await user.click(screen.getByRole('button', { name: '打开项目' }))
-    expect(screen.getByRole('dialog')).toHaveTextContent('M3')
-    expect(storageWrite).not.toHaveBeenCalled()
-    expect(preferencesUpdate).not.toHaveBeenCalled()
-
-    storageWrite.mockRestore()
+    expect(screen.getByRole('button', { name: '新建项目' })).toBeVisible()
+    expect(screen.getByRole('button', { name: '打开项目' })).toBeVisible()
+    expect(screen.getByText(/暂无最近项目/)).toBeVisible()
   })
 
-  it('provides keyboard-reachable routes into the three main demos', async () => {
+  it('provides keyboard-reachable routes into the three main pages', async () => {
     const user = userEvent.setup()
     const router = renderRoute([
       { path: '/', handle: welcomeHandle, element: <WelcomePage /> },
@@ -62,13 +80,10 @@ describe('welcome page', () => {
     ])
 
     expect(screen.getByRole('link', { name: '开始问卷设计' })).toHaveAttribute('href', '/designer')
-    expect(screen.getByRole('link', { name: '进入录入演示' })).toHaveAttribute('href', '/entry')
-    expect(screen.getByRole('link', { name: '查看数据管理演示' })).toHaveAttribute(
-      'href',
-      '/admin/data'
-    )
+    expect(screen.getByRole('link', { name: '进入录入' })).toHaveAttribute('href', '/entry')
+    expect(screen.getByRole('link', { name: '数据管理' })).toHaveAttribute('href', '/admin/data')
 
-    await user.click(screen.getByRole('link', { name: /继续合成演示项目/ }))
+    await user.click(screen.getByRole('link', { name: '开始问卷设计' }))
     expect(await screen.findByRole('heading', { name: '设计器目标页' })).toBeVisible()
     expect(router.state.location.pathname).toBe('/designer')
   })

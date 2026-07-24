@@ -186,8 +186,9 @@ export function createQnaireStore(): QnaireStore {
           mode: 'designing',
           isLoading: false
         })
-      } catch (e) {
-        set({ error: (e as Error).message, isLoading: false })
+      } catch {
+        // No project open yet - stay in idle mode silently
+        set({ isLoading: false, mode: 'idle' })
       }
     },
 

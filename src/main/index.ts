@@ -13,6 +13,7 @@ import {
 } from './window-policy'
 import { createProjectIpcState, registerProjectIpc } from './ipc/project.ipc'
 import { registerQnaireIpc } from './ipc/qnaire.ipc'
+import { registerDialogIpc } from './dialog-ipc'
 
 const APP_ID = 'com.kokuyu.easyepi'
 const developmentUrl = resolveDevelopmentRendererUrl(
@@ -28,6 +29,11 @@ let disposePreferencesIpc: (() => void) | undefined
 let disposeSystemIpc: (() => void) | undefined
 let disposeProjectIpc: (() => void) | undefined
 let disposeQnaireIpc: (() => void) | undefined
+let disposeDialogIpc: (() => void) | undefined
+
+function getMainWindow(): BrowserWindow | null {
+  return mainWindow
+}
 
 app.setAppUserModelId(APP_ID)
 
@@ -92,6 +98,12 @@ void app.whenReady().then(() => {
     packagedRendererUrl,
     developmentUrl
   )
+  disposeDialogIpc = registerDialogIpc(
+    ipcMain,
+    getMainWindow,
+    packagedRendererUrl,
+    developmentUrl
+  )
   createMainWindow()
 
   app.on('activate', () => {
@@ -116,4 +128,6 @@ app.on('will-quit', () => {
   disposeProjectIpc = undefined
   disposeQnaireIpc?.()
   disposeQnaireIpc = undefined
+  disposeDialogIpc?.()
+  disposeDialogIpc = undefined
 })

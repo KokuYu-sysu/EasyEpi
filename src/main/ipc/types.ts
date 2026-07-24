@@ -1,3 +1,5 @@
+import { isTrustedRendererUrl } from '../window-policy'
+
 export interface IpcInvokeEventLike {
   senderFrame?: {
     url: string
@@ -17,8 +19,7 @@ export function assertTrustedSender(
   if (event.senderFrame === undefined || event.senderFrame === null) {
     throw new Error('MISSING_IPC_SENDER_FRAME')
   }
-  const url = event.senderFrame.url
-  if (url !== packagedRendererUrl && url !== developmentOrigin) {
+  if (!isTrustedRendererUrl(event.senderFrame.url, packagedRendererUrl, developmentOrigin)) {
     throw new Error('UNTRUSTED_IPC_SENDER')
   }
 }

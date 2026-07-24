@@ -21,6 +21,10 @@ function createApi(): DesktopApi {
       get: vi.fn().mockResolvedValue({ ok: true, preferences: DEFAULT_PREFERENCES }),
       update: vi.fn(async (preferences: PreferencesV1) => ({ ok: true as const, preferences }))
     },
+    dialog: {
+      selectFolder: vi.fn().mockResolvedValue({ canceled: true, filePaths: [] }),
+      selectFile: vi.fn().mockResolvedValue({ canceled: true, filePaths: [] })
+    },
     project: {
       create: vi.fn(),
       open: vi.fn(),

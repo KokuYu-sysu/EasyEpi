@@ -23,6 +23,10 @@ function setupMockEasyEpi(data?: QuestionnaireDef) {
   const mockApi = {
     system: { ping: vi.fn() },
     preferences: { get: vi.fn(), update: vi.fn() },
+    dialog: {
+      selectFolder: vi.fn().mockResolvedValue({ canceled: true, filePaths: [] }),
+      selectFile: vi.fn().mockResolvedValue({ canceled: true, filePaths: [] })
+    },
     project: {
       create: vi.fn(),
       open: vi.fn(),
