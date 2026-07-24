@@ -1,5 +1,4 @@
 import { dialog } from 'electron'
-import type { BrowserWindow } from 'electron'
 
 import { isTrustedRendererUrl } from './window-policy'
 
@@ -17,7 +16,6 @@ export const DIALOG_SELECT_FILE = 'dialog:selectFile' as const
 
 export function registerDialogIpc(
   ipcMain: IpcMainLike,
-  _getMainWindow: () => BrowserWindow | null,
   packagedRendererUrl: string,
   developmentOrigin?: string
 ): () => void {
@@ -26,10 +24,13 @@ export function registerDialogIpc(
     if (!isTrustedRendererUrl(event.senderFrame.url, packagedRendererUrl, developmentOrigin)) {
       throw new Error('UNTRUSTED_IPC_SENDER')
     }
-    const result = await dialog.showOpenDialog({
+    const result = dialog.showOpenDialogSync({
       properties: ['openDirectory', 'createDirectory']
     })
-    return { canceled: result.canceled, filePaths: result.filePaths }
+    if (result === undefined) {
+      return { canceled: true, filePaths: [] }
+    }
+    return { canceled: false, filePaths: result }
   })
 
   ipcMain.handle(DIALOG_SELECT_FILE, async (event: IpcInvokeEventLike, rawFilters: unknown) => {
@@ -37,12 +38,17 @@ export function registerDialogIpc(
     if (!isTrustedRendererUrl(event.senderFrame.url, packagedRendererUrl, developmentOrigin)) {
       throw new Error('UNTRUSTED_IPC_SENDER')
     }
-    const filters = Array.isArray(rawFilters) ? rawFilters as { name: string; extensions: string[] }[] : []
-    const result = await dialog.showOpenDialog({
+    const filters = Array.isArray(rawFilters)
+      ? (rawFilters as { name: string; extensions: string[] }[])
+      : []
+    const result = dialog.showOpenDialogSync({
       properties: ['openFile'],
       filters
     })
-    return { canceled: result.canceled, filePaths: result.filePaths }
+    if (result === undefined) {
+      return { canceled: true, filePaths: [] }
+    }
+    return { canceled: false, filePaths: result }
   })
 
   return () => {

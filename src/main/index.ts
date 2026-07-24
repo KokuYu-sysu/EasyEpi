@@ -31,10 +31,6 @@ let disposeProjectIpc: (() => void) | undefined
 let disposeQnaireIpc: (() => void) | undefined
 let disposeDialogIpc: (() => void) | undefined
 
-function getMainWindow(): BrowserWindow | null {
-  return mainWindow
-}
-
 app.setAppUserModelId(APP_ID)
 
 function configureSessionPermissions(): void {
@@ -100,7 +96,6 @@ void app.whenReady().then(() => {
   )
   disposeDialogIpc = registerDialogIpc(
     ipcMain,
-    getMainWindow,
     packagedRendererUrl,
     developmentUrl
   )

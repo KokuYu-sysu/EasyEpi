@@ -186,9 +186,15 @@ export function createQnaireStore(): QnaireStore {
           mode: 'designing',
           isLoading: false
         })
-      } catch {
-        // No project open yet - stay in idle mode silently
-        set({ isLoading: false, mode: 'idle' })
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e)
+        if (msg.includes('NO_PROJECT_OPEN')) {
+          // No project open yet - stay in idle mode silently
+          set({ isLoading: false, mode: 'idle' })
+        } else {
+          // Real error - show it to the user
+          set({ isLoading: false, mode: 'idle', error: `加载问卷数据失败: ${msg}` })
+        }
       }
     },
 
