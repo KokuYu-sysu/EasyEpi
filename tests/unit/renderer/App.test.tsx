@@ -20,6 +20,23 @@ function createApi(): DesktopApi {
     preferences: {
       get: vi.fn().mockResolvedValue({ ok: true, preferences: DEFAULT_PREFERENCES }),
       update: vi.fn(async (preferences: PreferencesV1) => ({ ok: true as const, preferences }))
+    },
+    project: {
+      create: vi.fn(),
+      open: vi.fn(),
+      save: vi.fn(),
+      close: vi.fn()
+    },
+    qnaire: {
+      getData: vi.fn().mockResolvedValue({ questions: [], conditionRules: [], keyQuestionIds: [], name: '' }),
+      addQuestion: vi.fn(),
+      updateQuestion: vi.fn(),
+      deleteQuestion: vi.fn(),
+      reorderQuestions: vi.fn(),
+      addConditionRule: vi.fn(),
+      updateConditionRule: vi.fn(),
+      deleteConditionRule: vi.fn(),
+      updateMeta: vi.fn()
     }
   }
 }

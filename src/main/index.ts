@@ -11,6 +11,8 @@ import {
   isTrustedRendererUrl,
   resolveDevelopmentRendererUrl
 } from './window-policy'
+import { createProjectIpcState, registerProjectIpc } from './ipc/project.ipc'
+import { registerQnaireIpc } from './ipc/qnaire.ipc'
 
 const APP_ID = 'com.kokuyu.easyepi'
 const developmentUrl = resolveDevelopmentRendererUrl(
@@ -24,6 +26,8 @@ const preloadPath = join(__dirname, '../preload/index.cjs')
 let mainWindow: BrowserWindow | null = null
 let disposePreferencesIpc: (() => void) | undefined
 let disposeSystemIpc: (() => void) | undefined
+let disposeProjectIpc: (() => void) | undefined
+let disposeQnaireIpc: (() => void) | undefined
 
 app.setAppUserModelId(APP_ID)
 
@@ -75,6 +79,19 @@ void app.whenReady().then(() => {
     packagedRendererUrl,
     developmentUrl
   )
+  const projectState = createProjectIpcState()
+  disposeProjectIpc = registerProjectIpc(
+    ipcMain,
+    projectState,
+    packagedRendererUrl,
+    developmentUrl
+  )
+  disposeQnaireIpc = registerQnaireIpc(
+    ipcMain,
+    projectState,
+    packagedRendererUrl,
+    developmentUrl
+  )
   createMainWindow()
 
   app.on('activate', () => {
@@ -95,4 +112,8 @@ app.on('will-quit', () => {
   disposePreferencesIpc = undefined
   disposeSystemIpc?.()
   disposeSystemIpc = undefined
+  disposeProjectIpc?.()
+  disposeProjectIpc = undefined
+  disposeQnaireIpc?.()
+  disposeQnaireIpc = undefined
 })

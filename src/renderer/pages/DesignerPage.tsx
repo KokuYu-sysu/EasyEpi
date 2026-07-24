@@ -1,4 +1,4 @@
-import { useState, type FormEvent, type ReactElement } from 'react'
+import { useState, useEffect } from 'react'
 import { useStore } from 'zustand'
 
 import { useCurrentRouteHandle } from '@renderer/app/route-metadata'
@@ -6,240 +6,345 @@ import { MilestonePage } from '@renderer/components/common/MilestonePage'
 import {
   Badge,
   Button,
-  Checkbox,
   ConfirmDialog,
   EmptyState,
-  Input,
-  Modal,
-  Select,
   useToast
 } from '@renderer/components/ui'
 import {
-  createDesignerDemoStore,
-  type DesignerDemoStore,
-  type DesignerQuestion,
-  type DesignerQuestionDraft,
-  type DesignerQuestionType
-} from '@renderer/stores/designer-demo-store'
+  createQnaireStore,
+  type QnaireStore
+} from '@renderer/stores/qnaire.store'
+import {
+  QuestionEditDialog,
+  questionToFormData,
+  EMPTY_FORM_DATA,
+  type QuestionFormData
+} from '@renderer/components/qnaire/QuestionEditDialog'
+import { ConditionRuleEditor } from '@renderer/components/qnaire/ConditionRuleEditor'
+import { QuestionnairePreview } from '@renderer/components/qnaire/QuestionnairePreview'
+import {
+  QUESTION_TYPE_LABELS,
+  type QuestionDef,
+  type ConditionRule
+} from '@shared/types/qnaire'
 
-const TYPE_LABELS: Record<DesignerQuestionType, string> = {
-  single: '单选题',
-  multiple: '多选题',
-  text: '文本题'
-}
-
-const TYPE_OPTIONS = Object.entries(TYPE_LABELS).map(([value, label]) => ({ value, label }))
-
-const EMPTY_DRAFT: DesignerQuestionDraft = {
-  title: '',
-  type: 'text',
-  isKey: false,
-  hasCondition: false
-}
-
-interface QuestionDialogProps {
-  mode: 'add' | 'edit'
-  initial: DesignerQuestionDraft
-  trigger: ReactElement
-  onCommit(draft: DesignerQuestionDraft): void
-}
-
-function QuestionDialog({ mode, initial, trigger, onCommit }: QuestionDialogProps) {
-  const [open, setOpen] = useState(false)
-  const [draft, setDraft] = useState(initial)
-  const [error, setError] = useState<string>()
-  const isAdd = mode === 'add'
-
-  const handleOpenChange = (nextOpen: boolean) => {
-    setOpen(nextOpen)
-    if (nextOpen) {
-      setDraft({ ...initial })
-      setError(undefined)
-    }
+function createQuestionFromFormData(data: QuestionFormData, order: number): QuestionDef {
+  return {
+    id: crypto.randomUUID(),
+    content: data.content,
+    variableName: data.variableName,
+    type: data.type,
+    options: data.options.map((o) => ({ ...o })),
+    constraint: { ...data.constraint },
+    defaultValue: data.defaultValue || undefined,
+    isKey: data.isKey,
+    allowSkip: data.allowSkip,
+    order
   }
-
-  const submit = (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault()
-    const title = draft.title.trim()
-    if (!title) {
-      setError('请输入题目标题')
-      return
-    }
-    onCommit({ ...draft, title })
-    setOpen(false)
-  }
-
-  return (
-    <Modal
-      trigger={trigger}
-      title={isAdd ? '新增题目' : '编辑题目'}
-      description="所有更改只保存在当前演示内存中。"
-      open={open}
-      onOpenChange={handleOpenChange}
-    >
-      <form className="mt-[var(--space-4)] grid gap-[var(--space-4)]" onSubmit={submit}>
-        <Input
-          label="题目标题"
-          aria-required="true"
-          value={draft.title}
-          error={error}
-          onChange={(event) => {
-            setDraft((current) => ({ ...current, title: event.target.value }))
-            if (error) setError(undefined)
-          }}
-        />
-        <Select
-          label="题目类型"
-          options={TYPE_OPTIONS}
-          value={draft.type}
-          onValueChange={(type) =>
-            setDraft((current) => ({ ...current, type: type as DesignerQuestionType }))
-          }
-        />
-        <div className="flex flex-wrap gap-[var(--space-4)]">
-          <Checkbox
-            label="关键题目（Key）"
-            checked={draft.isKey}
-            onCheckedChange={(checked) =>
-              setDraft((current) => ({ ...current, isKey: checked === true }))
-            }
-          />
-          <Checkbox
-            label="包含显示条件"
-            checked={draft.hasCondition}
-            onCheckedChange={(checked) =>
-              setDraft((current) => ({ ...current, hasCondition: checked === true }))
-            }
-          />
-        </div>
-        <div className="flex flex-wrap justify-end gap-[var(--space-3)]">
-          <Button variant="secondary" onClick={() => setOpen(false)}>取消</Button>
-          <Button type="submit">{isAdd ? '添加题目' : '保存修改'}</Button>
-        </div>
-      </form>
-    </Modal>
-  )
 }
 
-interface QuestionCardProps {
-  question: Readonly<DesignerQuestion>
+interface QuestionRowProps {
+  question: Readonly<QuestionDef>
+  index: number
+  total: number
   selected: boolean
+  conditionRules: readonly Readonly<ConditionRule>[]
+  allQuestions: readonly Readonly<QuestionDef>[]
   onSelect(): void
-  onUpdate(draft: DesignerQuestionDraft): void
+  onEdit(data: QuestionFormData): void
   onRemove(): void
+  onMoveUp(): void
+  onMoveDown(): void
+  onToggleKey(): void
+  onSaveConditionRule(rule: Omit<ConditionRule, 'id'>): void
 }
 
-function QuestionCard({ question, selected, onSelect, onUpdate, onRemove }: QuestionCardProps) {
-  const draft: DesignerQuestionDraft = {
-    title: question.title,
-    type: question.type,
-    isKey: question.isKey,
-    hasCondition: question.hasCondition
-  }
+function QuestionRow({
+  question,
+  index,
+  total,
+  selected,
+  conditionRules,
+  allQuestions,
+  onSelect,
+  onEdit,
+  onRemove,
+  onMoveUp,
+  onMoveDown,
+  onToggleKey,
+  onSaveConditionRule
+}: QuestionRowProps) {
+  const questionRules = conditionRules.filter((r) => r.sourceQuestionId === question.id)
+  const draft = questionToFormData(question)
+  const hasOptions = question.type === 'single_choice' || question.type === 'multiple_choice'
+
   return (
     <article
       data-selected={selected ? 'true' : 'false'}
-      className="grid gap-[var(--space-3)] rounded-[var(--radius-2)] border border-[var(--color-border-default)] bg-[var(--color-surface-base)] p-[var(--space-4)] data-[selected=true]:border-[var(--color-border-focus)] data-[selected=true]:shadow-[var(--shadow-z1)]"
+      role="button"
+      tabIndex={0}
+      aria-label={`题目 #${index + 1}: ${question.content}`}
+      className="grid gap-[var(--space-3)] rounded-[var(--radius-2)] border border-[var(--color-border-default)] bg-[var(--color-surface-base)] p-[var(--space-4)] cursor-pointer transition-shadow duration-200 hover:shadow-[var(--shadow-z1)] data-[selected=true]:border-[var(--color-border-focus)] data-[selected=true]:shadow-[var(--shadow-z1)]"
+      onClick={onSelect}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault()
+          onSelect()
+        }
+      }}
     >
       <div className="flex min-w-0 flex-wrap items-start justify-between gap-[var(--space-3)]">
         <div className="min-w-0 flex-1">
-          <h2 className="m-0 break-words text-[length:var(--font-size-lg)]">{question.title}</h2>
+          <div className="flex items-center gap-[var(--space-2)]">
+            <span className="text-[length:var(--font-size-sm)] font-[var(--font-weight-semibold)] text-[var(--color-text-secondary)]">
+              #{index + 1}
+            </span>
+            <h2 className="m-0 break-words text-[length:var(--font-size-lg)]">{question.content}</h2>
+          </div>
+          <div className="mt-[var(--space-1)] text-[length:var(--font-size-sm)] text-[var(--color-text-secondary)]">
+            <code className="rounded-[var(--radius-1)] bg-[var(--color-surface-muted)] px-[var(--space-1)] py-px font-mono text-[length:var(--font-size-xs)]">
+              {question.variableName}
+            </code>
+            {' · '}
+            {QUESTION_TYPE_LABELS[question.type]}
+            {hasOptions && question.options.length > 0 && (
+              <span> · {question.options.map((o) => o.label).join('/')}</span>
+            )}
+            {question.constraint.type !== 'none' && (
+              <span> · {question.constraint.type}</span>
+            )}
+          </div>
           <div className="mt-[var(--space-2)] flex flex-wrap gap-[var(--space-2)]">
-            <Badge variant="info">{TYPE_LABELS[question.type]}</Badge>
-            {question.isKey ? <Badge variant="success">Key</Badge> : null}
-            {question.hasCondition ? <Badge variant="warning">条件</Badge> : null}
+            <Badge variant="info">{QUESTION_TYPE_LABELS[question.type]}</Badge>
+            {question.isKey && <Badge variant="success">🔑 Key</Badge>}
+            {questionRules.length > 0 && (
+              <Badge variant="warning">🔗 {questionRules.length} 条条件规则</Badge>
+            )}
+            {question.allowSkip && <Badge variant="neutral">可跳过</Badge>}
           </div>
         </div>
-        {selected ? <Badge variant="neutral">已选中</Badge> : null}
+        {selected && <Badge variant="neutral">已选中</Badge>}
       </div>
-      <div className="flex flex-wrap gap-[var(--space-2)]">
-        <Button size="sm" variant="ghost" aria-pressed={selected} onClick={onSelect}>
-          选择题目：{question.title}
-        </Button>
-        <QuestionDialog
-          mode="edit"
-          initial={draft}
-          trigger={<Button size="sm" variant="secondary">编辑题目：{question.title}</Button>}
-          onCommit={onUpdate}
-        />
-        <ConfirmDialog
-          trigger={<Button size="sm" variant="danger">删除题目：{question.title}</Button>}
-          title="删除题目"
-          description={`将从当前内存演示中删除“${question.title}”。`}
-          confirmLabel="确认删除"
-          onConfirm={onRemove}
-        />
-      </div>
+
+      {selected && (
+        <div className="flex flex-wrap gap-[var(--space-2)] border-t border-[var(--color-border-default)] pt-[var(--space-3)]">
+          <QuestionEditDialog
+            mode="edit"
+            initial={draft}
+            existingVariableNames={allQuestions.map((q) => q.variableName).filter((n) => n !== question.variableName)}
+            trigger={<Button size="sm" variant="secondary">编辑</Button>}
+            onCommit={onEdit}
+          />
+          <Button size="sm" variant="ghost" onClick={onMoveUp} disabled={index === 0}>
+            ↑ 上移
+          </Button>
+          <Button size="sm" variant="ghost" onClick={onMoveDown} disabled={index === total - 1}>
+            ↓ 下移
+          </Button>
+          <ConditionRuleEditor
+            sourceQuestion={question}
+            allQuestions={allQuestions}
+            existingRules={questionRules}
+            trigger={<Button size="sm" variant="secondary">设置条件</Button>}
+            onSave={onSaveConditionRule}
+          />
+          <Button size="sm" variant="ghost" onClick={onToggleKey}>
+            {question.isKey ? '取消 Key' : '设为 Key'}
+          </Button>
+          <ConfirmDialog
+            trigger={<Button size="sm" variant="danger">删除</Button>}
+            title="删除题目"
+            description={`确定删除题目 "${question.content}" 吗？相关条件规则也会被删除。`}
+            confirmLabel="确认删除"
+            onConfirm={onRemove}
+          />
+        </div>
+      )}
     </article>
   )
 }
 
 export interface DesignerPageProps {
-  store?: DesignerDemoStore
+  store?: QnaireStore
 }
 
 export function DesignerPage({ store: injectedStore }: DesignerPageProps) {
-  const [store] = useState(() => injectedStore ?? createDesignerDemoStore())
-  const questions = useStore(store, (state) => state.questions)
-  const selectedId = useStore(store, (state) => state.selectedId)
+  const [store] = useState(() => injectedStore ?? createQnaireStore())
+  const questions = useStore(store, (s) => s.questions)
+  const conditionRules = useStore(store, (s) => s.conditionRules)
+  const keyQuestionIds = useStore(store, (s) => s.keyQuestionIds)
+  const selectedQuestionId = useStore(store, (s) => s.selectedQuestionId)
+  const mode = useStore(store, (s) => s.mode)
+  const projectName = useStore(store, (s) => s.projectName)
+  const isLoading = useStore(store, (s) => s.isLoading)
+  const error = useStore(store, (s) => s.error)
   const handle = useCurrentRouteHandle()
   const toast = useToast()
 
+  useEffect(() => {
+    if (mode === 'idle') {
+      store.getState().loadFromIpc().catch(() => {
+        // No project open yet, that's fine
+      })
+    }
+  }, [mode, store])
+
   if (handle === null) throw new Error('DESIGNER_ROUTE_METADATA_MISSING')
 
-  const notifyNotSaved = (action: '保存' | '预览') => {
-    toast.push({
-      title: `${action}功能尚未保存`,
-      description: `${action}将在后续里程碑实现；当前问卷只存在于本次演示内存中。`,
-      tone: 'info'
-    })
+  if (mode === 'previewing') {
+    return (
+      <QuestionnairePreview
+        questionnaire={{
+          name: projectName ?? '问卷',
+          questions: [...questions],
+          conditionRules: [...conditionRules],
+          keyQuestionIds: [...keyQuestionIds]
+        }}
+        onClose={() => store.getState().setMode('designing')}
+      />
+    )
   }
+
+  const handleAddQuestion = (data: QuestionFormData) => {
+    const question = createQuestionFromFormData(data, questions.length)
+    store.getState().addQuestion(question)
+    toast.push({ title: '题目已添加', tone: 'success' })
+  }
+
+  const handleEditQuestion = (id: string, data: QuestionFormData) => {
+    store.getState().updateQuestion(id, {
+      content: data.content,
+      variableName: data.variableName,
+      type: data.type,
+      options: data.options,
+      constraint: data.constraint,
+      defaultValue: data.defaultValue || undefined,
+      isKey: data.isKey,
+      allowSkip: data.allowSkip
+    })
+    toast.push({ title: '题目已更新', tone: 'success' })
+  }
+
+  const handleMoveQuestion = (fromIndex: number, direction: -1 | 1) => {
+    store.getState().moveQuestion(fromIndex, fromIndex + direction)
+  }
+
+  const handleToggleKey = (questionId: string, isKey: boolean) => {
+    store.getState().setKeyQuestion(questionId, !isKey)
+    toast.push({ title: isKey ? '已取消 Key 标识' : '已设为 Key 标识', tone: 'info' })
+  }
+
+  const handleSaveConditionRule = (rule: Omit<ConditionRule, 'id'>) => {
+    const fullRule: ConditionRule = { ...rule, id: crypto.randomUUID() }
+    store.getState().addConditionRule(fullRule)
+    toast.push({ title: '条件规则已添加', tone: 'success' })
+  }
+
+  const handleSave = async () => {
+    try {
+      await window.easyEpi.project.save({
+        folderPath: store.getState().folderPath ?? ''
+      })
+      toast.push({ title: '问卷已保存', tone: 'success' })
+    } catch {
+      toast.push({ title: '保存失败', tone: 'danger' })
+    }
+  }
+
+  const keyCount = keyQuestionIds.length
 
   return (
     <MilestonePage
       title={handle.title}
       description={handle.description ?? '组织题目、规则与问卷结构。'}
-      demoMessage="演示模式，未保存"
+      demoMessage={mode === 'idle' ? '未打开项目，请先创建或打开项目。' : undefined}
       actions={
-        <>
-          <Button variant="secondary" onClick={() => notifyNotSaved('预览')}>预览问卷</Button>
-          <Button onClick={() => notifyNotSaved('保存')}>保存问卷</Button>
-          <QuestionDialog
-            mode="add"
-            initial={EMPTY_DRAFT}
-            trigger={<Button variant="secondary">新增题目</Button>}
-            onCommit={(draft) => store.getState().addQuestion(draft)}
-          />
-        </>
+        <div className="flex flex-wrap gap-[var(--space-2)]">
+          {mode === 'designing' && (
+            <>
+              <QuestionEditDialog
+                mode="add"
+                initial={EMPTY_FORM_DATA}
+                existingVariableNames={questions.map((q) => q.variableName)}
+                trigger={<Button variant="secondary">新增题目</Button>}
+                onCommit={handleAddQuestion}
+              />
+              <Button
+                variant="secondary"
+                onClick={() => store.getState().setMode('previewing')}
+                disabled={questions.length === 0}
+              >
+                预览问卷
+              </Button>
+              <Button onClick={handleSave}>保存问卷</Button>
+              {keyCount > 0 && (
+                <Badge variant="success" className="self-center">
+                  🔑 {keyCount} 个 Key
+                </Badge>
+              )}
+            </>
+          )}
+        </div>
       }
     >
-      <section aria-label="问卷题目" className="grid min-w-0 gap-[var(--space-3)]">
-        {questions.length === 0 ? (
-          <EmptyState
-            title="暂无题目"
-            description="可以新增一道合成题目，所有内容在关闭或刷新页面后重置。"
-            action={
-              <QuestionDialog
-                mode="add"
-                initial={EMPTY_DRAFT}
-                trigger={<Button>新增第一道题目</Button>}
-                onCommit={(draft) => store.getState().addQuestion(draft)}
-              />
-            }
-          />
-        ) : (
-          questions.map((question) => (
-            <QuestionCard
-              key={question.id}
-              question={question}
-              selected={selectedId === question.id}
-              onSelect={() => store.getState().selectQuestion(question.id)}
-              onUpdate={(draft) => store.getState().updateQuestion(question.id, draft)}
-              onRemove={() => store.getState().removeQuestion(question.id)}
+      {error && (
+        <div className="rounded-[var(--radius-2)] border border-[var(--color-danger)] bg-[var(--color-danger-light)] p-[var(--space-3)] text-[length:var(--font-size-sm)] text-[var(--color-danger)]">
+          {error}
+          <Button size="sm" variant="ghost" onClick={() => store.getState().setError(null)}>
+            关闭
+          </Button>
+        </div>
+      )}
+
+      {isLoading ? (
+        <div className="grid gap-[var(--space-3)]">
+          {Array.from({ length: 3 }, (_, i) => (
+            <div key={i} className="h-24 animate-pulse rounded-[var(--radius-2)] bg-[var(--color-surface-muted)]" />
+          ))}
+        </div>
+      ) : mode === 'idle' ? (
+        <EmptyState
+          title="未打开项目"
+          description="请先从欢迎页创建或打开一个项目，然后返回此页面设计问卷。"
+        />
+      ) : (
+        <section aria-label="问卷题目" className="grid min-w-0 gap-[var(--space-3)]">
+          {questions.length === 0 ? (
+            <EmptyState
+              title="暂无题目"
+              description="点击「新增题目」开始设计问卷。"
+              action={
+                <QuestionEditDialog
+                  mode="add"
+                  initial={EMPTY_FORM_DATA}
+                  existingVariableNames={[]}
+                  trigger={<Button>新增第一道题目</Button>}
+                  onCommit={handleAddQuestion}
+                />
+              }
             />
-          ))
-        )}
-      </section>
+          ) : (
+            questions.map((question, index) => (
+              <QuestionRow
+                key={question.id}
+                question={question}
+                index={index}
+                total={questions.length}
+                selected={selectedQuestionId === question.id}
+                conditionRules={conditionRules}
+                allQuestions={questions}
+                onSelect={() => store.getState().selectQuestion(question.id)}
+                onEdit={(data) => handleEditQuestion(question.id, data)}
+                onRemove={() => store.getState().deleteQuestion(question.id)}
+                onMoveUp={() => handleMoveQuestion(index, -1)}
+                onMoveDown={() => handleMoveQuestion(index, 1)}
+                onToggleKey={() => handleToggleKey(question.id, question.isKey)}
+                onSaveConditionRule={handleSaveConditionRule}
+              />
+            ))
+          )}
+        </section>
+      )}
     </MilestonePage>
   )
 }
