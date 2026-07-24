@@ -43,7 +43,7 @@ export const Select = forwardRef<HTMLButtonElement, SelectProps>(function Select
         <R.Portal>
           <R.Content
             position="popper"
-            className="z-[var(--z-3)] rounded-[var(--radius-1)] border border-[var(--color-border-default)] bg-[var(--color-surface-raised)] p-[var(--space-1)] shadow-[var(--shadow-z2)]"
+            className="z-[var(--z-5)] rounded-[var(--radius-1)] border border-[var(--color-border-default)] bg-[var(--color-surface-raised)] p-[var(--space-1)] shadow-[var(--shadow-z2)]"
           >
             <R.Viewport>
               {options.map((option) => (

@@ -226,6 +226,18 @@ test.describe('built Electron application', () => {
     const dialog = page.getByRole('dialog', { name: '添加新题目' })
     await dialog.getByLabel('题目内容 *').fill('受试者编号')
     await dialog.getByLabel('变量名 *').fill('participant_id')
+    const questionType = dialog.getByRole('combobox', { name: '题型 *' })
+    await questionType.click()
+    await expect(page.getByRole('option')).toHaveText([
+      '单选题',
+      '多选题',
+      '固定长度填空',
+      '自由填空',
+      '数字范围',
+      '日期'
+    ])
+    await page.getByRole('option', { name: '多选题' }).click()
+    await expect(questionType).toContainText('多选题')
     await dialog.getByRole('checkbox', { name: '设为 Key 标识符' }).click()
     await dialog.getByRole('button', { name: '+ 添加选项' }).click()
     await dialog.getByRole('button', { name: '添加题目' }).click()
@@ -237,7 +249,14 @@ test.describe('built Electron application', () => {
         page.evaluate(() => (window as unknown as RendererWindow).easyEpi.qnaire.getData())
       )
       .toMatchObject({
-        questions: [{ content: '受试者编号', variableName: 'participant_id', isKey: true }],
+        questions: [
+          {
+            content: '受试者编号',
+            variableName: 'participant_id',
+            type: 'multiple_choice',
+            isKey: true
+          }
+        ],
         keyQuestionIds: [expect.any(String)]
       })
 
@@ -269,7 +288,14 @@ test.describe('built Electron application', () => {
     await expect(
       page.evaluate(() => (window as unknown as RendererWindow).easyEpi.qnaire.getData())
     ).resolves.toMatchObject({
-      questions: [{ content: '受试者编号', variableName: 'participant_id', isKey: true }],
+      questions: [
+        {
+          content: '受试者编号',
+          variableName: 'participant_id',
+          type: 'multiple_choice',
+          isKey: true
+        }
+      ],
       keyQuestionIds: [expect.any(String)]
     })
   })

@@ -25,6 +25,7 @@ test('form wrappers expose labelled keyboard-operable controls', async () => {
     </>
   )
   await user.click(screen.getByRole('combobox', { name: '地区' }))
+  expect(screen.getByRole('listbox')).toHaveClass('z-[var(--z-5)]')
   await user.keyboard('{ArrowDown}{ArrowDown}{Enter}')
   expect(screen.getByRole('combobox', { name: '地区' })).toHaveTextContent('乙')
   await user.click(screen.getByRole('checkbox', { name: '同意' }))
