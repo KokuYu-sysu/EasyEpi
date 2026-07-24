@@ -1,5 +1,12 @@
 import AxeBuilder from '@axe-core/playwright'
-import { expect, test, _electron as electron, type ElectronApplication, type Page } from '@playwright/test'
+import {
+  expect,
+  test,
+  _electron as electron,
+  type ElectronApplication,
+  type Locator,
+  type Page
+} from '@playwright/test'
 import { mkdir, mkdtemp, readFile, rm } from 'node:fs/promises'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -70,6 +77,25 @@ async function pressTabUntil(page: Page, name: string): Promise<void> {
     if (accessibleName.includes(name)) return
   }
   throw new Error(`Keyboard focus did not reach: ${name}`)
+}
+
+async function assertSelectChevronGeometry(trigger: Locator): Promise<void> {
+  const chevron = trigger.locator('svg.lucide-chevron-down')
+  await expect(chevron).toBeVisible()
+
+  const triggerBox = await trigger.boundingBox()
+  const chevronBox = await chevron.boundingBox()
+  expect(triggerBox).not.toBeNull()
+  expect(chevronBox).not.toBeNull()
+  if (triggerBox === null || chevronBox === null) return
+
+  expect(Math.abs(chevronBox.width - 20)).toBeLessThanOrEqual(1)
+  expect(Math.abs(chevronBox.height - 20)).toBeLessThanOrEqual(1)
+  const rightInset = triggerBox.x + triggerBox.width - (chevronBox.x + chevronBox.width)
+  expect(Math.abs(rightInset - 12)).toBeLessThanOrEqual(1)
+  const triggerCenter = triggerBox.y + triggerBox.height / 2
+  const chevronCenter = chevronBox.y + chevronBox.height / 2
+  expect(Math.abs(triggerCenter - chevronCenter)).toBeLessThanOrEqual(1)
 }
 
 test.describe('built Electron application', () => {
@@ -227,7 +253,9 @@ test.describe('built Electron application', () => {
     await dialog.getByLabel('题目内容 *').fill('受试者编号')
     await dialog.getByLabel('变量名 *').fill('participant_id')
     const questionType = dialog.getByRole('combobox', { name: '题型 *' })
-    await questionType.click()
+    await assertSelectChevronGeometry(questionType)
+    await questionType.focus()
+    await page.keyboard.press('Enter')
     await expect(page.getByRole('option')).toHaveText([
       '单选题',
       '多选题',
@@ -236,8 +264,62 @@ test.describe('built Electron application', () => {
       '数字范围',
       '日期'
     ])
-    await page.getByRole('option', { name: '多选题' }).click()
+    await page.keyboard.press('ArrowDown')
+    await page.keyboard.press('Enter')
+    await expect(page.getByRole('option')).toHaveCount(0)
     await expect(questionType).toContainText('多选题')
+
+    const originalDocumentState = await page.locator('html').evaluate((html) => ({
+      theme: html.getAttribute('data-theme'),
+      fontScale: html.getAttribute('data-font-scale')
+    }))
+    for (const { theme, fontScale } of [
+      { theme: 'light', fontScale: 'normal' },
+      { theme: 'light', fontScale: 'large' },
+      { theme: 'dark', fontScale: 'normal' },
+      { theme: 'dark', fontScale: 'large' }
+    ]) {
+      await page.locator('html').evaluate(
+        (html, state) => {
+          html.setAttribute('data-theme', state.theme)
+          html.setAttribute('data-font-scale', state.fontScale)
+        },
+        { theme, fontScale }
+      )
+      await assertSelectChevronGeometry(questionType)
+
+      const fixtureId = `${theme}-${fontScale}`
+      await questionType.evaluate((trigger, id) => {
+        const fixture = trigger.cloneNode(true) as HTMLButtonElement
+        const triggerBox = trigger.getBoundingClientRect()
+        fixture.dataset.e2eSelectFixture = id
+        fixture.style.position = 'fixed'
+        fixture.style.left = `${triggerBox.left}px`
+        fixture.style.top = `${triggerBox.top}px`
+        fixture.style.width = `${triggerBox.width}px`
+        fixture.style.pointerEvents = 'none'
+        fixture.style.zIndex = '100001'
+        const value = fixture.querySelector(':scope > span')
+        if (value !== null) {
+          value.textContent = '这是一个用于验证箭头固定在最右侧且内容不会水平溢出的很长题型名称'.repeat(4)
+        }
+        fixture.setAttribute('disabled', '')
+        fixture.setAttribute('data-disabled', '')
+        document.body.append(fixture)
+      }, fixtureId)
+      const fixture = page.locator(`[data-e2e-select-fixture="${fixtureId}"]`)
+      await expect(fixture).toBeDisabled()
+      await assertSelectChevronGeometry(fixture)
+      await expect.poll(() => fixture.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true)
+      await fixture.evaluate((element) => element.remove())
+      await expect(questionType).toBeEnabled()
+    }
+    await page.locator('html').evaluate((html, state) => {
+      if (state.theme === null) html.removeAttribute('data-theme')
+      else html.setAttribute('data-theme', state.theme)
+      if (state.fontScale === null) html.removeAttribute('data-font-scale')
+      else html.setAttribute('data-font-scale', state.fontScale)
+    }, originalDocumentState)
     await dialog.getByRole('checkbox', { name: '设为 Key 标识符' }).click()
     await dialog.getByRole('button', { name: '+ 添加选项' }).click()
     await dialog.getByRole('button', { name: '添加题目' }).click()

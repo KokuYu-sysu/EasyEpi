@@ -1,4 +1,5 @@
 import * as R from '@radix-ui/react-select'
+import { ChevronDown } from 'lucide-react'
 import { forwardRef, type ComponentPropsWithoutRef } from 'react'
 type RootProps = ComponentPropsWithoutRef<typeof R.Root>
 export type SelectTriggerProps = Omit<
@@ -30,15 +31,19 @@ export const Select = forwardRef<HTMLButtonElement, SelectProps>(function Select
           ref={ref}
           aria-label={label}
           className={[
-            'min-h-11 rounded-[var(--radius-1)] border border-[var(--color-border-default)] bg-[var(--color-surface-base)] px-[var(--space-3)] text-left',
+            'flex min-h-11 w-full items-center gap-[var(--space-3)] rounded-[var(--radius-1)] border border-[var(--color-border-default)] bg-[var(--color-surface-base)] px-[var(--space-3)] text-left',
             className,
             triggerProps?.className
           ]
             .filter(Boolean)
             .join(' ')}
         >
-          <R.Value placeholder={placeholder} />
-          <R.Icon>⌄</R.Icon>
+          <span className="min-w-0 flex-1 truncate text-left">
+            <R.Value placeholder={placeholder} />
+          </span>
+          <R.Icon asChild>
+            <ChevronDown className="shrink-0" size={20} strokeWidth={2} />
+          </R.Icon>
         </R.Trigger>
         <R.Portal>
           <R.Content
