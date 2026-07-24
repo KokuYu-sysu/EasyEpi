@@ -29,6 +29,9 @@ describe('isTrustedRendererUrl', () => {
   it('accepts only the exact packaged renderer URL', () => {
     expect(isTrustedRendererUrl(packagedRendererUrl, packagedRendererUrl)).toBe(true)
     expect(
+      isTrustedRendererUrl(`${packagedRendererUrl}#/designer`, packagedRendererUrl)
+    ).toBe(true)
+    expect(
       isTrustedRendererUrl('file:///D:/EasyEpi/out/renderer/other.html', packagedRendererUrl)
     ).toBe(false)
     expect(

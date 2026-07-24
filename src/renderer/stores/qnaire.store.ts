@@ -61,6 +61,7 @@ export function createQnaireStore(): QnaireStore {
           const data = await window.easyEpi.qnaire.getData()
           set({
             questions: Object.freeze(data.questions.map((q) => Object.freeze({ ...q }))),
+            keyQuestionIds: Object.freeze(data.keyQuestionIds),
             selectedQuestionId: question.id
           })
         }
@@ -74,7 +75,8 @@ export function createQnaireStore(): QnaireStore {
         await window.easyEpi.qnaire.updateQuestion(id, patch)
         const data = await window.easyEpi.qnaire.getData()
         set({
-          questions: Object.freeze(data.questions.map((q) => Object.freeze({ ...q })))
+          questions: Object.freeze(data.questions.map((q) => Object.freeze({ ...q }))),
+          keyQuestionIds: Object.freeze(data.keyQuestionIds)
         })
       } catch (e) {
         set({ error: (e as Error).message })

@@ -34,6 +34,8 @@ export function isTrustedRendererUrl(
     const candidateUrl = new URL(candidate)
     const packagedUrl = new URL(packagedRendererUrl)
 
+    candidateUrl.hash = ''
+    packagedUrl.hash = ''
     if (candidateUrl.href === packagedUrl.href) {
       return true
     }

@@ -1,9 +1,16 @@
 import { describe, it, expect } from 'vitest'
+import { argon2Sync, pbkdf2Sync } from 'node:crypto'
 
 import { deriveKey, encrypt, decrypt, hashPassword, verifyPassword, generateRecoveryKey } from '../../../../src/main/services/crypto.service'
 
 describe('CryptoService', () => {
   describe('deriveKey', () => {
+    it('derives encryption keys with PBKDF2-SHA-256', () => {
+      const salt = Buffer.from('0123456789abcdef0123456789abcdef', 'hex')
+      expect(deriveKey('test-password', salt)).toEqual(
+        pbkdf2Sync('test-password', salt, 210_000, 32, 'sha256')
+      )
+    })
     it('derives a 32-byte key from password and salt', () => {
       const salt = Buffer.from('0123456789abcdef0123456789abcdef', 'hex')
       const key = deriveKey('test-password', salt)
@@ -85,6 +92,18 @@ describe('CryptoService', () => {
   })
 
   describe('hashPassword / verifyPassword', () => {
+    it('uses Argon2id for password hashes', () => {
+      const { hash, salt } = hashPassword('my-secret-password')
+      const expected = argon2Sync('argon2id', {
+        message: 'my-secret-password',
+        nonce: Buffer.from(salt, 'hex'),
+        parallelism: 4,
+        tagLength: 32,
+        memory: 65_536,
+        passes: 3
+      })
+      expect(hash).toBe(expected.toString('hex'))
+    })
     it('hashes and verifies a password', () => {
       const { hash, salt } = hashPassword('my-secret-password')
       expect(hash).toBeTruthy()

@@ -45,6 +45,13 @@ export interface ProjectCreateRequest {
   password: string
 }
 
+function isSafeProjectName(name: string): boolean {
+  if (name.length === 0 || name.length > 100 || name === '.' || name === '..') return false
+  if (/[<>:"/\\|?*]/.test(name) || /[. ]$/.test(name)) return false
+  if ([...name].some((character) => character.charCodeAt(0) < 32)) return false
+  return !/^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(name)
+}
+
 export function parseProjectCreateRequest(value: unknown): ProjectCreateRequest {
   if (!isPlainObject(value)) throw new Error('INVALID_PROJECT_CREATE_REQUEST')
   const { name, folderPath, password } = value
@@ -57,7 +64,9 @@ export function parseProjectCreateRequest(value: unknown): ProjectCreateRequest 
   if (typeof password !== 'string' || password.length < 1) {
     throw new Error('INVALID_PROJECT_CREATE_REQUEST')
   }
-  return { name: name.trim(), folderPath: folderPath.trim(), password }
+  const trimmedName = name.trim()
+  if (!isSafeProjectName(trimmedName)) throw new Error('INVALID_PROJECT_NAME')
+  return { name: trimmedName, folderPath: folderPath.trim(), password }
 }
 
 export interface ProjectOpenRequest {
