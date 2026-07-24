@@ -19,7 +19,7 @@
 
 ## 实现范围
 
-- 修改 `src/renderer/components/ui/Select.tsx`。
+- 生产代码仅修改 `src/renderer/components/ui/Select.tsx`；允许修改对应 unit/E2E 测试文件及测试夹具，不修改其他生产界面。
 - 不增加依赖；复用已安装的 `lucide-react`。
 - 所有共享 `Select` 使用方自动获得相同布局。
 
@@ -28,7 +28,7 @@
 - 组件测试先断言 Lucide 图标、20px 尺寸、Trigger/Value 布局类与装饰性语义，并在旧实现上失败。
 - Electron E2E 使用真实几何测量证明：图标为 20×20px；图标右缘距 Trigger 右缘 12px（允许 1px 渲染误差）；图标与 Trigger 的纵向中心重合（允许 1px 渲染误差）。同时保留打开菜单、键盘选择和关闭菜单的功能断言。
 - 真实界面验证覆盖浅色/暗色、标准/大字体，以及启用/禁用 Trigger；每种状态下图标必须可见、尺寸和右侧定位不变，长选项文字不得把图标推出边框。禁用配色不在本次修改范围，只验证图标继承现有状态并保持可见。
-- 依次运行 `pnpm check`、`pnpm test:e2e`、`pnpm build:win`。打包后分别以 NSIS 对应的 `win-unpacked/EasyEpi.exe` 和 portable EXE 运行 `tests/e2e/packaged.spec.ts`；两个 EXE 均须生成且 packaged E2E 通过。
+- 依次运行 `pnpm check`、`pnpm test:e2e`、`pnpm build:win`。打包后分别把 `EASYEPI_EXECUTABLE` 设为 `win-unpacked/EasyEpi.exe` 和 portable EXE 的绝对路径，把 `EASYEPI_USER_DATA_DIR` 设为两个相互独立的临时绝对目录，并各运行一次 `pnpm test:e2e:packaged`；两个 EXE 均须生成且 packaged E2E 通过。
 
 ## 检查结论
 
