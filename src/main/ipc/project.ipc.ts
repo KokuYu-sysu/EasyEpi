@@ -6,18 +6,26 @@ import {
   PROJECT_CLOSE_CHANNEL,
   parseProjectCreateRequest,
   parseProjectOpenRequest,
-  parseProjectSaveRequest,
   type ProjectResult
 } from '@shared/qnaire-contract'
 
-import { createAuthService, lock, setPassword, unlockWithPassword } from '../services/auth.service'
-import { createProject, saveProject, loadProject, getProjectFilePath } from '../services/project.service'
+import { createAuthService, lock } from '../services/auth.service'
+import {
+  createProject,
+  saveProject,
+  readProjectHeader,
+  decryptProjectData,
+  verifyAndDeriveKey,
+  getProjectFilePath
+} from '../services/project.service'
 
 import { type IpcMainLike, type IpcInvokeEventLike, assertTrustedSender } from './types'
 
 export interface ProjectIpcState {
   currentProject: ProjectData | null
   currentFilePath: string | null
+  currentSaltHex: string
+  currentHashHex: string
   auth: ReturnType<typeof createAuthService>
 }
 
@@ -25,6 +33,8 @@ export function createProjectIpcState(): ProjectIpcState {
   return {
     currentProject: null,
     currentFilePath: null,
+    currentSaltHex: '',
+    currentHashHex: '',
     auth: createAuthService()
   }
 }
@@ -40,58 +50,54 @@ export function registerProjectIpc(
     assertTrustedSender(event, packagedRendererUrl, developmentOrigin)
     const request = parseProjectCreateRequest(rawRequest)
 
-    const { passwordData, encryptionKey } = setPassword(state.auth, request.password)
-    const meta = createProject(request.folderPath, request.name, encryptionKey)
-
-    const data: ProjectData = {
-      meta,
-      questionnaire: {
-        name: request.name,
-        questions: [],
-        conditionRules: [],
-        keyQuestionIds: []
-      },
-      passwordHash: passwordData.hash,
-      recoveryKeyHash: undefined
+    const result = createProject(request.folderPath, request.name, request.password)
+    state.currentProject = {
+      meta: result.meta,
+      questionnaire: { name: request.name, questions: [], conditionRules: [], keyQuestionIds: [] }
     }
-
-    saveProject(request.folderPath, request.name, data, encryptionKey)
-    state.currentProject = data
     state.currentFilePath = getProjectFilePath(request.folderPath, request.name)
+    state.currentSaltHex = result.salt
+    state.currentHashHex = result.passwordHash
+    state.auth.encryptionKey = result.encryptionKey
+    state.auth.passwordData = { hash: result.passwordHash, salt: result.salt }
 
-    return { ok: true, meta } satisfies ProjectResult
+    return { ok: true, meta: result.meta } satisfies ProjectResult
   })
 
   ipcMain.handle(PROJECT_OPEN_CHANNEL, async (event: IpcInvokeEventLike, rawRequest: unknown) => {
     assertTrustedSender(event, packagedRendererUrl, developmentOrigin)
     const request = parseProjectOpenRequest(rawRequest)
 
-    const data = loadProject(request.filePath, Buffer.alloc(32))
+    // Read header to get salt and password hash (unencrypted)
+    const header = readProjectHeader(request.filePath)
 
-    if (data.passwordHash) {
-      const unlocked = unlockWithPassword(
-        state.auth,
-        request.password,
-        data.passwordHash,
-        ''
-      )
-      if (!unlocked) {
+    if (header.hashHex && header.saltHex) {
+      // Verify password and derive key
+      const key = verifyAndDeriveKey(request.password, header.saltHex, header.hashHex)
+      if (!key) {
         return { ok: false, error: '密码错误' } satisfies ProjectResult
       }
+      state.auth.encryptionKey = key
+      state.auth.passwordData = { hash: header.hashHex, salt: header.saltHex }
     } else {
-      setPassword(state.auth, request.password)
-      state.currentProject = data
+      return { ok: false, error: '项目文件格式错误：缺少密码数据' } satisfies ProjectResult
     }
 
-    state.currentProject = data
-    state.currentFilePath = request.filePath
-
-    return { ok: true, meta: data.meta } satisfies ProjectResult
+    // Decrypt the payload with the derived key
+    try {
+      const data = decryptProjectData(request.filePath, state.auth.encryptionKey)
+      state.currentProject = data
+      state.currentFilePath = request.filePath
+      state.currentSaltHex = header.saltHex
+      state.currentHashHex = header.hashHex
+      return { ok: true, meta: data.meta } satisfies ProjectResult
+    } catch {
+      return { ok: false, error: '解密失败：文件可能已损坏' } satisfies ProjectResult
+    }
   })
 
-  ipcMain.handle(PROJECT_SAVE_CHANNEL, async (event: IpcInvokeEventLike, rawRequest: unknown) => {
+  ipcMain.handle(PROJECT_SAVE_CHANNEL, async (event: IpcInvokeEventLike) => {
     assertTrustedSender(event, packagedRendererUrl, developmentOrigin)
-    const request = parseProjectSaveRequest(rawRequest)
 
     if (!state.currentProject) {
       return { ok: false, error: '没有打开的项目' } satisfies ProjectResult
@@ -102,7 +108,14 @@ export function registerProjectIpc(
       return { ok: false, error: '未解锁项目' } satisfies ProjectResult
     }
 
-    saveProject(request.folderPath, state.currentProject.meta.name, state.currentProject, key)
+    saveProject(
+      state.currentProject.meta.folderPath,
+      state.currentProject.meta.name,
+      state.currentProject,
+      key,
+      state.currentSaltHex,
+      state.currentHashHex
+    )
     return { ok: true, meta: state.currentProject.meta } satisfies ProjectResult
   })
 
@@ -110,6 +123,8 @@ export function registerProjectIpc(
     assertTrustedSender(event, packagedRendererUrl, developmentOrigin)
     state.currentProject = null
     state.currentFilePath = null
+    state.currentSaltHex = ''
+    state.currentHashHex = ''
     lock(state.auth)
     return { ok: true }
   })
