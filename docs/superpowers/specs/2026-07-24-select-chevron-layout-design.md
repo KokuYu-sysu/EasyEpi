@@ -11,8 +11,9 @@
 
 - 使用项目现有 `lucide-react` 的 `ChevronDown`，保持产品图标语言一致。
 - 图标尺寸为 20px，线宽为 2，呈现清晰的细线 V 形。
-- `Select` 触发器采用横向 Flex 布局：文字左对齐，图标固定在最右侧并垂直居中。
-- 文字与图标之间使用既有 `--space-3`（12px）间距；图标禁止收缩。
+- `Select` Trigger 使用 `flex w-full items-center gap-[var(--space-3)]`；Value 使用 `min-w-0 flex-1 text-left`，使文字占据剩余空间并把图标固定在最右侧。
+- 使用 `<R.Icon asChild>` 包裹 `ChevronDown`；图标设置 `size={20}`、`strokeWidth={2}` 和 `className="shrink-0"`。Radix Icon 提供装饰性隐藏语义。
+- Value 布局盒与图标之间使用既有 `--space-3`（12px）固定间距；长文字不得压缩图标或把图标推出边框。
 - 保留 `min-h-11`（44px）和原有水平内边距，整个下拉框继续作为点击区域。
 - 不修改题目弹窗结构、字段间距、选项数据、键盘交互或下拉菜单层级。
 
@@ -24,10 +25,10 @@
 
 ## 验证
 
-- 组件测试先断言新的图标尺寸、右侧 Flex 布局与隐藏语义，并在旧实现上失败。
-- 修复后运行组件测试、完整检查和 Electron E2E。
-- 在真实 Electron 窗口中核对题型与约束类型下拉框。
-- 重新生成 Windows 安装版与便携版 EXE，并运行打包程序冒烟测试。
+- 组件测试先断言 Lucide 图标、20px 尺寸、Trigger/Value 布局类与装饰性语义，并在旧实现上失败。
+- Electron E2E 使用真实几何测量证明：图标为 20×20px；图标右缘距 Trigger 右缘 12px（允许 1px 渲染误差）；图标与 Trigger 的纵向中心重合（允许 1px 渲染误差）。同时保留打开菜单、键盘选择和关闭菜单的功能断言。
+- 真实界面验证覆盖浅色/暗色、标准/大字体，以及启用/禁用 Trigger；每种状态下图标必须可见、尺寸和右侧定位不变，长选项文字不得把图标推出边框。禁用配色不在本次修改范围，只验证图标继承现有状态并保持可见。
+- 依次运行 `pnpm check`、`pnpm test:e2e`、`pnpm build:win`。打包后分别以 NSIS 对应的 `win-unpacked/EasyEpi.exe` 和 portable EXE 运行 `tests/e2e/packaged.spec.ts`；两个 EXE 均须生成且 packaged E2E 通过。
 
 ## 检查结论
 
