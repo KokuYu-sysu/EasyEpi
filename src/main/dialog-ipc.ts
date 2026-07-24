@@ -17,7 +17,7 @@ export const DIALOG_SELECT_FILE = 'dialog:selectFile' as const
 
 export function registerDialogIpc(
   ipcMain: IpcMainLike,
-  getMainWindow: () => BrowserWindow | null,
+  _getMainWindow: () => BrowserWindow | null,
   packagedRendererUrl: string,
   developmentOrigin?: string
 ): () => void {
@@ -26,9 +26,7 @@ export function registerDialogIpc(
     if (!isTrustedRendererUrl(event.senderFrame.url, packagedRendererUrl, developmentOrigin)) {
       throw new Error('UNTRUSTED_IPC_SENDER')
     }
-    const win = getMainWindow()
-    if (!win) return { canceled: true, filePaths: [] }
-    const result = await dialog.showOpenDialog(win, {
+    const result = await dialog.showOpenDialog({
       properties: ['openDirectory', 'createDirectory']
     })
     return { canceled: result.canceled, filePaths: result.filePaths }
@@ -39,10 +37,8 @@ export function registerDialogIpc(
     if (!isTrustedRendererUrl(event.senderFrame.url, packagedRendererUrl, developmentOrigin)) {
       throw new Error('UNTRUSTED_IPC_SENDER')
     }
-    const win = getMainWindow()
-    if (!win) return { canceled: true, filePaths: [] }
     const filters = Array.isArray(rawFilters) ? rawFilters as { name: string; extensions: string[] }[] : []
-    const result = await dialog.showOpenDialog(win, {
+    const result = await dialog.showOpenDialog({
       properties: ['openFile'],
       filters
     })
