@@ -4,6 +4,8 @@ import { mkdir, mkdtemp, readFile, rm } from 'node:fs/promises'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
+import type { DesktopApi } from '../../src/shared/desktop-api'
+
 const projectRoot = fileURLToPath(new URL('../..', import.meta.url))
 const mainEntry = fileURLToPath(new URL('../../out/main/index.js', import.meta.url))
 const userDataRoot = join(projectRoot, '.e2e-user-data')
@@ -13,6 +15,8 @@ interface RunningApp {
   page: Page
   stderr: string[]
 }
+
+type RendererWindow = Window & { easyEpi: DesktopApi }
 
 async function createUserDataDir(): Promise<string> {
   await mkdir(userDataRoot, { recursive: true })
@@ -111,10 +115,13 @@ test.describe('built Electron application', () => {
     await page.getByRole('link', { name: '开始问卷设计' }).click()
     await expect(page.getByRole('heading', { name: '问卷设计' })).toBeVisible()
     await navigateHash(page, '/')
-    await page.getByRole('link', { name: '进入录入演示' }).click()
+    await page.getByRole('link', { name: '进入录入' }).click()
     await expect(page.getByRole('heading', { name: '单题录入' })).toBeVisible()
     await navigateHash(page, '/')
-    await page.getByRole('link', { name: '查看数据管理演示' }).click()
+    await page
+      .getByRole('navigation', { name: '欢迎页主要操作' })
+      .getByRole('link', { name: '数据管理' })
+      .click()
     await expect(page.getByRole('heading', { name: '数据管理' })).toBeVisible()
   })
 
@@ -164,8 +171,8 @@ test.describe('built Electron application', () => {
           page.getByRole('button', { name: '新建项目' }),
           page.getByRole('button', { name: '打开项目' }),
           page.getByRole('link', { name: '开始问卷设计' }),
-          page.getByRole('link', { name: '进入录入演示' }),
-          page.getByRole('link', { name: '查看数据管理演示' })
+          page.getByRole('link', { name: '进入录入' }),
+          page.getByRole('link', { name: '数据管理' })
         ]) {
           await action.scrollIntoViewIfNeeded()
           await expect(action).toBeVisible()
@@ -188,14 +195,84 @@ test.describe('built Electron application', () => {
         await expect(page.getByRole('navigation', { name: '主要导航' }).locator('..')).toBeVisible()
         await navigateHash(page, '/designer')
         await expect(page.getByRole('heading', { level: 1, name: '问卷设计' })).toBeVisible()
-        await page.getByRole('button', { name: '保存问卷' }).click()
-        await expect(
-          page.locator('li[role="status"]').filter({ hasText: '保存功能尚未保存' })
-        ).toBeVisible()
-        await expect(page.getByRole('list', { name: '通知' })).toBeVisible()
+        await expect(page.getByText('未打开项目', { exact: true })).toBeVisible()
       }
     })
   }
+
+  test('creates, edits, saves, closes, and reopens an encrypted M3 questionnaire', async () => {
+    running = await launchBuiltApp(userDataDir)
+    const { page } = running
+    const projectFolder = join(userDataDir, 'm3-project')
+    await mkdir(projectFolder, { recursive: true })
+
+    await expect(
+      page.evaluate(
+        ({ folderPath }) =>
+          (window as unknown as RendererWindow).easyEpi.project.create({
+            name: 'M3 验收问卷',
+            folderPath,
+            password: 'm3-password'
+          }),
+        { folderPath: projectFolder }
+      )
+    ).resolves.toMatchObject({ ok: true })
+
+    await navigateHash(page, '/designer')
+    await expect(page.getByRole('heading', { level: 1, name: '问卷设计' })).toBeVisible()
+    await expect(page.getByText('暂无题目')).toBeVisible()
+
+    await page.getByRole('button', { name: '新增第一道题目' }).click()
+    const dialog = page.getByRole('dialog', { name: '添加新题目' })
+    await dialog.getByLabel('题目内容 *').fill('受试者编号')
+    await dialog.getByLabel('变量名 *').fill('participant_id')
+    await dialog.getByRole('checkbox', { name: '设为 Key 标识符' }).click()
+    await dialog.getByRole('button', { name: '+ 添加选项' }).click()
+    await dialog.getByRole('button', { name: '添加题目' }).click()
+
+    await expect(page.getByRole('heading', { name: '受试者编号' })).toBeVisible()
+    await expect(page.getByText('1 个 Key')).toBeVisible()
+    await expect
+      .poll(() =>
+        page.evaluate(() => (window as unknown as RendererWindow).easyEpi.qnaire.getData())
+      )
+      .toMatchObject({
+        questions: [{ content: '受试者编号', variableName: 'participant_id', isKey: true }],
+        keyQuestionIds: [expect.any(String)]
+      })
+
+    await page.getByRole('button', { name: '保存问卷' }).click()
+    await expect(page.locator('li[role="status"]').filter({ hasText: '问卷已保存' })).toBeVisible()
+
+    await page.evaluate(() => (window as unknown as RendererWindow).easyEpi.project.close())
+    const filePath = join(projectFolder, 'M3 验收问卷.easyepi')
+    await expect(
+      page.evaluate(
+        ({ path }) =>
+          (window as unknown as RendererWindow).easyEpi.project.open({
+            filePath: path,
+            password: 'wrong-password'
+          }),
+        { path: filePath }
+      )
+    ).resolves.toMatchObject({ ok: false })
+    await expect(
+      page.evaluate(
+        ({ path }) =>
+          (window as unknown as RendererWindow).easyEpi.project.open({
+            filePath: path,
+            password: 'm3-password'
+          }),
+        { path: filePath }
+      )
+    ).resolves.toMatchObject({ ok: true })
+    await expect(
+      page.evaluate(() => (window as unknown as RendererWindow).easyEpi.qnaire.getData())
+    ).resolves.toMatchObject({
+      questions: [{ content: '受试者编号', variableName: 'participant_id', isKey: true }],
+      keyQuestionIds: [expect.any(String)]
+    })
+  })
 
   test('supports keyboard-only skip link, settings dialog, and route navigation', async () => {
     running = await launchBuiltApp(userDataDir)

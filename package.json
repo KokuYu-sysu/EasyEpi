@@ -10,7 +10,7 @@
   "main": "./out/main/index.js",
   "packageManager": "pnpm@11.9.0",
   "engines": {
-    "node": ">=22.12 <25",
+    "node": ">=24.7 <25",
     "pnpm": ">=11 <12"
   },
   "scripts": {

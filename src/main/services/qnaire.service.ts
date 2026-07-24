@@ -47,7 +47,10 @@ export function addQuestion(
   }
   return {
     ...qnaire,
-    questions: [...qnaire.questions, { ...question }]
+    questions: [...qnaire.questions, { ...question }],
+    keyQuestionIds: question.isKey
+      ? [...new Set([...qnaire.keyQuestionIds, question.id])]
+      : qnaire.keyQuestionIds
   }
 }
 
@@ -68,7 +71,13 @@ export function updateQuestion(
 
   const questions = [...qnaire.questions]
   questions[index] = { ...questions[index]!, ...patch, id: questionId }
-  return { ...qnaire, questions }
+  const keyQuestionIds =
+    patch.isKey === undefined
+      ? qnaire.keyQuestionIds
+      : patch.isKey
+        ? [...new Set([...qnaire.keyQuestionIds, questionId])]
+        : qnaire.keyQuestionIds.filter((id) => id !== questionId)
+  return { ...qnaire, questions, keyQuestionIds }
 }
 
 export function deleteQuestion(
@@ -78,11 +87,16 @@ export function deleteQuestion(
   const questions = qnaire.questions.filter((q) => q.id !== questionId)
   const keyQuestionIds = qnaire.keyQuestionIds.filter((id) => id !== questionId)
   const conditionRules = qnaire.conditionRules
-    .filter((r) => r.sourceQuestionId !== questionId)
+    .filter(
+      (r) =>
+        r.sourceQuestionId !== questionId &&
+        !r.conditions.some((condition) => condition.questionId === questionId)
+    )
     .map((r) => ({
       ...r,
       targetQuestionIds: r.targetQuestionIds.filter((id) => id !== questionId)
     }))
+    .filter((r) => r.targetQuestionIds.length > 0)
   return { ...qnaire, questions, keyQuestionIds, conditionRules }
 }
 
@@ -92,6 +106,9 @@ export function reorderQuestions(
 ): QuestionnaireDef {
   if (questionIds.length !== qnaire.questions.length) {
     throw new Error('REORDER_LENGTH_MISMATCH')
+  }
+  if (new Set(questionIds).size !== questionIds.length) {
+    throw new Error('REORDER_DUPLICATE_ID')
   }
   const questionMap = new Map(qnaire.questions.map((q) => [q.id, q]))
   const questions = questionIds.map((id, index) => {
@@ -156,10 +173,16 @@ export function setKeyQuestion(
   questionId: string,
   isKey: boolean
 ): QuestionnaireDef {
+  if (!qnaire.questions.some((question) => question.id === questionId)) {
+    throw new Error('QUESTION_NOT_FOUND')
+  }
   const keyQuestionIds = isKey
     ? [...new Set([...qnaire.keyQuestionIds, questionId])]
     : qnaire.keyQuestionIds.filter((id) => id !== questionId)
-  return { ...qnaire, keyQuestionIds }
+  const questions = qnaire.questions.map((question) =>
+    question.id === questionId ? { ...question, isKey } : question
+  )
+  return { ...qnaire, questions, keyQuestionIds }
 }
 
 export function getVisibleQuestions(
@@ -167,12 +190,17 @@ export function getVisibleQuestions(
   answers: Record<string, unknown>
 ): QuestionDef[] {
   const skippedIds = new Set<string>()
+  const showControlledIds = new Set<string>()
+  const shownIds = new Set<string>()
 
   for (const rule of qnaire.conditionRules) {
-    if (rule.action !== 'skip') continue
-
     const conditionsMet = evaluateConditions(rule.conditions, rule.logic, answers)
-    if (conditionsMet) {
+    if (rule.action === 'show') {
+      for (const targetId of rule.targetQuestionIds) {
+        showControlledIds.add(targetId)
+        if (conditionsMet) shownIds.add(targetId)
+      }
+    } else if (rule.action === 'skip' && conditionsMet) {
       for (const targetId of rule.targetQuestionIds) {
         skippedIds.add(targetId)
       }
@@ -180,7 +208,11 @@ export function getVisibleQuestions(
   }
 
   return qnaire.questions
-    .filter((q) => !skippedIds.has(q.id))
+    .filter(
+      (q) =>
+        !skippedIds.has(q.id) &&
+        (!showControlledIds.has(q.id) || shownIds.has(q.id))
+    )
     .sort((a, b) => a.order - b.order)
 }
 

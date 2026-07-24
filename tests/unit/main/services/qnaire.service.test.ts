@@ -42,6 +42,15 @@ describe('QnaireService', () => {
     expect(q.questions[0]!.id).toBe(question.id)
   })
 
+  it('adds a key question to the composite key list', () => {
+    let q = createQuestionnaireDef('Test')
+    const question = { ...createQuestion('Study ID', 'study_id', 'fixed_length', 0), isKey: true }
+
+    q = addQuestion(q, question)
+
+    expect(q.keyQuestionIds).toEqual([question.id])
+  })
+
   it('rejects duplicate variable names on add', () => {
     let q = createQuestionnaireDef('Test')
     q = addQuestion(q, createQuestion('Q1', 'q1', 'free_text', 0))
@@ -108,6 +117,27 @@ describe('QnaireService', () => {
     expect(q.conditionRules.length).toBe(0)
   })
 
+  it('removes condition rules that have no targets after deleting a target question', () => {
+    let q = createQuestionnaireDef('Test')
+    const q1 = createQuestion('Q1', 'q1', 'single_choice', 0)
+    const q2 = createQuestion('Q2', 'q2', 'free_text', 1)
+    q = addQuestion(addQuestion(q, q1), q2)
+    q = addConditionRule(
+      q,
+      createConditionRule(
+        q1.id,
+        [{ questionId: q1.id, operator: 'equals', value: '1' }],
+        'AND',
+        'skip',
+        [q2.id]
+      )
+    )
+
+    q = deleteQuestion(q, q2.id)
+
+    expect(q.conditionRules).toEqual([])
+  })
+
   it('reorders questions', () => {
     let q = createQuestionnaireDef('Test')
     const q1 = createQuestion('Q1', 'q1', 'free_text', 0)
@@ -124,6 +154,16 @@ describe('QnaireService', () => {
     expect(q.questions[1]!.order).toBe(1)
     expect(q.questions[2]!.id).toBe(q2.id)
     expect(q.questions[2]!.order).toBe(2)
+  })
+
+  it('rejects reorder lists with duplicate question ids', () => {
+    let q = createQuestionnaireDef('Test')
+    const q1 = createQuestion('Q1', 'q1', 'free_text', 0)
+    const q2 = createQuestion('Q2', 'q2', 'free_text', 1)
+    q = addQuestion(q, q1)
+    q = addQuestion(q, q2)
+
+    expect(() => reorderQuestions(q, [q1.id, q1.id])).toThrow('REORDER_DUPLICATE_ID')
   })
 
   it('adds and deletes condition rules', () => {
@@ -155,10 +195,23 @@ describe('QnaireService', () => {
 
     q = setKeyQuestion(q, question.id, true)
     expect(q.keyQuestionIds).toContain(question.id)
-    expect(q.questions[0]!.isKey).toBe(false) // isKey on question is separate
+    expect(q.questions[0]!.isKey).toBe(true)
 
     q = setKeyQuestion(q, question.id, false)
     expect(q.keyQuestionIds).not.toContain(question.id)
+    expect(q.questions[0]!.isKey).toBe(false)
+  })
+
+  it('keeps keyQuestionIds in sync when a question is updated through the editor', () => {
+    let q = createQuestionnaireDef('Test')
+    const question = createQuestion('Q1', 'q1', 'free_text', 0)
+    q = addQuestion(q, question)
+
+    q = updateQuestion(q, question.id, { isKey: true })
+    expect(q.keyQuestionIds).toEqual([question.id])
+
+    q = updateQuestion(q, question.id, { isKey: false })
+    expect(q.keyQuestionIds).toEqual([])
   })
 
   it('detects skip/require conflicts', () => {

@@ -39,6 +39,72 @@ export const EMPTY_FORM_DATA: QuestionFormData = {
   allowSkip: false
 }
 
+export function validateQuestionFormData(
+  form: QuestionFormData,
+  existingVariableNames: string[],
+  isAdd: boolean,
+  initialVariableName?: string
+): Record<string, string> {
+  const errors: Record<string, string> = {}
+  if (!form.content.trim()) errors.content = '请输入题目内容'
+  if (!form.variableName.trim()) errors.variableName = '请输入变量名'
+  else if (!/^[a-zA-Z][a-zA-Z0-9_]*$/.test(form.variableName)) {
+    errors.variableName = '变量名须以字母开头，仅含字母、数字和下划线'
+  } else if (
+    existingVariableNames.includes(form.variableName) &&
+    (isAdd || initialVariableName !== form.variableName)
+  ) {
+    errors.variableName = '变量名已存在'
+  }
+
+  if (form.type === 'single_choice' || form.type === 'multiple_choice') {
+    const values = form.options.map((option) => option.value.trim())
+    const hasBlank = form.options.some(
+      (option) => !option.value.trim() || !option.label.trim()
+    )
+    if (form.options.length < 2) {
+      errors.options = '选择题至少需要 2 个选项'
+    } else if (hasBlank) {
+      errors.options = '选项值和标签不能为空'
+    } else if (new Set(values).size !== values.length) {
+      errors.options = '选项值不能重复'
+    }
+  }
+
+  if (
+    form.type === 'fixed_length' &&
+    (form.constraint.fixedLength === undefined || form.constraint.fixedLength < 1)
+  ) {
+    errors.constraint = '固定长度必须大于 0'
+  }
+  if (
+    form.type === 'numeric_range' &&
+    form.constraint.minValue !== undefined &&
+    form.constraint.maxValue !== undefined &&
+    form.constraint.minValue > form.constraint.maxValue
+  ) {
+    errors.constraint = '最小值不能大于最大值'
+  }
+  if (form.constraint.type === 'regex') {
+    if (!form.constraint.regexPattern) {
+      errors.constraint = '请输入正则表达式'
+    } else {
+      try {
+        new RegExp(form.constraint.regexPattern, form.constraint.regexFlags)
+      } catch {
+        errors.constraint = '正则表达式无效'
+      }
+    }
+  }
+  return errors
+}
+
+function parseOptionalNumber(value: string): number | undefined {
+  if (value.trim() === '') return undefined
+  const parsed = Number(value)
+  return Number.isFinite(parsed) ? parsed : undefined
+}
+
 function questionToFormData(q: QuestionDef): QuestionFormData {
   return {
     content: q.content,
@@ -170,23 +236,12 @@ export function QuestionEditDialog({
   }
 
   const validate = (): boolean => {
-    const newErrors: Record<string, string> = {}
-    if (!form.content.trim()) newErrors.content = '请输入题目内容'
-    if (!form.variableName.trim()) newErrors.variableName = '请输入变量名'
-    else if (!/^[a-zA-Z][a-zA-Z0-9_]*$/.test(form.variableName)) {
-      newErrors.variableName = '变量名须以字母开头，仅含字母、数字和下划线'
-    } else if (
-      existingVariableNames.includes(form.variableName) &&
-      (isAdd || initial.variableName !== form.variableName)
-    ) {
-      newErrors.variableName = '变量名已存在'
-    }
-    if (
-      (form.type === 'single_choice' || form.type === 'multiple_choice') &&
-      form.options.length < 2
-    ) {
-      newErrors.options = '选择题至少需要 2 个选项'
-    }
+    const newErrors = validateQuestionFormData(
+      form,
+      existingVariableNames,
+      isAdd,
+      initial.variableName
+    )
     setErrors(newErrors)
     return Object.keys(newErrors).length === 0
   }
@@ -288,7 +343,10 @@ export function QuestionEditDialog({
               onChange={(e) =>
                 setForm((f) => ({
                   ...f,
-                  constraint: { ...f.constraint, fixedLength: Number(e.target.value) || undefined }
+                  constraint: {
+                    ...f.constraint,
+                    fixedLength: parseOptionalNumber(e.target.value)
+                  }
                 }))
               }
             />
@@ -315,7 +373,10 @@ export function QuestionEditDialog({
               onChange={(e) =>
                 setForm((f) => ({
                   ...f,
-                  constraint: { ...f.constraint, minValue: Number(e.target.value) || undefined }
+                  constraint: {
+                    ...f.constraint,
+                    minValue: parseOptionalNumber(e.target.value)
+                  }
                 }))
               }
             />
@@ -326,7 +387,10 @@ export function QuestionEditDialog({
               onChange={(e) =>
                 setForm((f) => ({
                   ...f,
-                  constraint: { ...f.constraint, maxValue: Number(e.target.value) || undefined }
+                  constraint: {
+                    ...f.constraint,
+                    maxValue: parseOptionalNumber(e.target.value)
+                  }
                 }))
               }
             />
@@ -338,7 +402,7 @@ export function QuestionEditDialog({
               onChange={(e) =>
                 setForm((f) => ({
                   ...f,
-                  constraint: { ...f.constraint, step: Number(e.target.value) || undefined }
+                  constraint: { ...f.constraint, step: parseOptionalNumber(e.target.value) }
                 }))
               }
             />
@@ -370,6 +434,12 @@ export function QuestionEditDialog({
               }))
             }
           />
+        )}
+
+        {errors.constraint && (
+          <p role="alert" className="m-0 text-[length:var(--font-size-sm)] text-[var(--color-danger)]">
+            {errors.constraint}
+          </p>
         )}
 
         <div className="flex flex-wrap gap-[var(--space-4)]">

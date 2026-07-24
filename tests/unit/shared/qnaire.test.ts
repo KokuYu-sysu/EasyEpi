@@ -3,6 +3,7 @@ import { describe, it, expect } from 'vitest'
 import {
   evaluateConditions,
   getVisibleQuestions,
+  validateQuestionAnswer,
   isQuestionType,
   isConstraintType,
   isConditionOperator,
@@ -149,6 +150,26 @@ describe('qnaire types', () => {
       expect(getVisibleQuestions(qnaire, { q1: 'yes' })).toEqual([q1, q2, q3])
     })
 
+    it('shows a conditionally controlled question only when a show rule matches', () => {
+      const rule: ConditionRule = {
+        id: 'r1',
+        sourceQuestionId: 'q1',
+        conditions: [{ questionId: 'q1', operator: 'equals', value: 'yes' }],
+        logic: 'AND',
+        action: 'show',
+        targetQuestionIds: ['q2']
+      }
+      const qnaire: QuestionnaireDef = {
+        name: 'Test',
+        questions: [q1, q2, q3],
+        conditionRules: [rule],
+        keyQuestionIds: []
+      }
+
+      expect(getVisibleQuestions(qnaire, { q1: 'no' })).toEqual([q1, q3])
+      expect(getVisibleQuestions(qnaire, { q1: 'yes' })).toEqual([q1, q2, q3])
+    })
+
     it('maintains question order', () => {
       const qnaire: QuestionnaireDef = {
         name: 'Test',
@@ -158,6 +179,42 @@ describe('qnaire types', () => {
       }
       const visible = getVisibleQuestions(qnaire, {})
       expect(visible.map((q) => q.id)).toEqual(['q1', 'q2', 'q3'])
+    })
+  })
+
+  describe('validateQuestionAnswer', () => {
+    const base: QuestionDef = {
+      id: 'q1',
+      content: 'Age',
+      variableName: 'age',
+      type: 'numeric_range',
+      options: [],
+      constraint: { type: 'integer', minValue: 0, maxValue: 120 },
+      isKey: false,
+      allowSkip: false,
+      order: 0
+    }
+
+    it('requires an answer unless skipping is allowed', () => {
+      expect(validateQuestionAnswer(base, '')).toBeTruthy()
+      expect(validateQuestionAnswer({ ...base, allowSkip: true }, '')).toBeNull()
+    })
+
+    it('enforces numeric range and integer constraints', () => {
+      expect(validateQuestionAnswer(base, '20.5')).toBeTruthy()
+      expect(validateQuestionAnswer(base, '121')).toBeTruthy()
+      expect(validateQuestionAnswer(base, '20')).toBeNull()
+    })
+
+    it('enforces fixed length and configured regular expressions', () => {
+      const fixed: QuestionDef = {
+        ...base,
+        type: 'fixed_length',
+        constraint: { type: 'regex', fixedLength: 4, regexPattern: '^[A-Z]+$' }
+      }
+      expect(validateQuestionAnswer(fixed, 'ABC')).toBeTruthy()
+      expect(validateQuestionAnswer(fixed, 'Abcd')).toBeTruthy()
+      expect(validateQuestionAnswer(fixed, 'ABCD')).toBeNull()
     })
   })
 })

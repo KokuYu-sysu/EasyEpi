@@ -16,16 +16,18 @@ File format v1:
   8       4     Encrypted payload length
   12      8     Created timestamp (ms)
   20      8     Last modified timestamp (ms)
-  28      32    Password salt (hex, padded with 0x00)
-  60      64    Password hash (hex, padded with 0x00)
-  124     N     Encrypted JSON payload
+  28      64    Password salt (64 UTF-8 hex characters)
+  92      64    Password hash (64 UTF-8 hex characters)
+  156     N     Encrypted JSON payload
 
-Total header: 124 bytes
+Total header: 156 bytes
 */
 
-const HEADER_SIZE = 124
-const SALT_HEX_LEN = 64  // 32 bytes = 64 hex chars
-const HASH_HEX_LEN = 128 // 64 bytes = 128 hex chars (scrypt with key=32 → hex 64, but we store as hex)
+const SALT_HEX_LEN = 64
+const HASH_HEX_LEN = 64
+const SALT_OFFSET = 28
+const HASH_OFFSET = SALT_OFFSET + SALT_HEX_LEN
+const HEADER_SIZE = HASH_OFFSET + HASH_HEX_LEN
 
 function writeHeader(opts: {
   payloadLength: number
@@ -44,12 +46,12 @@ function writeHeader(opts: {
   // Write salt (hex string, padded with zeros)
   const saltBuf = Buffer.alloc(SALT_HEX_LEN, 0)
   Buffer.from(opts.saltHex, 'utf-8').copy(saltBuf)
-  saltBuf.copy(buf, 28)
+  saltBuf.copy(buf, SALT_OFFSET)
 
   // Write password hash (hex string, padded with zeros)
   const hashBuf = Buffer.alloc(HASH_HEX_LEN, 0)
   Buffer.from(opts.hashHex, 'utf-8').copy(hashBuf)
-  hashBuf.copy(buf, 60)
+  hashBuf.copy(buf, HASH_OFFSET)
 
   return buf
 }
@@ -69,8 +71,14 @@ function readHeader(buf: Buffer): ReadHeaderResult {
   const version = buf.readUInt32BE(4)
   if (version !== PROJECT_VERSION) throw new Error('UNSUPPORTED_PROJECT_VERSION')
 
-  const saltHex = buf.subarray(28, 28 + SALT_HEX_LEN).toString('utf-8').replace(/\0+$/, '')
-  const hashHex = buf.subarray(60, 60 + HASH_HEX_LEN).toString('utf-8').replace(/\0+$/, '')
+  const saltHex = buf
+    .subarray(SALT_OFFSET, SALT_OFFSET + SALT_HEX_LEN)
+    .toString('utf-8')
+    .replace(/\0+$/, '')
+  const hashHex = buf
+    .subarray(HASH_OFFSET, HASH_OFFSET + HASH_HEX_LEN)
+    .toString('utf-8')
+    .replace(/\0+$/, '')
 
   return {
     payloadLength: buf.readUInt32BE(8),
@@ -92,6 +100,9 @@ export function createProject(
 ): { meta: ProjectMeta; encryptionKey: Buffer; passwordHash: string; salt: string } {
   if (!existsSync(folderPath)) {
     mkdirSync(folderPath, { recursive: true })
+  }
+  if (projectExists(folderPath, name)) {
+    throw new Error('PROJECT_ALREADY_EXISTS')
   }
 
   const { hash, salt } = hashPassword(password)

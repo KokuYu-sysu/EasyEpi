@@ -4,7 +4,9 @@ import { Button, Radio, Input, Progress, EmptyState, Badge, Checkbox } from '@re
 import {
   type QuestionnaireDef,
   QUESTION_TYPE_LABELS,
-  getVisibleQuestions
+  evaluateConditions,
+  getVisibleQuestions,
+  validateQuestionAnswer
 } from '@shared/types/qnaire'
 
 interface QuestionnairePreviewProps {
@@ -16,6 +18,7 @@ export function QuestionnairePreview({ questionnaire, onClose }: QuestionnairePr
   const [currentIndex, setCurrentIndex] = useState(0)
   const [answers, setAnswers] = useState<Record<string, string>>({})
   const [completed, setCompleted] = useState(false)
+  const [validationError, setValidationError] = useState<string | null>(null)
   const generatedId = useId()
   const questionRef = useRef<HTMLElement>(null)
 
@@ -28,11 +31,29 @@ export function QuestionnairePreview({ questionnaire, onClose }: QuestionnairePr
 
   const setAnswer = (questionId: string, value: string) => {
     setAnswers((prev) => ({ ...prev, [questionId]: value }))
+    setValidationError(null)
   }
 
   const goNext = () => {
+    if (question === undefined) return
+    const requiredByRule = questionnaire.conditionRules.some(
+      (rule) =>
+        rule.action === 'require' &&
+        rule.targetQuestionIds.includes(question.id) &&
+        evaluateConditions(rule.conditions, rule.logic, answers)
+    )
+    const error = validateQuestionAnswer(
+      question,
+      answers[question.id],
+      requiredByRule || !question.allowSkip
+    )
+    if (error !== null) {
+      setValidationError(error)
+      return
+    }
     if (currentIndex < visibleQuestions.length - 1) {
       setCurrentIndex(currentIndex + 1)
+      setValidationError(null)
     } else {
       setCompleted(true)
     }
@@ -41,6 +62,7 @@ export function QuestionnairePreview({ questionnaire, onClose }: QuestionnairePr
   const goPrev = () => {
     if (currentIndex > 0) {
       setCurrentIndex(currentIndex - 1)
+      setValidationError(null)
     }
   }
 
@@ -48,6 +70,7 @@ export function QuestionnairePreview({ questionnaire, onClose }: QuestionnairePr
     setCurrentIndex(0)
     setAnswers({})
     setCompleted(false)
+    setValidationError(null)
   }
 
   if (completed) {
@@ -149,9 +172,28 @@ export function QuestionnairePreview({ questionnaire, onClose }: QuestionnairePr
         ) : (
           <Input
             label={question.content}
+            type={
+              question.type === 'numeric_range'
+                ? 'number'
+                : question.type === 'date'
+                  ? 'date'
+                  : 'text'
+            }
+            min={question.constraint.minValue}
+            max={question.constraint.maxValue}
+            step={question.constraint.step}
+            maxLength={question.constraint.fixedLength}
             value={answers[question.id] ?? ''}
             onChange={(e) => setAnswer(question.id, e.target.value)}
           />
+        )}
+        {validationError !== null && (
+          <p
+            role="alert"
+            className="m-0 text-[length:var(--font-size-sm)] font-[var(--font-weight-medium)] text-[var(--color-danger)]"
+          >
+            {validationError}
+          </p>
         )}
       </div>
       <div className="flex flex-wrap justify-between gap-[var(--space-3)]">

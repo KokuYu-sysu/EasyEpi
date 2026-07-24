@@ -182,11 +182,17 @@ export function getVisibleQuestions(
   answers: Record<string, unknown>
 ): QuestionDef[] {
   const skippedIds = new Set<string>()
+  const showControlledIds = new Set<string>()
+  const shownIds = new Set<string>()
 
   for (const rule of qnaire.conditionRules) {
-    if (rule.action !== 'skip') continue
     const conditionsMet = evaluateConditions(rule.conditions, rule.logic, answers)
-    if (conditionsMet) {
+    if (rule.action === 'show') {
+      for (const targetId of rule.targetQuestionIds) {
+        showControlledIds.add(targetId)
+        if (conditionsMet) shownIds.add(targetId)
+      }
+    } else if (rule.action === 'skip' && conditionsMet) {
       for (const targetId of rule.targetQuestionIds) {
         skippedIds.add(targetId)
       }
@@ -194,6 +200,89 @@ export function getVisibleQuestions(
   }
 
   return qnaire.questions
-    .filter((q) => !skippedIds.has(q.id))
+    .filter(
+      (q) =>
+        !skippedIds.has(q.id) &&
+        (!showControlledIds.has(q.id) || shownIds.has(q.id))
+    )
     .sort((a, b) => a.order - b.order)
+}
+
+export function validateQuestionAnswer(
+  question: QuestionDef,
+  answer: string | undefined,
+  required = !question.allowSkip
+): string | null {
+  const value = answer?.trim() ?? ''
+  if (value.length === 0) {
+    return required ? '请回答当前题目' : null
+  }
+
+  if (question.type === 'single_choice') {
+    return question.options.some((option) => option.value === value)
+      ? null
+      : '请选择有效选项'
+  }
+
+  if (question.type === 'multiple_choice') {
+    const selected = value.split(',').filter(Boolean)
+    const allowed = new Set(question.options.map((option) => option.value))
+    return selected.length > 0 && selected.every((item) => allowed.has(item))
+      ? null
+      : '请选择有效选项'
+  }
+
+  if (
+    question.constraint.fixedLength !== undefined &&
+    value.length !== question.constraint.fixedLength
+  ) {
+    return `请输入 ${question.constraint.fixedLength} 个字符`
+  }
+
+  if (question.type === 'numeric_range') {
+    const numericValue = Number(value)
+    if (!Number.isFinite(numericValue)) return '请输入有效数字'
+    if (question.constraint.type === 'integer' && !Number.isInteger(numericValue)) {
+      return '请输入整数'
+    }
+    if (
+      question.constraint.minValue !== undefined &&
+      numericValue < question.constraint.minValue
+    ) {
+      return `数值不能小于 ${question.constraint.minValue}`
+    }
+    if (
+      question.constraint.maxValue !== undefined &&
+      numericValue > question.constraint.maxValue
+    ) {
+      return `数值不能大于 ${question.constraint.maxValue}`
+    }
+  }
+
+  const patterns: Partial<Record<ConstraintType, RegExp>> = {
+    integer: /^-?\d+$/,
+    decimal: /^-?(?:\d+\.?\d*|\.\d+)$/,
+    chinese: /^[\u3400-\u9fff]+$/u,
+    english: /^[A-Za-z]+$/,
+    alphanumeric: /^[A-Za-z0-9]+$/,
+    date: /^\d{4}-\d{2}-\d{2}$/
+  }
+  const pattern = patterns[question.constraint.type]
+  if (pattern !== undefined && !pattern.test(value)) {
+    return '输入内容不符合题目约束'
+  }
+
+  if (question.constraint.type === 'regex' && question.constraint.regexPattern) {
+    try {
+      const regex = new RegExp(
+        question.constraint.regexPattern,
+        question.constraint.regexFlags
+      )
+      if (!regex.test(value)) return '输入内容不符合题目约束'
+    } catch {
+      return '题目的正则表达式无效'
+    }
+  }
+
+  return null
 }

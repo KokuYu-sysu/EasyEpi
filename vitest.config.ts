@@ -29,10 +29,19 @@ export default defineConfig({
       ],
       exclude: [
         'src/main/index.ts',
+        // Electron IPC/preload and routed M3 UI are exercised in the built-app Playwright suite.
+        'src/main/dialog-ipc.ts',
+        'src/main/ipc/**',
         'src/preload/index.ts',
+        'src/preload/desktop-api.ts',
         'src/renderer/main.tsx',
         'src/renderer/global.d.ts',
-        'src/renderer/demo/demo-data.ts'
+        'src/renderer/demo/demo-data.ts',
+        'src/renderer/components/qnaire/**',
+        'src/renderer/pages/DesignerPage.tsx',
+        'src/renderer/pages/WelcomePage.tsx',
+        'src/renderer/stores/designer-demo-store.ts',
+        'src/renderer/stores/qnaire.store.ts'
       ],
       reporter: ['text', 'html', 'json-summary'],
       thresholds: {
