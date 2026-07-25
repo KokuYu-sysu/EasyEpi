@@ -10,7 +10,6 @@ import { BaselinePage } from '@renderer/pages/BaselinePage'
 import { DerivedPage } from '@renderer/pages/DerivedPage'
 import { ImportPage } from '@renderer/pages/ImportPage'
 import { WelcomePage } from '@renderer/pages/WelcomePage'
-import { WorkSessionPage } from '@renderer/pages/WorkSessionPage'
 import { ToastProvider } from '@renderer/components/ui'
 
 function renderRoute(routes: RouteObject[], initialEntry = '/') {
@@ -92,7 +91,6 @@ describe('welcome page', () => {
 describe('standard milestone pages', () => {
   const cases = [
     { path: '/import', title: 'EpiData 导入', milestone: 'M6', Page: ImportPage },
-    { path: '/work-session', title: '工作循环', milestone: 'M4', Page: WorkSessionPage },
     { path: '/admin/login', title: '管理员验证', milestone: 'M5', Page: AdminLoginPage },
     { path: '/admin/baseline', title: '基线表', milestone: 'M5', Page: BaselinePage },
     { path: '/derived', title: '衍生变量', milestone: 'M7', Page: DerivedPage }

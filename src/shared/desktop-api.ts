@@ -2,6 +2,7 @@ import type { PreferencesResult, PreferencesV1 } from './preferences-contract'
 import type { PingRequest, PingResponse } from './system-contract'
 import type { ProjectCreateRequest, ProjectOpenRequest, ProjectSaveRequest, ProjectResult } from './qnaire-contract'
 import type { QuestionDef, ConditionRule, QuestionnaireDef } from './types/qnaire'
+import type { RecordSubmitResult, RecordListResult, EntryProgressResult, KeyDuplicateResult } from './record-contract'
 
 export interface DialogResult {
   canceled: boolean
@@ -36,6 +37,21 @@ export interface DesktopApi {
     updateConditionRule(id: string, patch: Partial<ConditionRule>): Promise<{ ok: boolean }>
     deleteConditionRule(id: string): Promise<{ ok: boolean }>
     updateMeta(name?: string, description?: string): Promise<{ ok: boolean }>
+  }
+  record: {
+    submit(answers: Record<string, unknown>): Promise<RecordSubmitResult>
+    list(offset?: number, limit?: number): Promise<RecordListResult>
+    delete(recordIds: string[]): Promise<{ ok: boolean }>
+    getProgress(): Promise<EntryProgressResult>
+    saveProgress(data: {
+      currentIndex?: number
+      batchStartTime?: number
+      currentAnswers?: Record<string, unknown>
+    }): Promise<{ ok: boolean }>
+    checkKeyDuplicate(
+      keyValues: Record<string, unknown>,
+      excludeRecordId?: string
+    ): Promise<KeyDuplicateResult>
   }
 }
 

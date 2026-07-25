@@ -30,6 +30,18 @@ import {
   type ProjectResult
 } from '@shared/qnaire-contract'
 import type { QuestionDef, ConditionRule, QuestionnaireDef } from '@shared/types/qnaire'
+import {
+  RECORD_SUBMIT_CHANNEL,
+  RECORD_LIST_CHANNEL,
+  RECORD_DELETE_CHANNEL,
+  RECORD_GET_PROGRESS_CHANNEL,
+  RECORD_SAVE_PROGRESS_CHANNEL,
+  RECORD_CHECK_KEY_CHANNEL,
+  type RecordSubmitResult,
+  type RecordListResult,
+  type EntryProgressResult,
+  type KeyDuplicateResult
+} from '@shared/record-contract'
 
 export interface DesktopInvoke {
   (channel: typeof SYSTEM_PING_CHANNEL, request: PingRequest): Promise<PingResponse>
@@ -48,6 +60,12 @@ export interface DesktopInvoke {
   (channel: typeof QNAIRE_UPDATE_CONDITION_CHANNEL, args: { id: string; patch: Partial<ConditionRule> }): Promise<unknown>
   (channel: typeof QNAIRE_DELETE_CONDITION_CHANNEL, id: string): Promise<unknown>
   (channel: typeof QNAIRE_UPDATE_META_CHANNEL, args: { name?: string; description?: string }): Promise<unknown>
+  (channel: typeof RECORD_SUBMIT_CHANNEL, answers: Record<string, unknown>): Promise<unknown>
+  (channel: typeof RECORD_LIST_CHANNEL, request: { offset?: number; limit?: number }): Promise<unknown>
+  (channel: typeof RECORD_DELETE_CHANNEL, request: { recordIds: string[] }): Promise<unknown>
+  (channel: typeof RECORD_GET_PROGRESS_CHANNEL): Promise<unknown>
+  (channel: typeof RECORD_SAVE_PROGRESS_CHANNEL, data: { currentIndex?: number; batchStartTime?: number; currentAnswers?: Record<string, unknown> }): Promise<unknown>
+  (channel: typeof RECORD_CHECK_KEY_CHANNEL, request: { keyValues: Record<string, unknown>; excludeRecordId?: string }): Promise<unknown>
   (channel: 'dialog:selectFolder'): Promise<unknown>
   (channel: 'dialog:selectFile', filters?: { name: string; extensions: string[] }[]): Promise<unknown>
 }
@@ -124,6 +142,27 @@ export function createDesktopApi(invoke: DesktopInvoke): DesktopApi {
       (await invoke('dialog:selectFile', filters)) as DialogResult
   })
 
-  const desktopApi = { system, preferences, dialog, project, qnaire } satisfies DesktopApi
+  const record = Object.freeze({
+    submit: async (answers: Record<string, unknown>) =>
+      (await invoke(RECORD_SUBMIT_CHANNEL, answers)) as RecordSubmitResult,
+    list: async (offset?: number, limit?: number) =>
+      (await invoke(RECORD_LIST_CHANNEL, { offset, limit })) as RecordListResult,
+    delete: async (recordIds: string[]) =>
+      (await invoke(RECORD_DELETE_CHANNEL, { recordIds })) as { ok: boolean },
+    getProgress: async () =>
+      (await invoke(RECORD_GET_PROGRESS_CHANNEL)) as EntryProgressResult,
+    saveProgress: async (data: {
+      currentIndex?: number
+      batchStartTime?: number
+      currentAnswers?: Record<string, unknown>
+    }) => (await invoke(RECORD_SAVE_PROGRESS_CHANNEL, data)) as { ok: boolean },
+    checkKeyDuplicate: async (keyValues: Record<string, unknown>, excludeRecordId?: string) =>
+      (await invoke(RECORD_CHECK_KEY_CHANNEL, {
+        keyValues,
+        excludeRecordId
+      })) as KeyDuplicateResult
+  })
+
+  const desktopApi = { system, preferences, dialog, project, qnaire, record } satisfies DesktopApi
   return Object.freeze(desktopApi)
 }

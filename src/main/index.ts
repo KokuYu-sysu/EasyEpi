@@ -14,6 +14,7 @@ import {
 import { createProjectIpcState, registerProjectIpc } from './ipc/project.ipc'
 import { registerQnaireIpc } from './ipc/qnaire.ipc'
 import { registerDialogIpc } from './dialog-ipc'
+import { createRecordIpcState, registerRecordIpc } from './ipc/record.ipc'
 
 const APP_ID = 'com.kokuyu.easyepi'
 const developmentUrl = resolveDevelopmentRendererUrl(
@@ -30,6 +31,7 @@ let disposeSystemIpc: (() => void) | undefined
 let disposeProjectIpc: (() => void) | undefined
 let disposeQnaireIpc: (() => void) | undefined
 let disposeDialogIpc: (() => void) | undefined
+let disposeRecordIpc: (() => void) | undefined
 
 app.setAppUserModelId(APP_ID)
 
@@ -99,6 +101,14 @@ void app.whenReady().then(() => {
     packagedRendererUrl,
     developmentUrl
   )
+  const recordState = createRecordIpcState()
+  disposeRecordIpc = registerRecordIpc(
+    ipcMain,
+    projectState,
+    recordState,
+    packagedRendererUrl,
+    developmentUrl
+  )
   createMainWindow()
 
   app.on('activate', () => {
@@ -125,4 +135,6 @@ app.on('will-quit', () => {
   disposeQnaireIpc = undefined
   disposeDialogIpc?.()
   disposeDialogIpc = undefined
+  disposeRecordIpc?.()
+  disposeRecordIpc = undefined
 })

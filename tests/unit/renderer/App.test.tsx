@@ -41,11 +41,31 @@ function createApi(): DesktopApi {
       updateConditionRule: vi.fn(),
       deleteConditionRule: vi.fn(),
       updateMeta: vi.fn()
+    },
+    record: {
+      submit: vi.fn().mockResolvedValue({ ok: true, recordId: 'test-id' }),
+      list: vi.fn().mockResolvedValue({ ok: true, records: [], total: 0 }),
+      delete: vi.fn().mockResolvedValue({ ok: true }),
+      getProgress: vi.fn().mockResolvedValue({ ok: true, currentIndex: 0, batchCount: 0, batchStartTime: Date.now(), currentAnswers: {} }),
+      saveProgress: vi.fn().mockResolvedValue({ ok: true }),
+      checkKeyDuplicate: vi.fn().mockResolvedValue({ ok: true, isDuplicate: false })
     }
   }
 }
 
 describe('App', () => {
+  beforeEach(() => {
+    const api = createApi()
+    Object.defineProperty(window, 'easyEpi', {
+      configurable: true,
+      value: api
+    })
+  })
+
+  afterEach(() => {
+    Reflect.deleteProperty(window, 'easyEpi')
+  })
+
   it('boots preferences before rendering the router shell', async () => {
     const api = createApi()
     const router = createMemoryRouter(createAppRoutes({ isDevelopment: false }), {
@@ -66,7 +86,7 @@ describe('App', () => {
     })
     const { unmount } = render(<App api={createApi()} appearance={appearance} router={router} />)
 
-    expect(await screen.findByRole('heading', { name: '单题录入' })).toBeVisible()
+    expect(await screen.findByText(/准备录入/)).toBeVisible()
     expect(screen.getAllByLabelText('通知')).toHaveLength(1)
     unmount()
     router.dispose()
@@ -95,7 +115,7 @@ describe('App', () => {
     await act(async () => {
       resolvePreferences({ ok: true, preferences: DEFAULT_PREFERENCES })
     })
-    expect(await screen.findByRole('heading', { name: '单题录入' })).toBeVisible()
+    expect(await screen.findByText(/准备录入/)).toBeVisible()
     expect(routerFactory).toHaveBeenCalledOnce()
 
     const router = routerFactory.mock.results[0]?.value
