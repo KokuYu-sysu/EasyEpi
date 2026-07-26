@@ -95,6 +95,7 @@ export function parseRecordDeleteRequest(value: unknown): RecordDeleteRequest {
 
 export interface EntryProgressResult {
   ok: boolean
+  hasDraft: boolean
   currentIndex: number
   batchCount: number
   batchStartTime: number

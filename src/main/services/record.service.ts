@@ -1,4 +1,15 @@
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs'
+import { randomUUID } from 'node:crypto'
+import {
+  closeSync,
+  existsSync,
+  fsyncSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  writeFileSync
+} from 'node:fs'
 import { dirname, join } from 'node:path'
 
 import { DATA_MAGIC, DATA_VERSION } from '@shared/types/project'
@@ -8,7 +19,25 @@ import { encrypt, decrypt } from './crypto.service'
 
 const HEADER_SIZE = 32
 
-function writeHeader(buf: Buffer, recordCount: number, createdAt: number, lastModifiedAt: number): void {
+export interface PersistedEntryProgress {
+  hasDraft: boolean
+  currentIndex: number
+  batchCount: number
+  batchStartTime: number
+  currentAnswers: Record<string, unknown>
+}
+
+interface RecordFilePayload {
+  records: RecordData[]
+  entryProgress: PersistedEntryProgress
+}
+
+function writeHeader(
+  buf: Buffer,
+  recordCount: number,
+  createdAt: number,
+  lastModifiedAt: number
+): void {
   buf.writeUInt32BE(DATA_MAGIC, 0)
   buf.writeUInt32BE(DATA_VERSION, 4)
   buf.writeUInt32BE(recordCount, 8)
@@ -17,7 +46,11 @@ function writeHeader(buf: Buffer, recordCount: number, createdAt: number, lastMo
   buf.writeBigUInt64BE(BigInt(lastModifiedAt), 24)
 }
 
-function readHeader(buf: Buffer): { recordCount: number; createdAt: number; lastModifiedAt: number } {
+function readHeader(buf: Buffer): {
+  recordCount: number
+  createdAt: number
+  lastModifiedAt: number
+} {
   if (buf.length < HEADER_SIZE) throw new Error('DATA_FILE_TOO_SHORT')
   const magic = buf.readUInt32BE(0)
   if (magic !== DATA_MAGIC) throw new Error('INVALID_DATA_MAGIC')
@@ -30,15 +63,107 @@ function readHeader(buf: Buffer): { recordCount: number; createdAt: number; last
   }
 }
 
-function encryptRecords(records: RecordData[], key: Buffer): Buffer {
-  const json = JSON.stringify(records)
+function createEmptyProgress(timestamp: number): PersistedEntryProgress {
+  return {
+    hasDraft: false,
+    currentIndex: 0,
+    batchCount: 0,
+    batchStartTime: timestamp,
+    currentAnswers: {}
+  }
+}
+
+function encryptPayload(payload: RecordFilePayload, key: Buffer): Buffer {
+  const json = JSON.stringify(payload)
   const plaintext = Buffer.from(json, 'utf-8')
   return encrypt(plaintext, key)
 }
 
-function decryptRecords(ciphertext: Buffer, key: Buffer): RecordData[] {
+function decryptPayload(
+  ciphertext: Buffer,
+  key: Buffer,
+  fallbackTimestamp: number
+): RecordFilePayload {
   const plaintext = decrypt(ciphertext, key)
-  return JSON.parse(plaintext.toString('utf-8')) as RecordData[]
+  const parsed = JSON.parse(plaintext.toString('utf-8')) as unknown
+
+  if (Array.isArray(parsed)) {
+    return {
+      records: parsed as RecordData[],
+      entryProgress: createEmptyProgress(fallbackTimestamp)
+    }
+  }
+
+  if (typeof parsed !== 'object' || parsed === null) throw new Error('INVALID_DATA_PAYLOAD')
+  const payload = parsed as Partial<RecordFilePayload>
+  if (
+    !Array.isArray(payload.records) ||
+    typeof payload.entryProgress !== 'object' ||
+    payload.entryProgress === null
+  ) {
+    throw new Error('INVALID_DATA_PAYLOAD')
+  }
+  const entryProgress = payload.entryProgress as Partial<PersistedEntryProgress>
+  return {
+    records: payload.records,
+    entryProgress: {
+      hasDraft:
+        typeof entryProgress.hasDraft === 'boolean'
+          ? entryProgress.hasDraft
+          : (entryProgress.currentIndex ?? 0) > 0 ||
+            Object.keys(entryProgress.currentAnswers ?? {}).length > 0,
+      currentIndex: entryProgress.currentIndex ?? 0,
+      batchCount: entryProgress.batchCount ?? 0,
+      batchStartTime: entryProgress.batchStartTime ?? fallbackTimestamp,
+      currentAnswers: entryProgress.currentAnswers ?? {}
+    }
+  }
+}
+
+export function atomicWriteFile(
+  filePath: string,
+  contents: Buffer,
+  replaceFile: typeof renameSync = renameSync
+): void {
+  const temporaryPath = `${filePath}.${process.pid}.${randomUUID()}.tmp`
+  let descriptor: number | undefined
+  try {
+    descriptor = openSync(temporaryPath, 'wx')
+    writeFileSync(descriptor, contents)
+    fsyncSync(descriptor)
+    closeSync(descriptor)
+    descriptor = undefined
+    replaceFile(temporaryPath, filePath)
+  } catch (error) {
+    if (descriptor !== undefined) closeSync(descriptor)
+    if (existsSync(temporaryPath)) rmSync(temporaryPath)
+    throw error
+  }
+}
+
+function readDataFile(
+  filePath: string,
+  key: Buffer
+): {
+  header: ReturnType<typeof readHeader>
+  payload: RecordFilePayload
+} {
+  const fileBuf = readFileSync(filePath)
+  const header = readHeader(fileBuf)
+  const payload = decryptPayload(fileBuf.subarray(HEADER_SIZE), key, header.createdAt)
+  if (payload.records.length !== header.recordCount) throw new Error('DATA_RECORD_COUNT_MISMATCH')
+  return { header, payload }
+}
+
+function writeDataFile(
+  filePath: string,
+  key: Buffer,
+  header: ReturnType<typeof readHeader>,
+  payload: RecordFilePayload
+): void {
+  const newHeader = Buffer.alloc(HEADER_SIZE)
+  writeHeader(newHeader, payload.records.length, header.createdAt, Date.now())
+  atomicWriteFile(filePath, Buffer.concat([newHeader, encryptPayload(payload, key)]))
 }
 
 export function getDataFilePath(folderPath: string, projectName: string): string {
@@ -53,49 +178,43 @@ export function createDataFile(filePath: string, key: Buffer): void {
   const now = Date.now()
   writeHeader(header, 0, now, now)
 
-  const emptyCiphertext = encryptRecords([], key)
-  writeFileSync(filePath, Buffer.concat([header, emptyCiphertext]))
+  const emptyCiphertext = encryptPayload(
+    { records: [], entryProgress: createEmptyProgress(now) },
+    key
+  )
+  atomicWriteFile(filePath, Buffer.concat([header, emptyCiphertext]))
 }
 
 export function loadRecords(filePath: string, key: Buffer): RecordData[] {
   if (!existsSync(filePath)) return []
-  const fileBuf = readFileSync(filePath)
-  const header = readHeader(fileBuf)
-  if (header.recordCount === 0) return []
-
-  const ciphertext = fileBuf.subarray(HEADER_SIZE)
-  return decryptRecords(ciphertext, key)
+  return readDataFile(filePath, key).payload.records
 }
 
 export function appendRecord(filePath: string, key: Buffer, record: RecordData): void {
-  const records = loadRecords(filePath, key)
-  records.push(record)
-
-  const fileBuf = readFileSync(filePath)
-  const header = readHeader(fileBuf)
-  const now = Date.now()
-
-  const newHeader = Buffer.alloc(HEADER_SIZE)
-  writeHeader(newHeader, records.length, header.createdAt, now)
-
-  const ciphertext = encryptRecords(records, key)
-  writeFileSync(filePath, Buffer.concat([newHeader, ciphertext]))
+  const { header, payload } = readDataFile(filePath, key)
+  payload.records.push(record)
+  writeDataFile(filePath, key, header, payload)
 }
 
 export function deleteRecords(filePath: string, key: Buffer, recordIds: string[]): void {
-  const records = loadRecords(filePath, key)
+  const { header, payload } = readDataFile(filePath, key)
   const idsToDelete = new Set(recordIds)
-  const filtered = records.filter((r) => !idsToDelete.has(r.id))
+  payload.records = payload.records.filter((r) => !idsToDelete.has(r.id))
+  writeDataFile(filePath, key, header, payload)
+}
 
-  const fileBuf = readFileSync(filePath)
-  const header = readHeader(fileBuf)
-  const now = Date.now()
+export function loadEntryProgress(filePath: string, key: Buffer): PersistedEntryProgress {
+  return readDataFile(filePath, key).payload.entryProgress
+}
 
-  const newHeader = Buffer.alloc(HEADER_SIZE)
-  writeHeader(newHeader, filtered.length, header.createdAt, now)
-
-  const ciphertext = encryptRecords(filtered, key)
-  writeFileSync(filePath, Buffer.concat([newHeader, ciphertext]))
+export function saveEntryProgress(
+  filePath: string,
+  key: Buffer,
+  progress: PersistedEntryProgress
+): void {
+  const { header, payload } = readDataFile(filePath, key)
+  payload.entryProgress = progress
+  writeDataFile(filePath, key, header, payload)
 }
 
 export function checkKeyDuplicate(

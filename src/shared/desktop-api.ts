@@ -1,8 +1,18 @@
 import type { PreferencesResult, PreferencesV1 } from './preferences-contract'
 import type { PingRequest, PingResponse } from './system-contract'
-import type { ProjectCreateRequest, ProjectOpenRequest, ProjectSaveRequest, ProjectResult } from './qnaire-contract'
+import type {
+  ProjectCreateRequest,
+  ProjectOpenRequest,
+  ProjectSaveRequest,
+  ProjectResult
+} from './qnaire-contract'
 import type { QuestionDef, ConditionRule, QuestionnaireDef } from './types/qnaire'
-import type { RecordSubmitResult, RecordListResult, EntryProgressResult, KeyDuplicateResult } from './record-contract'
+import type {
+  RecordSubmitResult,
+  RecordListResult,
+  EntryProgressResult,
+  KeyDuplicateResult
+} from './record-contract'
 
 export interface DialogResult {
   canceled: boolean
@@ -44,6 +54,7 @@ export interface DesktopApi {
     delete(recordIds: string[]): Promise<{ ok: boolean }>
     getProgress(): Promise<EntryProgressResult>
     saveProgress(data: {
+      hasDraft?: boolean
       currentIndex?: number
       batchStartTime?: number
       currentAnswers?: Record<string, unknown>

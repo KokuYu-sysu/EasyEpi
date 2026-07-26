@@ -3,6 +3,7 @@ import { describe, it, expect } from 'vitest'
 import {
   evaluateConditions,
   getVisibleQuestions,
+  normalizeVisibleAnswers,
   validateQuestionAnswer,
   isQuestionType,
   isConstraintType,
@@ -179,6 +180,51 @@ describe('qnaire types', () => {
       }
       const visible = getVisibleQuestions(qnaire, {})
       expect(visible.map((q) => q.id)).toEqual(['q1', 'q2', 'q3'])
+    })
+
+    it('removes stale answers until chained visibility rules reach a fixed point', () => {
+      const qnaire: QuestionnaireDef = {
+        name: 'Chained visibility',
+        questions: [q1, q2, q3],
+        conditionRules: [
+          {
+            id: 'show-q2',
+            sourceQuestionId: 'q1',
+            conditions: [{ questionId: 'q1', operator: 'equals', value: 'yes' }],
+            logic: 'AND',
+            action: 'show',
+            targetQuestionIds: ['q2']
+          },
+          {
+            id: 'show-q3',
+            sourceQuestionId: 'q2',
+            conditions: [{ questionId: 'q2', operator: 'equals', value: 'yes' }],
+            logic: 'AND',
+            action: 'show',
+            targetQuestionIds: ['q3']
+          }
+        ],
+        keyQuestionIds: []
+      }
+
+      expect(normalizeVisibleAnswers(qnaire, { q1: 'no', q2: 'yes', q3: 'stale' })).toEqual({
+        visibleQuestions: [q1],
+        answers: { q1: 'no' }
+      })
+    })
+
+    it('ignores answers for question ids that are not in the questionnaire', () => {
+      const qnaire: QuestionnaireDef = {
+        name: 'Known questions only',
+        questions: [q1],
+        conditionRules: [],
+        keyQuestionIds: []
+      }
+
+      expect(normalizeVisibleAnswers(qnaire, { unknown: 'stale' })).toEqual({
+        visibleQuestions: [q1],
+        answers: {}
+      })
     })
   })
 

@@ -1,6 +1,6 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { randomBytes } from 'node:crypto'
-import { existsSync, mkdirSync, rmSync, readFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readdirSync, rmSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import {
@@ -9,9 +9,13 @@ import {
   appendRecord,
   deleteRecords,
   checkKeyDuplicate,
-  getDataFilePath
+  getDataFilePath,
+  loadEntryProgress,
+  saveEntryProgress,
+  atomicWriteFile
 } from '../../../../src/main/services/record.service'
 import { DATA_MAGIC, DATA_VERSION } from '@shared/types/project'
+import { decrypt, encrypt } from '../../../../src/main/services/crypto.service'
 
 const TEST_DIR = join(tmpdir(), 'easyepi-test-record-' + Date.now())
 const TEST_KEY = randomBytes(32)
@@ -69,6 +73,117 @@ describe('record.service', () => {
       const records = loadRecords(filePath, TEST_KEY)
       expect(records).toHaveLength(5)
     })
+
+    it('preserves the previous file when the atomic replacement fails', () => {
+      const filePath = join(TEST_DIR, 'test.easyepi_data')
+      writeFileSync(filePath, 'safe contents')
+      const failReplacement = vi.fn(() => {
+        throw new Error('simulated rename failure')
+      })
+
+      expect(() => atomicWriteFile(filePath, Buffer.from('new contents'), failReplacement)).toThrow(
+        'simulated rename failure'
+      )
+
+      expect(readFileSync(filePath, 'utf8')).toBe('safe contents')
+      expect(failReplacement).toHaveBeenCalledOnce()
+      expect(readdirSync(TEST_DIR).filter((name) => name.endsWith('.tmp'))).toEqual([])
+    })
+  })
+
+  describe('entry progress persistence', () => {
+    it('restores a first-record draft from the encrypted data file', () => {
+      const filePath = join(TEST_DIR, 'test.easyepi_data')
+      createDataFile(filePath, TEST_KEY)
+
+      saveEntryProgress(filePath, TEST_KEY, {
+        hasDraft: true,
+        currentIndex: 1,
+        batchCount: 0,
+        batchStartTime: 123456,
+        currentAnswers: { q1: 'yes' }
+      })
+
+      expect(loadEntryProgress(filePath, TEST_KEY)).toEqual({
+        hasDraft: true,
+        currentIndex: 1,
+        batchCount: 0,
+        batchStartTime: 123456,
+        currentAnswers: { q1: 'yes' }
+      })
+    })
+
+    it('preserves saved progress when a record is appended', () => {
+      const filePath = join(TEST_DIR, 'test.easyepi_data')
+      createDataFile(filePath, TEST_KEY)
+      saveEntryProgress(filePath, TEST_KEY, {
+        hasDraft: true,
+        currentIndex: 2,
+        batchCount: 3,
+        batchStartTime: 123456,
+        currentAnswers: { q1: 'saved' }
+      })
+
+      appendRecord(filePath, TEST_KEY, {
+        id: 'r1',
+        answers: { q1: 'submitted' },
+        createdAt: '',
+        updatedAt: ''
+      })
+
+      expect(loadEntryProgress(filePath, TEST_KEY)).toMatchObject({
+        currentIndex: 2,
+        batchCount: 3,
+        currentAnswers: { q1: 'saved' }
+      })
+    })
+
+    it('loads the legacy encrypted record-array format', () => {
+      const filePath = join(TEST_DIR, 'legacy.easyepi_data')
+      createDataFile(filePath, TEST_KEY)
+      appendRecord(filePath, TEST_KEY, {
+        id: 'legacy-record',
+        answers: { q1: 'legacy' },
+        createdAt: '',
+        updatedAt: ''
+      })
+      const current = readFileSync(filePath)
+      const payload = JSON.parse(decrypt(current.subarray(32), TEST_KEY).toString('utf8'))
+      writeFileSync(
+        filePath,
+        Buffer.concat([
+          current.subarray(0, 32),
+          encrypt(Buffer.from(JSON.stringify(payload.records)), TEST_KEY)
+        ])
+      )
+
+      expect(loadRecords(filePath, TEST_KEY)).toHaveLength(1)
+      expect(loadEntryProgress(filePath, TEST_KEY)).toMatchObject({
+        hasDraft: false,
+        currentIndex: 0
+      })
+    })
+
+    it('derives draft state for payloads written before hasDraft was added', () => {
+      const filePath = join(TEST_DIR, 'old-progress.easyepi_data')
+      createDataFile(filePath, TEST_KEY)
+      const current = readFileSync(filePath)
+      const payload = JSON.parse(decrypt(current.subarray(32), TEST_KEY).toString('utf8'))
+      delete payload.entryProgress.hasDraft
+      payload.entryProgress.currentIndex = 1
+      writeFileSync(
+        filePath,
+        Buffer.concat([
+          current.subarray(0, 32),
+          encrypt(Buffer.from(JSON.stringify(payload)), TEST_KEY)
+        ])
+      )
+
+      expect(loadEntryProgress(filePath, TEST_KEY)).toMatchObject({
+        hasDraft: true,
+        currentIndex: 1
+      })
+    })
   })
 
   describe('deleteRecords', () => {
@@ -95,7 +210,9 @@ describe('record.service', () => {
         createdAt: '',
         updatedAt: ''
       })
-      const result = checkKeyDuplicate(filePath, TEST_KEY, ['id_card'], { id_card: '110101199001011234' })
+      const result = checkKeyDuplicate(filePath, TEST_KEY, ['id_card'], {
+        id_card: '110101199001011234'
+      })
       expect(result.isDuplicate).toBe(true)
     })
 
@@ -108,7 +225,9 @@ describe('record.service', () => {
         createdAt: '',
         updatedAt: ''
       })
-      const result = checkKeyDuplicate(filePath, TEST_KEY, ['id_card'], { id_card: '999999999999999999' })
+      const result = checkKeyDuplicate(filePath, TEST_KEY, ['id_card'], {
+        id_card: '999999999999999999'
+      })
       expect(result.isDuplicate).toBe(false)
     })
 
@@ -134,7 +253,9 @@ describe('record.service', () => {
 
   describe('getDataFilePath', () => {
     it('returns correct path', () => {
-      expect(getDataFilePath('/projects', 'myproject')).toBe(join('/projects', 'myproject.easyepi_data'))
+      expect(getDataFilePath('/projects', 'myproject')).toBe(
+        join('/projects', 'myproject.easyepi_data')
+      )
     })
   })
 })

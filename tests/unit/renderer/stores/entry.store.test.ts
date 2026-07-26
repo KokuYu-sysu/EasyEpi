@@ -116,6 +116,25 @@ describe('entry.store', () => {
     expect(store.getState().phase).toBe('confirming')
   })
 
+  it('auto-saves the completed draft before showing submit confirmation', async () => {
+    const store = createEntryStore()
+    await store.getState().loadQuestionnaire()
+    store.getState().startEntry()
+    store.getState().setAnswer('q1', '1')
+    store.getState().goNext()
+    store.getState().setAnswer('q2', '张三')
+    store.getState().goNext()
+
+    await vi.waitFor(() => {
+      expect(mockRecordSaveProgress).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          currentIndex: 1,
+          currentAnswers: { q1: '1', q2: '张三' }
+        })
+      )
+    })
+  })
+
   it('submits record successfully', async () => {
     const store = createEntryStore()
     await store.getState().loadQuestionnaire()
@@ -216,5 +235,126 @@ describe('entry.store', () => {
     // Answer "yes" → q2 should reappear
     store.getState().setAnswer('q1', 'yes')
     expect(store.getState().visibleQuestions).toHaveLength(2)
+  })
+
+  it('restores an unfinished first record even when the batch count is zero', async () => {
+    mockRecordGetProgress.mockResolvedValue({
+      ok: true,
+      currentIndex: 1,
+      batchCount: 0,
+      batchStartTime: 123456,
+      currentAnswers: { q1: '1' }
+    })
+
+    const store = createEntryStore()
+    await store.getState().loadQuestionnaire()
+
+    expect(store.getState()).toMatchObject({
+      phase: 'entering',
+      currentIndex: 1,
+      batchCount: 0,
+      batchStartTime: 123456,
+      answers: { q1: '1' }
+    })
+  })
+
+  it('restores an answerless draft at a later question', async () => {
+    mockRecordGetProgress.mockResolvedValue({
+      ok: true,
+      hasDraft: true,
+      currentIndex: 1,
+      batchCount: 0,
+      batchStartTime: 123456,
+      currentAnswers: {}
+    })
+
+    const store = createEntryStore()
+    await store.getState().loadQuestionnaire()
+
+    expect(store.getState()).toMatchObject({
+      phase: 'entering',
+      currentIndex: 1,
+      answers: {}
+    })
+  })
+
+  it('guards against two concurrent submissions', async () => {
+    let resolveSubmit: ((value: { ok: boolean; recordId: string }) => void) | undefined
+    mockRecordSubmit.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveSubmit = resolve
+        })
+    )
+    const store = createEntryStore()
+    await store.getState().loadQuestionnaire()
+    store.getState().startEntry()
+    store.getState().setAnswer('q1', '1')
+    store.getState().goNext()
+    store.getState().setAnswer('q2', 'name')
+    store.getState().goNext()
+
+    const first = store.getState().submitRecord()
+    const second = store.getState().submitRecord()
+    expect(await second).toBe(false)
+    expect(mockRecordSubmit).toHaveBeenCalledTimes(1)
+    resolveSubmit?.({ ok: true, recordId: 'one' })
+    await expect(first).resolves.toBe(true)
+  })
+
+  it('finishes instead of navigating past the end when a skipped answer hides the remaining question', async () => {
+    mockQnaireGetData.mockResolvedValue({
+      name: 'SkipEndTest',
+      questions: [
+        {
+          id: 'q1',
+          content: '是否适用',
+          variableName: 'applicable',
+          type: 'free_text' as const,
+          options: [],
+          constraint: { type: 'none' as const },
+          isKey: false,
+          allowSkip: true,
+          skipValue: '-9',
+          order: 0
+        },
+        {
+          id: 'q2',
+          content: '补充说明',
+          variableName: 'details',
+          type: 'free_text' as const,
+          options: [],
+          constraint: { type: 'none' as const },
+          isKey: false,
+          allowSkip: false,
+          order: 1
+        }
+      ],
+      conditionRules: [
+        {
+          id: 'rule1',
+          sourceQuestionId: 'q1',
+          conditions: [{ questionId: 'q1', operator: 'equals' as const, value: '-9' }],
+          logic: 'AND' as const,
+          action: 'skip' as const,
+          targetQuestionIds: ['q2']
+        }
+      ],
+      keyQuestionIds: []
+    })
+
+    const store = createEntryStore()
+    await store.getState().loadQuestionnaire()
+    store.getState().startEntry()
+    store.getState().skipQuestion()
+
+    expect(store.getState().phase).toBe('confirming')
+    expect(store.getState().currentIndex).toBe(0)
+    expect(store.getState().visibleQuestions).toHaveLength(1)
+    await vi.waitFor(() => {
+      expect(mockRecordSaveProgress).toHaveBeenLastCalledWith(
+        expect.objectContaining({ currentIndex: 0, currentAnswers: { q1: '-9' } })
+      )
+    })
   })
 })

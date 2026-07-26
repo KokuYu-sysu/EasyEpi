@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useStore } from 'zustand'
 
 import { useCurrentRouteHandle } from '@renderer/app/route-metadata'
+import { PageHeader } from '@renderer/components/common/PageHeader'
 import { Button, EmptyState, Progress } from '@renderer/components/ui'
 import { QuestionCard } from '@renderer/components/entry/QuestionCard'
 import { createEntryStore, type EntryStore } from '@renderer/stores/entry.store'
@@ -27,6 +28,7 @@ export function EntryPage({ store: injectedStore }: EntryPageProps) {
     validationError,
     batchCount,
     isLoading,
+    isSubmitting,
     error,
     lastSubmitError
   } = state
@@ -43,9 +45,7 @@ export function EntryPage({ store: injectedStore }: EntryPageProps) {
     if (!shouldMoveFocusRef.current) return
     shouldMoveFocusRef.current = false
     questionRegionRef.current
-      ?.querySelector<HTMLElement>(
-        'input:not(:disabled), [role="radio"]:not([disabled]), textarea'
-      )
+      ?.querySelector<HTMLElement>('input:not(:disabled), [role="radio"]:not([disabled]), textarea')
       ?.focus()
   }, [currentIndex, phase])
 
@@ -81,10 +81,20 @@ export function EntryPage({ store: injectedStore }: EntryPageProps) {
     navigate('/')
   }, [store, navigate])
 
+  const handlePause = useCallback(async () => {
+    await store.getState().pauseEntry()
+    navigate('/')
+  }, [store, navigate])
+
   // Keyboard shortcuts
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if (phase !== 'entering') return
+      if (e.key === 'Escape') {
+        e.preventDefault()
+        void handlePause()
+        return
+      }
       const target = e.target as HTMLElement
       if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA') {
         if (e.key === 'Enter' && !e.shiftKey) {
@@ -114,20 +124,26 @@ export function EntryPage({ store: injectedStore }: EntryPageProps) {
         e.preventDefault()
         handlePrev()
       }
-      if (e.key === 'Escape') {
-        e.preventDefault()
-        handleEndWork()
-      }
     }
 
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
-  }, [phase, visibleQuestions, currentIndex, handleNext, handlePrev, handleEndWork, store])
+  }, [phase, visibleQuestions, currentIndex, handleNext, handlePrev, handlePause, store])
 
   if (handle === null) throw new Error('ENTRY_ROUTE_METADATA_MISSING')
 
+  const renderPage = (content: ReactNode) => (
+    <div className="grid gap-[var(--space-5)]">
+      <PageHeader
+        title={handle.title}
+        description={handle.description ?? '以一题一屏方式完成现场录入。'}
+      />
+      {content}
+    </div>
+  )
+
   if (isLoading) {
-    return (
+    return renderPage(
       <div className="flex items-center justify-center p-[var(--space-8)]">
         <p className="text-[var(--color-text-secondary)]">加载问卷中...</p>
       </div>
@@ -135,30 +151,26 @@ export function EntryPage({ store: injectedStore }: EntryPageProps) {
   }
 
   if (error) {
-    return (
+    return renderPage(
       <EmptyState
         title="加载失败"
         description={error}
-        action={
-          <Button onClick={() => store.getState().loadQuestionnaire()}>重试</Button>
-        }
+        action={<Button onClick={() => store.getState().loadQuestionnaire()}>重试</Button>}
       />
     )
   }
 
   if (phase === 'idle') {
     if (!questionnaire) {
-      return (
+      return renderPage(
         <EmptyState
           title="请先打开项目"
           description="尚未打开任何问卷项目。请先在欢迎页新建或打开一个项目后再进行录入。"
-          action={
-            <Button onClick={() => navigate('/')}>前往欢迎页</Button>
-          }
+          action={<Button onClick={() => navigate('/')}>前往欢迎页</Button>}
         />
       )
     }
-    return (
+    return renderPage(
       <EmptyState
         title="准备录入"
         description={`已加载问卷「${questionnaire.name}」，共 ${visibleQuestions.length} 题。批次已录入: ${batchCount} 份`}
@@ -183,7 +195,7 @@ export function EntryPage({ store: injectedStore }: EntryPageProps) {
 
   if (phase === 'confirming') {
     const keyQuestions = state.questionnaire?.questions.filter((q) => q.isKey) ?? []
-    return (
+    return renderPage(
       <section
         className="mx-auto grid w-full max-w-3xl gap-[var(--space-5)] rounded-[var(--radius-3)] border border-[var(--color-border-default)] bg-[var(--color-surface-base)] p-[var(--space-5)] shadow-[var(--shadow-z1)]"
         aria-labelledby="confirm-heading"
@@ -196,9 +208,7 @@ export function EntryPage({ store: injectedStore }: EntryPageProps) {
           {keyQuestions.map((q) => (
             <div key={q.id} className="flex justify-between">
               <span className="text-[var(--color-text-secondary)]">{q.content}</span>
-              <span className="font-[var(--font-weight-medium)]">
-                {answers[q.id] ?? '-'}
-              </span>
+              <span className="font-[var(--font-weight-medium)]">{answers[q.id] ?? '-'}</span>
             </div>
           ))}
           {keyQuestions.length === 0 ? (
@@ -219,14 +229,16 @@ export function EntryPage({ store: injectedStore }: EntryPageProps) {
           <Button variant="secondary" onClick={handlePrev}>
             返回修改
           </Button>
-          <Button onClick={handleSubmit}>确认提交</Button>
+          <Button disabled={isSubmitting} onClick={handleSubmit}>
+            {isSubmitting ? '正在提交...' : '确认提交'}
+          </Button>
         </div>
       </section>
     )
   }
 
   if (phase === 'submitted' || phase === 'work_end') {
-    return (
+    return renderPage(
       <EmptyState
         title="记录已保存"
         description={`本次已录入: ${batchCount} 份`}
@@ -245,13 +257,13 @@ export function EntryPage({ store: injectedStore }: EntryPageProps) {
   // Entering phase
   const currentQuestion = visibleQuestions[currentIndex]
   if (!currentQuestion) {
-    return <EmptyState title="没有可见题目" description="所有题目均被条件规则跳过。" />
+    return renderPage(<EmptyState title="没有可见题目" description="所有题目均被条件规则跳过。" />)
   }
 
   const progressValue = currentIndex + 1
   const progressMax = visibleQuestions.length
 
-  return (
+  return renderPage(
     <div className="grid gap-[var(--space-4)]">
       <Progress
         label="录入进度"

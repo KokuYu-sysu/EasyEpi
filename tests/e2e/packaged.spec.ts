@@ -14,6 +14,8 @@ import {
   type Page
 } from '@playwright/test'
 
+import type { DesktopApi } from '../../src/shared/desktop-api'
+
 const hostileDevelopmentUrl = 'https://attacker.invalid/easyepi'
 
 interface PackagedPaths {
@@ -26,6 +28,8 @@ interface PortableSession {
   child: ChildProcess
   window: Page
 }
+
+type RendererWindow = Window & { easyEpi: DesktopApi }
 
 async function assertEasyEpiWindow(window: Page): Promise<void> {
   await expect(window).toHaveTitle('EasyEpi')
@@ -213,5 +217,101 @@ test('validates production behavior and preference persistence in a packaged Eas
     await expect(window.locator('html')).toHaveAttribute('data-font-scale', 'large')
   } finally {
     await electronApp?.close()
+  }
+})
+
+test('submits and reopens an encrypted M4 record in the packaged executable', async () => {
+  const paths = readPackagedPaths()
+  test.skip(!basename(paths.executablePath).toLowerCase().includes('-portable-'))
+  await access(paths.executablePath)
+  await mkdir(paths.userDataDir, { recursive: true })
+  const projectFolder = join(paths.userDataDir, 'm4-packaged-project')
+  const projectFile = join(projectFolder, 'M4 EXE 验收.easyepi')
+  await mkdir(projectFolder, { recursive: true })
+
+  let session: PortableSession | undefined
+  try {
+    session = await launchPortable(paths)
+    const { window } = session
+    await window.evaluate(
+      async ({ folderPath }) => {
+        const api = (globalThis as unknown as RendererWindow).easyEpi
+        await api.project.create({
+          name: 'M4 EXE 验收',
+          folderPath,
+          password: 'm4-exe-password'
+        })
+        await api.qnaire.addQuestion({
+          id: 'exe-q1',
+          content: '受试者编号',
+          variableName: 'participant_id',
+          type: 'fixed_length',
+          options: [],
+          constraint: { type: 'alphanumeric', fixedLength: 3 },
+          isKey: true,
+          allowSkip: false,
+          order: 0
+        })
+        await api.qnaire.addQuestion({
+          id: 'exe-q2',
+          content: '现场备注',
+          variableName: 'notes',
+          type: 'free_text',
+          options: [],
+          constraint: { type: 'none' },
+          isKey: false,
+          allowSkip: false,
+          order: 1
+        })
+        await api.project.save({ folderPath })
+        globalThis.location.hash = '#/entry'
+      },
+      { folderPath: projectFolder }
+    )
+
+    await window.getByRole('button', { name: '开始录入' }).click()
+    await window.getByRole('textbox', { name: '受试者编号' }).fill('E01')
+    await window.getByRole('button', { name: '下一题' }).click()
+    await window.getByRole('textbox', { name: '现场备注' }).fill('来自便携版 EXE')
+    await window.getByRole('button', { name: '完成录入' }).click()
+    await window.getByRole('button', { name: '确认提交' }).click()
+    await expect(window.getByText('本次已录入: 1 份')).toBeVisible()
+    await expect(
+      window.evaluate(() => (globalThis as unknown as RendererWindow).easyEpi.record.list())
+    ).resolves.toMatchObject({ total: 1 })
+  } finally {
+    await closePortable(session)
+  }
+
+  session = undefined
+  try {
+    session = await launchPortable(paths)
+    const { window } = session
+    await expect(
+      window.evaluate(
+        ({ filePath }) =>
+          (globalThis as unknown as RendererWindow).easyEpi.project.open({
+            filePath,
+            password: 'm4-exe-password'
+          }),
+        { filePath: projectFile }
+      )
+    ).resolves.toMatchObject({ ok: true })
+    await expect(
+      window.evaluate(() => (globalThis as unknown as RendererWindow).easyEpi.record.list())
+    ).resolves.toMatchObject({
+      total: 1,
+      records: [{ answers: { 'exe-q1': 'E01', 'exe-q2': '来自便携版 EXE' } }]
+    })
+    await expect(
+      window.evaluate(() =>
+        (globalThis as unknown as RendererWindow).easyEpi.record.submit({
+          'exe-q1': 'E01',
+          'exe-q2': '重复记录'
+        })
+      )
+    ).resolves.toMatchObject({ ok: false, error: 'KEY_DUPLICATE' })
+  } finally {
+    await closePortable(session)
   }
 })

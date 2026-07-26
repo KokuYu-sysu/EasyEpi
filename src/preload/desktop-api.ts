@@ -53,21 +53,46 @@ export interface DesktopInvoke {
   (channel: typeof PROJECT_CLOSE_CHANNEL): Promise<unknown>
   (channel: typeof QNAIRE_GET_DATA_CHANNEL): Promise<unknown>
   (channel: typeof QNAIRE_ADD_QUESTION_CHANNEL, question: QuestionDef): Promise<unknown>
-  (channel: typeof QNAIRE_UPDATE_QUESTION_CHANNEL, args: { id: string; patch: Partial<QuestionDef> }): Promise<unknown>
+  (
+    channel: typeof QNAIRE_UPDATE_QUESTION_CHANNEL,
+    args: { id: string; patch: Partial<QuestionDef> }
+  ): Promise<unknown>
   (channel: typeof QNAIRE_DELETE_QUESTION_CHANNEL, id: string): Promise<unknown>
   (channel: typeof QNAIRE_REORDER_QUESTIONS_CHANNEL, ids: string[]): Promise<unknown>
   (channel: typeof QNAIRE_ADD_CONDITION_CHANNEL, rule: ConditionRule): Promise<unknown>
-  (channel: typeof QNAIRE_UPDATE_CONDITION_CHANNEL, args: { id: string; patch: Partial<ConditionRule> }): Promise<unknown>
+  (
+    channel: typeof QNAIRE_UPDATE_CONDITION_CHANNEL,
+    args: { id: string; patch: Partial<ConditionRule> }
+  ): Promise<unknown>
   (channel: typeof QNAIRE_DELETE_CONDITION_CHANNEL, id: string): Promise<unknown>
-  (channel: typeof QNAIRE_UPDATE_META_CHANNEL, args: { name?: string; description?: string }): Promise<unknown>
+  (
+    channel: typeof QNAIRE_UPDATE_META_CHANNEL,
+    args: { name?: string; description?: string }
+  ): Promise<unknown>
   (channel: typeof RECORD_SUBMIT_CHANNEL, answers: Record<string, unknown>): Promise<unknown>
-  (channel: typeof RECORD_LIST_CHANNEL, request: { offset?: number; limit?: number }): Promise<unknown>
+  (
+    channel: typeof RECORD_LIST_CHANNEL,
+    request: { offset?: number; limit?: number }
+  ): Promise<unknown>
   (channel: typeof RECORD_DELETE_CHANNEL, request: { recordIds: string[] }): Promise<unknown>
   (channel: typeof RECORD_GET_PROGRESS_CHANNEL): Promise<unknown>
-  (channel: typeof RECORD_SAVE_PROGRESS_CHANNEL, data: { currentIndex?: number; batchStartTime?: number; currentAnswers?: Record<string, unknown> }): Promise<unknown>
-  (channel: typeof RECORD_CHECK_KEY_CHANNEL, request: { keyValues: Record<string, unknown>; excludeRecordId?: string }): Promise<unknown>
+  (
+    channel: typeof RECORD_SAVE_PROGRESS_CHANNEL,
+    data: {
+      currentIndex?: number
+      batchStartTime?: number
+      currentAnswers?: Record<string, unknown>
+    }
+  ): Promise<unknown>
+  (
+    channel: typeof RECORD_CHECK_KEY_CHANNEL,
+    request: { keyValues: Record<string, unknown>; excludeRecordId?: string }
+  ): Promise<unknown>
   (channel: 'dialog:selectFolder'): Promise<unknown>
-  (channel: 'dialog:selectFile', filters?: { name: string; extensions: string[] }[]): Promise<unknown>
+  (
+    channel: 'dialog:selectFile',
+    filters?: { name: string; extensions: string[] }[]
+  ): Promise<unknown>
 }
 
 function parsePublicPreferencesResult(value: unknown): PreferencesResult {
@@ -119,7 +144,10 @@ export function createDesktopApi(invoke: DesktopInvoke): DesktopApi {
   const qnaire = Object.freeze({
     getData: async () => parseQuestionnaireDef(await invoke(QNAIRE_GET_DATA_CHANNEL)),
     addQuestion: async (question: QuestionDef) =>
-      (await invoke(QNAIRE_ADD_QUESTION_CHANNEL, question)) as { ok: boolean; question: QuestionDef },
+      (await invoke(QNAIRE_ADD_QUESTION_CHANNEL, question)) as {
+        ok: boolean
+        question: QuestionDef
+      },
     updateQuestion: async (id: string, patch: Partial<QuestionDef>) =>
       (await invoke(QNAIRE_UPDATE_QUESTION_CHANNEL, { id, patch })) as { ok: boolean },
     deleteQuestion: async (id: string) =>
@@ -149,9 +177,9 @@ export function createDesktopApi(invoke: DesktopInvoke): DesktopApi {
       (await invoke(RECORD_LIST_CHANNEL, { offset, limit })) as RecordListResult,
     delete: async (recordIds: string[]) =>
       (await invoke(RECORD_DELETE_CHANNEL, { recordIds })) as { ok: boolean },
-    getProgress: async () =>
-      (await invoke(RECORD_GET_PROGRESS_CHANNEL)) as EntryProgressResult,
+    getProgress: async () => (await invoke(RECORD_GET_PROGRESS_CHANNEL)) as EntryProgressResult,
     saveProgress: async (data: {
+      hasDraft?: boolean
       currentIndex?: number
       batchStartTime?: number
       currentAnswers?: Record<string, unknown>

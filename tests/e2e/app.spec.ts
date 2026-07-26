@@ -123,14 +123,16 @@ test.describe('built Electron application', () => {
     const builtMain = await readFile(new URL('../../out/main/index.js', import.meta.url), 'utf8')
     expect(builtMain).not.toContain('Downloading Electron binary...')
     expect(builtMain).toContain('../preload/index.cjs')
-    await expect(readFile(new URL('../../out/preload/index.cjs', import.meta.url), 'utf8')).resolves.toContain(
-      'contextBridge'
-    )
+    await expect(
+      readFile(new URL('../../out/preload/index.cjs', import.meta.url), 'utf8')
+    ).resolves.toContain('contextBridge')
 
     running = await launchBuiltApp(userDataDir)
     await expect(running.page).toHaveTitle('EasyEpi')
     await expect
-      .poll(() => running?.page.evaluate(() => typeof (globalThis as { require?: unknown }).require))
+      .poll(() =>
+        running?.page.evaluate(() => typeof (globalThis as { require?: unknown }).require)
+      )
       .toBe('undefined')
   })
 
@@ -189,7 +191,11 @@ test.describe('built Electron application', () => {
       await expect(page.locator('header').first()).toBeVisible()
       await expect(page.locator('main')).toBeVisible()
       await expect
-        .poll(() => page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth))
+        .poll(() =>
+          page.evaluate(
+            () => document.documentElement.scrollWidth <= document.documentElement.clientWidth
+          )
+        )
         .toBe(true)
 
       if (viewport.width === 1024) {
@@ -211,11 +217,11 @@ test.describe('built Electron application', () => {
         await page.locator('body').focus()
         await pressTabUntil(page, '打开导航菜单')
         await expect(compactMenuTrigger).toBeFocused()
-        await expect(page.getByRole('tooltip')).toHaveText(
-          '打开导航菜单，显示全部九个页面入口'
-        )
+        await expect(page.getByRole('tooltip')).toHaveText('打开导航菜单，显示全部九个页面入口')
         await page.keyboard.press('Enter')
-        await expect(page.getByRole('navigation', { name: '紧凑导航' }).getByRole('link')).toHaveCount(9)
+        await expect(
+          page.getByRole('navigation', { name: '紧凑导航' }).getByRole('link')
+        ).toHaveCount(9)
       } else {
         await expect(page.getByRole('navigation', { name: '主要导航' })).toBeVisible()
         await expect(page.getByRole('navigation', { name: '主要导航' }).locator('..')).toBeVisible()
@@ -301,7 +307,8 @@ test.describe('built Electron application', () => {
         fixture.style.zIndex = '100001'
         const value = fixture.querySelector(':scope > span')
         if (value !== null) {
-          value.textContent = '这是一个用于验证箭头固定在最右侧且内容不会水平溢出的很长题型名称'.repeat(4)
+          value.textContent =
+            '这是一个用于验证箭头固定在最右侧且内容不会水平溢出的很长题型名称'.repeat(4)
         }
         fixture.setAttribute('disabled', '')
         fixture.setAttribute('data-disabled', '')
@@ -310,7 +317,9 @@ test.describe('built Electron application', () => {
       const fixture = page.locator(`[data-e2e-select-fixture="${fixtureId}"]`)
       await expect(fixture).toBeDisabled()
       await assertSelectChevronGeometry(fixture)
-      await expect.poll(() => fixture.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true)
+      await expect
+        .poll(() => fixture.evaluate((element) => element.scrollWidth <= element.clientWidth))
+        .toBe(true)
       await fixture.evaluate((element) => element.remove())
       await expect(questionType).toBeEnabled()
     }
@@ -382,6 +391,247 @@ test.describe('built Electron application', () => {
     })
   })
 
+  test('completes the M4 entry cycle, rejects duplicate Keys, and resumes after restart', async () => {
+    running = await launchBuiltApp(userDataDir)
+    let { page } = running
+    const projectFolder = join(userDataDir, 'm4-project')
+    const projectFile = join(projectFolder, 'M4 验收问卷.easyepi')
+    await mkdir(projectFolder, { recursive: true })
+
+    await page.evaluate(
+      async ({ folderPath }) => {
+        const api = (window as unknown as RendererWindow).easyEpi
+        await api.project.create({
+          name: 'M4 验收问卷',
+          folderPath,
+          password: 'm4-password'
+        })
+        const questions = [
+          {
+            id: 'm4-q1',
+            content: '受试者编号',
+            variableName: 'participant_id',
+            type: 'fixed_length' as const,
+            options: [],
+            constraint: { type: 'alphanumeric' as const, fixedLength: 3 },
+            isKey: true,
+            allowSkip: false,
+            order: 0
+          },
+          {
+            id: 'm4-q2',
+            content: '是否吸烟',
+            variableName: 'smoking',
+            type: 'single_choice' as const,
+            options: [
+              { value: 'yes', label: '是' },
+              { value: 'no', label: '否' }
+            ],
+            constraint: { type: 'none' as const },
+            isKey: false,
+            allowSkip: false,
+            order: 1
+          },
+          {
+            id: 'm4-q3',
+            content: '常见症状',
+            variableName: 'symptoms',
+            type: 'multiple_choice' as const,
+            options: [
+              { value: 'cough', label: '咳嗽' },
+              { value: 'fever', label: '发热' }
+            ],
+            constraint: { type: 'none' as const },
+            isKey: false,
+            allowSkip: false,
+            order: 2
+          },
+          {
+            id: 'm4-q4',
+            content: '现场备注',
+            variableName: 'notes',
+            type: 'free_text' as const,
+            options: [],
+            constraint: { type: 'none' as const },
+            isKey: false,
+            allowSkip: false,
+            order: 3
+          },
+          {
+            id: 'm4-q5',
+            content: '年龄',
+            variableName: 'age',
+            type: 'numeric_range' as const,
+            options: [],
+            constraint: { type: 'integer' as const, minValue: 0, maxValue: 120 },
+            isKey: false,
+            allowSkip: false,
+            order: 4
+          },
+          {
+            id: 'm4-q6',
+            content: '访视日期',
+            variableName: 'visit_date',
+            type: 'date' as const,
+            options: [],
+            constraint: { type: 'date' as const },
+            isKey: false,
+            allowSkip: false,
+            order: 5
+          }
+        ]
+        for (const question of questions) await api.qnaire.addQuestion(question)
+        await api.qnaire.addConditionRule({
+          id: 'm4-rule-1',
+          sourceQuestionId: 'm4-q2',
+          conditions: [{ questionId: 'm4-q2', operator: 'equals', value: 'no' }],
+          logic: 'AND',
+          action: 'skip',
+          targetQuestionIds: ['m4-q3']
+        })
+        await api.project.save({ folderPath })
+      },
+      { folderPath: projectFolder }
+    )
+
+    await navigateHash(page, '/entry')
+    await page.getByRole('button', { name: '开始录入' }).click()
+    await page.getByRole('textbox', { name: '受试者编号' }).fill('A01')
+    await page.getByRole('button', { name: '下一题' }).click()
+    await page.getByRole('radio', { name: '是' }).click()
+    await page.getByRole('button', { name: '下一题' }).click()
+    await page.getByRole('checkbox', { name: '咳嗽' }).click()
+    await page.getByRole('checkbox', { name: '发热' }).click()
+    await page.getByRole('button', { name: '下一题' }).click()
+    await page.getByRole('textbox', { name: '现场备注' }).fill('首次完整录入')
+    await page.getByRole('button', { name: '下一题' }).click()
+    await page.getByRole('spinbutton', { name: '年龄' }).fill('42')
+    await page.getByRole('button', { name: '下一题' }).click()
+    await page.getByRole('textbox', { name: '访视日期' }).fill('2026-07-26')
+    await page.getByRole('button', { name: '完成录入' }).click()
+    await expect(page.getByRole('heading', { name: '确认提交' })).toBeVisible()
+    await page.getByRole('button', { name: '确认提交' }).click()
+    await expect(page.getByText('本次已录入: 1 份')).toBeVisible()
+
+    await expect(
+      page.evaluate(() => (window as unknown as RendererWindow).easyEpi.record.list())
+    ).resolves.toMatchObject({
+      ok: true,
+      total: 1,
+      records: [
+        {
+          answers: {
+            'm4-q1': 'A01',
+            'm4-q2': 'yes',
+            'm4-q3': 'cough,fever',
+            'm4-q4': '首次完整录入',
+            'm4-q5': '42',
+            'm4-q6': '2026-07-26'
+          }
+        }
+      ]
+    })
+
+    await expect(
+      page.evaluate(() =>
+        (window as unknown as RendererWindow).easyEpi.record.submit({
+          'm4-q1': 'A01',
+          'm4-q2': 'yes',
+          'm4-q3': 'cough',
+          'm4-q4': 'duplicate',
+          'm4-q5': '30',
+          'm4-q6': '2026-07-26'
+        })
+      )
+    ).resolves.toMatchObject({ ok: false, error: 'KEY_DUPLICATE' })
+
+    await expect(
+      page.evaluate(() =>
+        (window as unknown as RendererWindow).easyEpi.record.submit({
+          'm4-q1': 'C03',
+          'm4-q2': 'no',
+          'm4-q3': 'stale-hidden-value',
+          'm4-q4': '跳题记录',
+          'm4-q5': '51',
+          'm4-q6': '2026-07-26'
+        })
+      )
+    ).resolves.toMatchObject({ ok: true })
+    const skippedRecord = await page.evaluate(async () => {
+      const result = await (window as unknown as RendererWindow).easyEpi.record.list()
+      return result.records.find((record) => record.answers['m4-q1'] === 'C03')
+    })
+    expect(skippedRecord?.answers).not.toHaveProperty('m4-q3')
+
+    await page.getByRole('button', { name: '开始下一份' }).click()
+    await page.getByRole('textbox', { name: '受试者编号' }).fill('B02')
+    await page.getByRole('button', { name: '下一题' }).click()
+    await page.getByRole('radio', { name: '是' }).click()
+    await page.getByRole('button', { name: '下一题' }).click()
+    await page.getByRole('checkbox', { name: '咳嗽' }).click()
+    await page.getByRole('button', { name: '下一题' }).click()
+    await page.getByRole('textbox', { name: '现场备注' }).fill('等待续录')
+    await page.getByRole('button', { name: '下一题' }).click()
+    await expect(page.getByRole('spinbutton', { name: '年龄' })).toBeVisible()
+    await expect
+      .poll(() =>
+        page.evaluate(() => (window as unknown as RendererWindow).easyEpi.record.getProgress())
+      )
+      .toMatchObject({
+        currentIndex: 4,
+        currentAnswers: {
+          'm4-q1': 'B02',
+          'm4-q2': 'yes',
+          'm4-q3': 'cough',
+          'm4-q4': '等待续录'
+        }
+      })
+
+    await closeApp(running)
+    running = undefined
+    running = await launchBuiltApp(userDataDir)
+    page = running.page
+    await expect(
+      page.evaluate(
+        ({ filePath }) =>
+          (window as unknown as RendererWindow).easyEpi.project.open({
+            filePath,
+            password: 'm4-password'
+          }),
+        { filePath: projectFile }
+      )
+    ).resolves.toMatchObject({ ok: true })
+    await navigateHash(page, '/entry')
+    const age = page.getByRole('spinbutton', { name: '年龄' })
+    await expect(age).toBeVisible()
+    await expect(page.getByText('第 5 题 / 共 6 题')).toBeVisible()
+    await age.fill('36')
+    await page.getByRole('button', { name: '下一题' }).click()
+    await page.getByRole('textbox', { name: '访视日期' }).fill('2026-07-27')
+    await page.getByRole('button', { name: '完成录入' }).click()
+    await page.getByRole('button', { name: '确认提交' }).click()
+    await expect(page.getByText('本次已录入: 3 份')).toBeVisible()
+
+    await expect(
+      page.evaluate(() => (window as unknown as RendererWindow).easyEpi.record.list())
+    ).resolves.toMatchObject({
+      ok: true,
+      total: 3,
+      records: expect.arrayContaining([
+        expect.objectContaining({
+          answers: {
+            'm4-q1': 'B02',
+            'm4-q2': 'yes',
+            'm4-q3': 'cough',
+            'm4-q4': '等待续录',
+            'm4-q5': '36',
+            'm4-q6': '2026-07-27'
+          }
+        })
+      ])
+    })
+  })
+
   test('supports keyboard-only skip link, settings dialog, and route navigation', async () => {
     running = await launchBuiltApp(userDataDir)
     const { page } = running
@@ -435,9 +685,7 @@ test.describe('built Electron application', () => {
       { path: '/admin/data', heading: '数据管理' }
     ]) {
       await navigateHash(page, path)
-      await expect
-        .poll(() => page.evaluate(() => window.location.hash))
-        .toBe(`#${path}`)
+      await expect.poll(() => page.evaluate(() => window.location.hash)).toBe(`#${path}`)
       await expect(page.getByRole('heading', { level: 1, name: heading })).toBeVisible()
       await assertNoAxeViolations(page)
     }

@@ -1,5 +1,4 @@
 import { isValidElement } from 'react'
-import { vi } from 'vitest'
 
 import { createAppRoutes } from '@renderer/app/routes'
 import { EntryPage } from '@renderer/pages/EntryPage'

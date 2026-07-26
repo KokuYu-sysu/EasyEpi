@@ -1,20 +1,8 @@
 export type QuestionType =
-  | 'single_choice'
-  | 'multiple_choice'
-  | 'fixed_length'
-  | 'free_text'
-  | 'numeric_range'
-  | 'date'
+  'single_choice' | 'multiple_choice' | 'fixed_length' | 'free_text' | 'numeric_range' | 'date'
 
 export type ConstraintType =
-  | 'none'
-  | 'integer'
-  | 'decimal'
-  | 'chinese'
-  | 'english'
-  | 'alphanumeric'
-  | 'date'
-  | 'regex'
+  'none' | 'integer' | 'decimal' | 'chinese' | 'english' | 'alphanumeric' | 'date' | 'regex'
 
 export type ConditionOperator =
   | 'equals'
@@ -94,7 +82,16 @@ export function isQuestionType(value: string): value is QuestionType {
 }
 
 export function isConstraintType(value: string): value is ConstraintType {
-  return ['none', 'integer', 'decimal', 'chinese', 'english', 'alphanumeric', 'date', 'regex'].includes(value)
+  return [
+    'none',
+    'integer',
+    'decimal',
+    'chinese',
+    'english',
+    'alphanumeric',
+    'date',
+    'regex'
+  ].includes(value)
 }
 
 export function isConditionOperator(value: string): value is ConditionOperator {
@@ -200,12 +197,34 @@ export function getVisibleQuestions(
   }
 
   return qnaire.questions
-    .filter(
-      (q) =>
-        !skippedIds.has(q.id) &&
-        (!showControlledIds.has(q.id) || shownIds.has(q.id))
-    )
+    .filter((q) => !skippedIds.has(q.id) && (!showControlledIds.has(q.id) || shownIds.has(q.id)))
     .sort((a, b) => a.order - b.order)
+}
+
+export function normalizeVisibleAnswers(
+  qnaire: QuestionnaireDef,
+  answers: Record<string, unknown>
+): { visibleQuestions: QuestionDef[]; answers: Record<string, unknown> } {
+  const knownIds = new Set(qnaire.questions.map((question) => question.id))
+  let normalized = Object.fromEntries(
+    Object.entries(answers).filter(([questionId]) => knownIds.has(questionId))
+  )
+
+  // Removing a hidden answer can hide another question. Iterate until no more
+  // stale answers remain; the number of questions is a safe upper bound.
+  for (let iteration = 0; iteration <= qnaire.questions.length; iteration += 1) {
+    const visibleQuestions = getVisibleQuestions(qnaire, normalized)
+    const visibleIds = new Set(visibleQuestions.map((question) => question.id))
+    const nextAnswers = Object.fromEntries(
+      Object.entries(normalized).filter(([questionId]) => visibleIds.has(questionId))
+    )
+    if (Object.keys(nextAnswers).length === Object.keys(normalized).length) {
+      return { visibleQuestions, answers: nextAnswers }
+    }
+    normalized = nextAnswers
+  }
+
+  return { visibleQuestions: getVisibleQuestions(qnaire, normalized), answers: normalized }
 }
 
 export function validateQuestionAnswer(
@@ -219,9 +238,7 @@ export function validateQuestionAnswer(
   }
 
   if (question.type === 'single_choice') {
-    return question.options.some((option) => option.value === value)
-      ? null
-      : '请选择有效选项'
+    return question.options.some((option) => option.value === value) ? null : '请选择有效选项'
   }
 
   if (question.type === 'multiple_choice') {
@@ -245,16 +262,10 @@ export function validateQuestionAnswer(
     if (question.constraint.type === 'integer' && !Number.isInteger(numericValue)) {
       return '请输入整数'
     }
-    if (
-      question.constraint.minValue !== undefined &&
-      numericValue < question.constraint.minValue
-    ) {
+    if (question.constraint.minValue !== undefined && numericValue < question.constraint.minValue) {
       return `数值不能小于 ${question.constraint.minValue}`
     }
-    if (
-      question.constraint.maxValue !== undefined &&
-      numericValue > question.constraint.maxValue
-    ) {
+    if (question.constraint.maxValue !== undefined && numericValue > question.constraint.maxValue) {
       return `数值不能大于 ${question.constraint.maxValue}`
     }
   }
@@ -274,10 +285,7 @@ export function validateQuestionAnswer(
 
   if (question.constraint.type === 'regex' && question.constraint.regexPattern) {
     try {
-      const regex = new RegExp(
-        question.constraint.regexPattern,
-        question.constraint.regexFlags
-      )
+      const regex = new RegExp(question.constraint.regexPattern, question.constraint.regexFlags)
       if (!regex.test(value)) return '输入内容不符合题目约束'
     } catch {
       return '题目的正则表达式无效'
