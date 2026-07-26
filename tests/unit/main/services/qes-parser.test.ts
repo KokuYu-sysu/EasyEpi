@@ -49,4 +49,53 @@ describe('QESParser', () => {
       expect(result.fields[0].type).toBe('BOOLEAN')
     })
   })
+
+  describe('block parsing', () => {
+    it('should parse LABEL block', () => {
+      const content = `
+LABEL sex
+  1 "Male"
+  2 "Female"
+END
+`
+      const result = parser.parse(content)
+      expect(result.blocks).toHaveLength(1)
+      expect(result.blocks[0].type).toBe('LABEL')
+      expect(result.blocks[0].content).toContain('sex')
+    })
+
+    it('should parse JUMPS block', () => {
+      const content = `
+JUMPS
+  smoke=1 > 5
+  smoke=2 > 10
+END
+`
+      const result = parser.parse(content)
+      expect(result.blocks).toHaveLength(1)
+      expect(result.blocks[0].type).toBe('JUMPS')
+    })
+
+    it('should parse RANGE block', () => {
+      const content = `
+RANGE
+  age 0 120
+END
+`
+      const result = parser.parse(content)
+      expect(result.blocks).toHaveLength(1)
+      expect(result.blocks[0].type).toBe('RANGE')
+    })
+
+    it('should parse LEGAL block', () => {
+      const content = `
+LEGAL
+  sex 1 2
+END
+`
+      const result = parser.parse(content)
+      expect(result.blocks).toHaveLength(1)
+      expect(result.blocks[0].type).toBe('LEGAL')
+    })
+  })
 })

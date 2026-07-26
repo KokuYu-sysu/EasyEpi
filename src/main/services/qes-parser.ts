@@ -6,24 +6,73 @@ export class QESParser {
     const fields: QESField[] = []
     const blocks: QESBlock[] = []
     let metadata = { title: '' }
+    let currentBlock: { type: QESBlock['type']; content: string[] } | null = null
 
     // Parse header (first line if it starts with ")
     if (lines.length > 0 && lines[0].startsWith('"')) {
       metadata.title = lines[0].replace(/^"|"$/g, '').trim()
     }
 
-    // Parse fields
+    // Parse fields and blocks
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i].trim()
-      if (!line || line === 'END') continue
+      
+      // Check for block start
+      const blockType = this.detectBlockType(line)
+      if (blockType) {
+        if (currentBlock) {
+          blocks.push({
+            type: currentBlock.type,
+            content: currentBlock.content.join('\n')
+          })
+        }
+        currentBlock = { type: blockType, content: [line] }
+        continue
+      }
 
+      // Check for block end
+      if (line === 'END' && currentBlock) {
+        blocks.push({
+          type: currentBlock.type,
+          content: currentBlock.content.join('\n')
+        })
+        currentBlock = null
+        continue
+      }
+
+      // Add to current block
+      if (currentBlock) {
+        currentBlock.content.push(line)
+        continue
+      }
+
+      // Parse field
+      if (!line || line === 'END') continue
       const field = this.parseField(line)
       if (field) {
         fields.push(field)
       }
     }
 
+    // Close any unclosed block
+    if (currentBlock) {
+      blocks.push({
+        type: currentBlock.type,
+        content: currentBlock.content.join('\n')
+      })
+    }
+
     return { metadata, fields, blocks }
+  }
+
+  private detectBlockType(line: string): QESBlock['type'] | null {
+    const blockTypes: QESBlock['type'][] = ['LABEL', 'JUMPS', 'RANGE', 'LEGAL', 'MUSTENTER', 'COMMENT', 'TYPE', 'VALUELABEL']
+    for (const type of blockTypes) {
+      if (line.startsWith(type + ' ') || line === type) {
+        return type
+      }
+    }
+    return null
   }
 
   private parseField(line: string): QESField | null {
