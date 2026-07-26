@@ -114,7 +114,7 @@ describe('standard milestone pages', () => {
       await user.click(screen.getByRole('button', { name: /了解后续能力/ }))
       const dialog = screen.getByRole('dialog')
       expect(within(dialog).getAllByText(new RegExp(milestone)).length).toBeGreaterThan(0)
-      expect(dialog).toHaveTextContent(/尚未实现/)
+      expect(dialog).toHaveTextContent(/尚未实现|尚未完全实现/)
     }
   )
 
@@ -130,9 +130,8 @@ describe('standard milestone pages', () => {
       '/admin/login'
     )
 
-    expect(screen.queryByLabelText(/密码/)).not.toBeInTheDocument()
-    expect(screen.queryByText(/^(验证成功|已登录|默认密码)/)).not.toBeInTheDocument()
-    expect(screen.getByText(/不执行真实认证/)).toBeVisible()
+    expect(screen.getByLabelText(/密码/)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /登录/ })).toBeInTheDocument()
   })
 
   it('keeps all completed M2 pages off placeholder metadata', () => {
