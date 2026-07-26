@@ -88,7 +88,7 @@ export function ImportWizard({ onComplete, onCancel }: ImportWizardProps) {
   return (
     <Card className="max-w-4xl mx-auto">
       <CardHeader>
-        <CardTitle>Import EpiData Project</CardTitle>
+        <CardTitle>EpiData 导入</CardTitle>
       </CardHeader>
       <CardContent className="space-y-6">
         {/* Progress indicator */}

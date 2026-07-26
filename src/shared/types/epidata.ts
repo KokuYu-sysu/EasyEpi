@@ -21,7 +21,7 @@ export interface QESField {
 }
 
 export interface QESBlock {
-  type: 'LABEL' | 'JUMPS' | 'RANGE' | 'LEGAL' | 'MUSTENTER' | 'COMMENT' | 'TYPE' | 'VALUELABEL' | 'JUMPS' | 'GOTO' | 'END'
+  type: 'LABEL' | 'JUMPS' | 'RANGE' | 'LEGAL' | 'MUSTENTER' | 'COMMENT' | 'TYPE' | 'VALUELABEL' | 'GOTO' | 'END'
   content: string
 }
 
