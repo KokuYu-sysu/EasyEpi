@@ -98,4 +98,25 @@ END
       expect(result.blocks[0].type).toBe('LEGAL')
     })
   })
+
+  describe('label extraction', () => {
+    it('should extract label from field definition', () => {
+      const content = `## age "Age of participant"`
+      const result = parser.parse(content)
+      expect(result.fields[0].label).toBe('Age of participant')
+    })
+
+    it('should extract label from LABEL block', () => {
+      const content = `
+## sex
+LABEL sex
+  1 "Male"
+  2 "Female"
+END
+`
+      const result = parser.parse(content)
+      expect(result.fields[0].label).toBe('sex')
+      // Options should be extracted from LABEL block
+    })
+  })
 })

@@ -50,8 +50,19 @@ export class QESParser {
       if (!line || line === 'END') continue
       const field = this.parseField(line)
       if (field) {
+        // Extract label from quotes if present
+        const labelMatch = line.match(/"([^"]+)"/)
+        if (labelMatch) {
+          field.label = labelMatch[1]
+        }
         fields.push(field)
       }
+    }
+
+    // Extract labels from LABEL blocks
+    const labelBlocks = blocks.filter(b => b.type === 'LABEL')
+    for (const block of labelBlocks) {
+      this.extractLabelsFromBlock(block, fields)
     }
 
     // Close any unclosed block
@@ -73,6 +84,34 @@ export class QESParser {
       }
     }
     return null
+  }
+
+  private extractLabelsFromBlock(block: QESBlock, fields: QESField[]): void {
+    const lines = block.content.split('\n')
+    let currentFieldName = ''
+    
+    for (const line of lines) {
+      const trimmed = line.trim()
+      if (!trimmed) continue
+      
+      // Check for field name (first line of block)
+      if (trimmed.startsWith('LABEL ')) {
+        currentFieldName = trimmed.substring(6).trim()
+        // Set label for the field if not already set
+        const field = fields.find(f => f.name === currentFieldName)
+        if (field && !field.label) {
+          field.label = currentFieldName
+        }
+        continue
+      }
+      
+      // Check for value label
+      const valueLabelMatch = trimmed.match(/^(\d+)\s+"([^"]+)"/)
+      if (valueLabelMatch && currentFieldName) {
+        // Value labels are stored in blocks, not in fields
+        // They will be used later for option mapping
+      }
+    }
   }
 
   private parseField(line: string): QESField | null {
