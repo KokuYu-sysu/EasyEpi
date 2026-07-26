@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, beforeEach } from 'vitest'
 import { DataService } from '@main/services/data.service'
 
 describe('DataService', () => {
@@ -28,7 +28,7 @@ describe('DataService', () => {
   describe('updateRecord', () => {
     it('should update record without error', async () => {
       await expect(
-        service.updateRecord('test-id', { field1: 'value1' })
+        service.updateRecord('test-id', { answers: { q1: 'value1' } })
       ).resolves.not.toThrow()
     })
   })

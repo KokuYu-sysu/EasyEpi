@@ -16,6 +16,7 @@ import { registerQnaireIpc } from './ipc/qnaire.ipc'
 import { registerDialogIpc } from './dialog-ipc'
 import { createRecordIpcState, registerRecordIpc } from './ipc/record.ipc'
 import { registerEpiDataIpcHandlers } from './ipc/epidata.ipc'
+import { registerAdminIpcHandlers } from './ipc/admin.ipc'
 
 const APP_ID = 'com.kokuyu.easyepi'
 const developmentUrl = resolveDevelopmentRendererUrl(
@@ -111,6 +112,7 @@ void app.whenReady().then(() => {
     developmentUrl
   )
   registerEpiDataIpcHandlers(packagedRendererUrl, developmentUrl)
+  registerAdminIpcHandlers(packagedRendererUrl, developmentUrl)
   createMainWindow()
 
   app.on('activate', () => {
