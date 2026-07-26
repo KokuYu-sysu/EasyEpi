@@ -31,6 +31,8 @@ export function EntryPage({ store: injectedStore }: EntryPageProps) {
     lastSubmitError
   } = state
 
+  const questionnaire = state.questionnaire
+
   // Load questionnaire on mount
   useEffect(() => {
     store.getState().loadQuestionnaire()
@@ -145,10 +147,21 @@ export function EntryPage({ store: injectedStore }: EntryPageProps) {
   }
 
   if (phase === 'idle') {
+    if (!questionnaire) {
+      return (
+        <EmptyState
+          title="请先打开项目"
+          description="尚未打开任何问卷项目。请先在欢迎页新建或打开一个项目后再进行录入。"
+          action={
+            <Button onClick={() => navigate('/')}>前往欢迎页</Button>
+          }
+        />
+      )
+    }
     return (
       <EmptyState
         title="准备录入"
-        description={`已加载问卷，共 ${visibleQuestions.length} 题。批次已录入: ${batchCount} 份`}
+        description={`已加载问卷「${questionnaire.name}」，共 ${visibleQuestions.length} 题。批次已录入: ${batchCount} 份`}
         action={
           <div className="flex gap-[var(--space-3)]">
             <Button

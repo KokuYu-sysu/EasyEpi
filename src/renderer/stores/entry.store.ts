@@ -65,9 +65,34 @@ export function createEntryStore(): EntryStore {
           visibleQuestions: Object.freeze(visible.map((q) => Object.freeze({ ...q }))),
           isLoading: false
         })
+        // Try to restore break-point resume progress
+        try {
+          const progress = await window.easyEpi.record.getProgress()
+          if (progress.ok && progress.batchCount > 0) {
+            set({
+              batchCount: progress.batchCount,
+              batchStartTime: progress.batchStartTime
+            })
+            if (progress.currentIndex > 0 && Object.keys(progress.currentAnswers).length > 0) {
+              const restoredVisible = freezeVisible(qnaire, progress.currentAnswers as Record<string, string>)
+              set({
+                phase: 'entering',
+                visibleQuestions: Object.freeze(restoredVisible.map((q) => Object.freeze({ ...q }))),
+                currentIndex: progress.currentIndex,
+                answers: Object.freeze(progress.currentAnswers as Record<string, string>)
+              })
+            }
+          }
+        } catch {
+          // Progress restore is best-effort
+        }
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e)
-        set({ isLoading: false, error: `加载问卷失败: ${msg}` })
+        if (msg.includes('NO_PROJECT_OPEN')) {
+          set({ isLoading: false, phase: 'idle', error: null })
+        } else {
+          set({ isLoading: false, error: `加载问卷失败: ${msg}` })
+        }
       }
     },
 
@@ -115,6 +140,8 @@ export function createEntryStore(): EntryStore {
       }
 
       set({ currentIndex: state.currentIndex + 1, validationError: null })
+      // Auto-save progress for break-point resume
+      void get().saveProgress()
       return true
     },
 
@@ -153,6 +180,8 @@ export function createEntryStore(): EntryStore {
           currentIndex: state.currentIndex + 1,
           validationError: null
         })
+        // Auto-save progress for break-point resume
+        void get().saveProgress()
       }
     },
 
@@ -194,6 +223,8 @@ export function createEntryStore(): EntryStore {
         validationError: null,
         lastSubmitError: null
       })
+      // Reset saved progress for new record
+      void get().saveProgress()
     },
 
     endWork: () => {
@@ -203,6 +234,11 @@ export function createEntryStore(): EntryStore {
         answers: {},
         validationError: null,
         lastSubmitError: null
+      })
+      // Clear saved progress
+      void window.easyEpi.record.saveProgress({
+        currentIndex: 0,
+        currentAnswers: {}
       })
     },
 

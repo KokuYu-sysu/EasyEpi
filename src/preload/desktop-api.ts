@@ -144,7 +144,7 @@ export function createDesktopApi(invoke: DesktopInvoke): DesktopApi {
 
   const record = Object.freeze({
     submit: async (answers: Record<string, unknown>) =>
-      (await invoke(RECORD_SUBMIT_CHANNEL, answers)) as RecordSubmitResult,
+      (await invoke(RECORD_SUBMIT_CHANNEL, { answers })) as RecordSubmitResult,
     list: async (offset?: number, limit?: number) =>
       (await invoke(RECORD_LIST_CHANNEL, { offset, limit })) as RecordListResult,
     delete: async (recordIds: string[]) =>
