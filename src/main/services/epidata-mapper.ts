@@ -31,8 +31,7 @@ export class EpiDataMapper {
       questions,
       conditionRules: [],
       keyQuestionIds: [],
-      name: result.metadata.title || 'Imported Questionnaire',
-      description: result.metadata.description
+      name: result.metadata.title || 'Imported Questionnaire'
     }
   }
 

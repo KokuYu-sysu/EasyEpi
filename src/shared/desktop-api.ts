@@ -13,6 +13,12 @@ import type {
   EntryProgressResult,
   KeyDuplicateResult
 } from './record-contract'
+import type {
+  EpiDataImportRequest,
+  EpiDataPreviewRequest,
+  EpiDataValidateRequest
+} from './epidata-contract'
+import type { ImportResult, ImportPreview, ImportProgress } from './types/epidata'
 
 export interface DialogResult {
   canceled: boolean
@@ -63,6 +69,13 @@ export interface DesktopApi {
       keyValues: Record<string, unknown>,
       excludeRecordId?: string
     ): Promise<KeyDuplicateResult>
+  }
+  epidata: {
+    import(request: EpiDataImportRequest): Promise<ImportResult>
+    preview(request: EpiDataPreviewRequest): Promise<ImportPreview>
+    validate(request: EpiDataValidateRequest): Promise<{ valid: boolean; errors: string[] }>
+    onImportProgress(callback: (progress: ImportProgress) => void): void
+    offImportProgress(): void
   }
 }
 

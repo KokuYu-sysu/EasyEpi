@@ -1,12 +1,22 @@
-import { MilestoneSkeletonPage } from '@renderer/components/common/MilestoneSkeletonPage'
+import React from 'react'
+import { useNavigate } from 'react-router-dom'
+import { ImportWizard } from '@renderer/components/import/ImportWizard'
 
 export function ImportPage() {
+  const navigate = useNavigate()
+
+  const handleComplete = (projectPath: string) => {
+    // Navigate to the project
+    navigate(`/project/${encodeURIComponent(projectPath)}`)
+  }
+
+  const handleCancel = () => {
+    navigate(-1)
+  }
+
   return (
-    <MilestoneSkeletonPage
-      milestone="M6"
-      skeletonTitle="EpiData 兼容能力尚在规划中"
-      capability="M6 将提供 EpiData 问卷导入、预览和字段映射修正。"
-      detail="在获得真实脱敏样本验证前，产品不会宣称覆盖全部 EpiData 变体。"
-    />
+    <div className="container mx-auto py-8">
+      <ImportWizard onComplete={handleComplete} onCancel={handleCancel} />
+    </div>
   )
 }

@@ -5,17 +5,17 @@ export class QESParser {
     const lines = fileContent.split('\n')
     const fields: QESField[] = []
     const blocks: QESBlock[] = []
-    let metadata = { title: '' }
+    const metadata = { title: '' }
     let currentBlock: { type: QESBlock['type']; content: string[] } | null = null
 
     // Parse header (first line if it starts with ")
-    if (lines.length > 0 && lines[0].startsWith('"')) {
-      metadata.title = lines[0].replace(/^"|"$/g, '').trim()
+    if (lines.length > 0 && lines[0]!.startsWith('"')) {
+      metadata.title = lines[0]!.replace(/^"|"$/g, '').trim()
     }
 
     // Parse fields and blocks
     for (let i = 0; i < lines.length; i++) {
-      const line = lines[i].trim()
+      const line = lines[i]!.trim()
       
       // Check for block start
       const blockType = this.detectBlockType(line)
@@ -53,7 +53,7 @@ export class QESParser {
         // Extract label from quotes if present
         const labelMatch = line.match(/"([^"]+)"/)
         if (labelMatch) {
-          field.label = labelMatch[1]
+          field.label = labelMatch[1]!
         }
         fields.push(field)
       }
@@ -119,10 +119,10 @@ export class QESParser {
     const integerMatch = line.match(/^(\#+)\s+(\w+)/)
     if (integerMatch) {
       return {
-        name: integerMatch[2],
+        name: integerMatch[2]!,
         label: '',
         type: QESFieldType.INTEGER,
-        length: integerMatch[1].length,
+        length: integerMatch[1]!.length,
         decimals: 0,
         comment: null
       }
@@ -132,11 +132,11 @@ export class QESParser {
     const decimalMatch = line.match(/^(\#+)\.(\#+)\s+(\w+)/)
     if (decimalMatch) {
       return {
-        name: decimalMatch[3],
+        name: decimalMatch[3]!,
         label: '',
         type: QESFieldType.DECIMAL,
-        length: decimalMatch[1].length + decimalMatch[2].length + 1,
-        decimals: decimalMatch[2].length,
+        length: decimalMatch[1]!.length + decimalMatch[2]!.length + 1,
+        decimals: decimalMatch[2]!.length,
         comment: null
       }
     }
@@ -145,10 +145,10 @@ export class QESParser {
     const textMatch = line.match(/^(_+)\s+(\w+)/)
     if (textMatch) {
       return {
-        name: textMatch[2],
+        name: textMatch[2]!,
         label: '',
         type: QESFieldType.TEXT,
-        length: textMatch[1].length,
+        length: textMatch[1]!.length,
         decimals: 0,
         comment: null
       }
@@ -158,7 +158,7 @@ export class QESParser {
     const uppercaseMatch = line.match(/^<A\s*>\s*(\w+)/)
     if (uppercaseMatch) {
       return {
-        name: uppercaseMatch[1],
+        name: uppercaseMatch[1]!,
         label: '',
         type: QESFieldType.UPPERCASE,
         length: 1, // Will be calculated from spaces
@@ -171,7 +171,7 @@ export class QESParser {
     const booleanMatch = line.match(/^<Y>\s+(\w+)/)
     if (booleanMatch) {
       return {
-        name: booleanMatch[1],
+        name: booleanMatch[1]!,
         label: '',
         type: QESFieldType.BOOLEAN,
         length: 1,

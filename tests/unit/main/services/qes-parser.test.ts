@@ -9,44 +9,44 @@ describe('QESParser', () => {
       const content = `## age`
       const result = parser.parse(content)
       expect(result.fields).toHaveLength(1)
-      expect(result.fields[0].name).toBe('age')
-      expect(result.fields[0].type).toBe('INTEGER')
-      expect(result.fields[0].length).toBe(2)
+      expect(result.fields[0]!.name).toBe('age')
+      expect(result.fields[0]!.type).toBe('INTEGER')
+      expect(result.fields[0]!.length).toBe(2)
     })
 
     it('should detect decimal field #.##', () => {
       const content = `#.## bmi`
       const result = parser.parse(content)
       expect(result.fields).toHaveLength(1)
-      expect(result.fields[0].name).toBe('bmi')
-      expect(result.fields[0].type).toBe('DECIMAL')
-      expect(result.fields[0].length).toBe(4)
-      expect(result.fields[0].decimals).toBe(2)
+      expect(result.fields[0]!.name).toBe('bmi')
+      expect(result.fields[0]!.type).toBe('DECIMAL')
+      expect(result.fields[0]!.length).toBe(4)
+      expect(result.fields[0]!.decimals).toBe(2)
     })
 
     it('should detect text field _____', () => {
       const content = `_____ name`
       const result = parser.parse(content)
       expect(result.fields).toHaveLength(1)
-      expect(result.fields[0].name).toBe('name')
-      expect(result.fields[0].type).toBe('TEXT')
-      expect(result.fields[0].length).toBe(5)
+      expect(result.fields[0]!.name).toBe('name')
+      expect(result.fields[0]!.type).toBe('TEXT')
+      expect(result.fields[0]!.length).toBe(5)
     })
 
     it('should detect uppercase field <A>', () => {
       const content = `<A> code`
       const result = parser.parse(content)
       expect(result.fields).toHaveLength(1)
-      expect(result.fields[0].name).toBe('code')
-      expect(result.fields[0].type).toBe('UPPERCASE')
+      expect(result.fields[0]!.name).toBe('code')
+      expect(result.fields[0]!.type).toBe('UPPERCASE')
     })
 
     it('should detect boolean field <Y>', () => {
       const content = `<Y> is_smoker`
       const result = parser.parse(content)
       expect(result.fields).toHaveLength(1)
-      expect(result.fields[0].name).toBe('is_smoker')
-      expect(result.fields[0].type).toBe('BOOLEAN')
+      expect(result.fields[0]!.name).toBe('is_smoker')
+      expect(result.fields[0]!.type).toBe('BOOLEAN')
     })
   })
 
@@ -60,8 +60,8 @@ END
 `
       const result = parser.parse(content)
       expect(result.blocks).toHaveLength(1)
-      expect(result.blocks[0].type).toBe('LABEL')
-      expect(result.blocks[0].content).toContain('sex')
+      expect(result.blocks[0]!.type).toBe('LABEL')
+      expect(result.blocks[0]!.content).toContain('sex')
     })
 
     it('should parse JUMPS block', () => {
@@ -73,7 +73,7 @@ END
 `
       const result = parser.parse(content)
       expect(result.blocks).toHaveLength(1)
-      expect(result.blocks[0].type).toBe('JUMPS')
+      expect(result.blocks[0]!.type).toBe('JUMPS')
     })
 
     it('should parse RANGE block', () => {
@@ -84,7 +84,7 @@ END
 `
       const result = parser.parse(content)
       expect(result.blocks).toHaveLength(1)
-      expect(result.blocks[0].type).toBe('RANGE')
+      expect(result.blocks[0]!.type).toBe('RANGE')
     })
 
     it('should parse LEGAL block', () => {
@@ -95,7 +95,7 @@ END
 `
       const result = parser.parse(content)
       expect(result.blocks).toHaveLength(1)
-      expect(result.blocks[0].type).toBe('LEGAL')
+      expect(result.blocks[0]!.type).toBe('LEGAL')
     })
   })
 
@@ -103,7 +103,7 @@ END
     it('should extract label from field definition', () => {
       const content = `## age "Age of participant"`
       const result = parser.parse(content)
-      expect(result.fields[0].label).toBe('Age of participant')
+      expect(result.fields[0]!.label).toBe('Age of participant')
     })
 
     it('should extract label from LABEL block', () => {
@@ -115,7 +115,7 @@ LABEL sex
 END
 `
       const result = parser.parse(content)
-      expect(result.fields[0].label).toBe('sex')
+      expect(result.fields[0]!.label).toBe('sex')
       // Options should be extracted from LABEL block
     })
   })

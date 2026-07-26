@@ -1,3 +1,4 @@
+import { ipcRenderer } from 'electron'
 import type { DesktopApi, DialogResult } from '@shared/desktop-api'
 import {
   parsePreferencesResult,
@@ -42,6 +43,16 @@ import {
   type EntryProgressResult,
   type KeyDuplicateResult
 } from '@shared/record-contract'
+import {
+  EPIDATA_IMPORT_CHANNEL,
+  EPIDATA_PREVIEW_CHANNEL,
+  EPIDATA_VALIDATE_CHANNEL,
+  EPIDATA_IMPORT_PROGRESS_CHANNEL,
+  type EpiDataImportRequest,
+  type EpiDataPreviewRequest,
+  type EpiDataValidateRequest
+} from '@shared/epidata-contract'
+import type { ImportResult, ImportPreview, ImportProgress } from '@shared/types/epidata'
 
 export interface DesktopInvoke {
   (channel: typeof SYSTEM_PING_CHANNEL, request: PingRequest): Promise<PingResponse>
@@ -93,6 +104,9 @@ export interface DesktopInvoke {
     channel: 'dialog:selectFile',
     filters?: { name: string; extensions: string[] }[]
   ): Promise<unknown>
+  (channel: typeof EPIDATA_IMPORT_CHANNEL, request: EpiDataImportRequest): Promise<unknown>
+  (channel: typeof EPIDATA_PREVIEW_CHANNEL, request: EpiDataPreviewRequest): Promise<unknown>
+  (channel: typeof EPIDATA_VALIDATE_CHANNEL, request: EpiDataValidateRequest): Promise<unknown>
 }
 
 function parsePublicPreferencesResult(value: unknown): PreferencesResult {
@@ -191,6 +205,23 @@ export function createDesktopApi(invoke: DesktopInvoke): DesktopApi {
       })) as KeyDuplicateResult
   })
 
-  const desktopApi = { system, preferences, dialog, project, qnaire, record } satisfies DesktopApi
+  const epidata = Object.freeze({
+    import: async (request: EpiDataImportRequest) =>
+      (await invoke(EPIDATA_IMPORT_CHANNEL, request)) as unknown as ImportResult,
+    preview: async (request: EpiDataPreviewRequest) =>
+      (await invoke(EPIDATA_PREVIEW_CHANNEL, request)) as unknown as ImportPreview,
+    validate: async (request: EpiDataValidateRequest) =>
+      (await invoke(EPIDATA_VALIDATE_CHANNEL, request)) as unknown as { valid: boolean; errors: string[] },
+    onImportProgress: (callback: (progress: ImportProgress) => void) => {
+      ipcRenderer.on(EPIDATA_IMPORT_PROGRESS_CHANNEL, (_event, progress) => {
+        callback(progress as ImportProgress)
+      })
+    },
+    offImportProgress: () => {
+      ipcRenderer.removeAllListeners(EPIDATA_IMPORT_PROGRESS_CHANNEL)
+    }
+  })
+
+  const desktopApi = { system, preferences, dialog, project, qnaire, record, epidata } satisfies DesktopApi
   return Object.freeze(desktopApi)
 }
