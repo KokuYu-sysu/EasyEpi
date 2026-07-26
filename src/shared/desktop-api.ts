@@ -19,6 +19,17 @@ import type {
   EpiDataValidateRequest
 } from './epidata-contract'
 import type { ImportResult, ImportPreview, ImportProgress } from './types/epidata'
+import type {
+  AdminLoginRequest,
+  AdminLoginResult,
+  AdminSessionResult,
+  AdminChangePasswordRequest,
+  AdminChangePasswordResult,
+  AdminGetRecordsRequest,
+  AdminRecordsResult,
+  AdminUpdateRecordRequest,
+  AdminDeleteRecordsRequest
+} from './admin-contract'
 
 export interface DialogResult {
   canceled: boolean
@@ -76,6 +87,15 @@ export interface DesktopApi {
     validate(request: EpiDataValidateRequest): Promise<{ valid: boolean; errors: string[] }>
     onImportProgress(callback: (progress: ImportProgress) => void): void
     offImportProgress(): void
+  }
+  admin: {
+    login(request: AdminLoginRequest): Promise<AdminLoginResult>
+    logout(): Promise<void>
+    checkSession(): Promise<AdminSessionResult>
+    changePassword(request: AdminChangePasswordRequest): Promise<AdminChangePasswordResult>
+    getRecords(request: AdminGetRecordsRequest): Promise<AdminRecordsResult>
+    updateRecord(request: AdminUpdateRecordRequest): Promise<{ ok: boolean }>
+    deleteRecords(request: AdminDeleteRecordsRequest): Promise<{ ok: boolean }>
   }
 }
 

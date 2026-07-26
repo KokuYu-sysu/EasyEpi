@@ -106,7 +106,7 @@ describe('createDesktopApi', () => {
   it('does not expose raw Electron or filesystem capabilities', () => {
     const api = createDesktopApi(vi.fn())
 
-    expect(Object.keys(api)).toEqual(['system', 'preferences', 'dialog', 'project', 'qnaire', 'record', 'epidata'])
+    expect(Object.keys(api)).toEqual(['system', 'preferences', 'dialog', 'project', 'qnaire', 'record', 'epidata', 'admin'])
     for (const forbidden of [
       'invoke',
       'channel',

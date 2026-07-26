@@ -53,6 +53,24 @@ import {
   type EpiDataValidateRequest
 } from '@shared/epidata-contract'
 import type { ImportResult, ImportPreview, ImportProgress } from '@shared/types/epidata'
+import {
+  ADMIN_LOGIN_CHANNEL,
+  ADMIN_LOGOUT_CHANNEL,
+  ADMIN_CHECK_SESSION_CHANNEL,
+  ADMIN_CHANGE_PASSWORD_CHANNEL,
+  ADMIN_GET_RECORDS_CHANNEL,
+  ADMIN_UPDATE_RECORD_CHANNEL,
+  ADMIN_DELETE_RECORDS_CHANNEL,
+  type AdminLoginRequest,
+  type AdminLoginResult,
+  type AdminSessionResult,
+  type AdminChangePasswordRequest,
+  type AdminChangePasswordResult,
+  type AdminGetRecordsRequest,
+  type AdminRecordsResult,
+  type AdminUpdateRecordRequest,
+  type AdminDeleteRecordsRequest
+} from '@shared/admin-contract'
 
 export interface DesktopInvoke {
   (channel: typeof SYSTEM_PING_CHANNEL, request: PingRequest): Promise<PingResponse>
@@ -107,6 +125,13 @@ export interface DesktopInvoke {
   (channel: typeof EPIDATA_IMPORT_CHANNEL, request: EpiDataImportRequest): Promise<unknown>
   (channel: typeof EPIDATA_PREVIEW_CHANNEL, request: EpiDataPreviewRequest): Promise<unknown>
   (channel: typeof EPIDATA_VALIDATE_CHANNEL, request: EpiDataValidateRequest): Promise<unknown>
+  (channel: typeof ADMIN_LOGIN_CHANNEL, request: AdminLoginRequest): Promise<unknown>
+  (channel: typeof ADMIN_LOGOUT_CHANNEL): Promise<unknown>
+  (channel: typeof ADMIN_CHECK_SESSION_CHANNEL): Promise<unknown>
+  (channel: typeof ADMIN_CHANGE_PASSWORD_CHANNEL, request: AdminChangePasswordRequest): Promise<unknown>
+  (channel: typeof ADMIN_GET_RECORDS_CHANNEL, request: AdminGetRecordsRequest): Promise<unknown>
+  (channel: typeof ADMIN_UPDATE_RECORD_CHANNEL, request: AdminUpdateRecordRequest): Promise<unknown>
+  (channel: typeof ADMIN_DELETE_RECORDS_CHANNEL, request: AdminDeleteRecordsRequest): Promise<unknown>
 }
 
 function parsePublicPreferencesResult(value: unknown): PreferencesResult {
@@ -222,6 +247,23 @@ export function createDesktopApi(invoke: DesktopInvoke): DesktopApi {
     }
   })
 
-  const desktopApi = { system, preferences, dialog, project, qnaire, record, epidata } satisfies DesktopApi
+  const admin = Object.freeze({
+    login: async (request: AdminLoginRequest) =>
+      (await invoke(ADMIN_LOGIN_CHANNEL, request)) as unknown as AdminLoginResult,
+    logout: async () =>
+      (await invoke(ADMIN_LOGOUT_CHANNEL)) as unknown as void,
+    checkSession: async () =>
+      (await invoke(ADMIN_CHECK_SESSION_CHANNEL)) as unknown as AdminSessionResult,
+    changePassword: async (request: AdminChangePasswordRequest) =>
+      (await invoke(ADMIN_CHANGE_PASSWORD_CHANNEL, request)) as unknown as AdminChangePasswordResult,
+    getRecords: async (request: AdminGetRecordsRequest) =>
+      (await invoke(ADMIN_GET_RECORDS_CHANNEL, request)) as unknown as AdminRecordsResult,
+    updateRecord: async (request: AdminUpdateRecordRequest) =>
+      (await invoke(ADMIN_UPDATE_RECORD_CHANNEL, request)) as unknown as { ok: boolean },
+    deleteRecords: async (request: AdminDeleteRecordsRequest) =>
+      (await invoke(ADMIN_DELETE_RECORDS_CHANNEL, request)) as unknown as { ok: boolean }
+  })
+
+  const desktopApi = { system, preferences, dialog, project, qnaire, record, epidata, admin } satisfies DesktopApi
   return Object.freeze(desktopApi)
 }
