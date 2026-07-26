@@ -1,4 +1,3 @@
-import React from 'react'
 import { useNavigate } from 'react-router-dom'
 import { ImportWizard } from '@renderer/components/import/ImportWizard'
 

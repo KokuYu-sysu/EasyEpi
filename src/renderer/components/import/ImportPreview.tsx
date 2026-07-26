@@ -1,6 +1,4 @@
-import React from 'react'
-import { Card, CardContent, CardHeader, CardTitle } from '@renderer/components/ui/card'
-import { Badge } from '@renderer/components/ui/badge'
+import { Card, CardContent, CardHeader, CardTitle, Badge } from '@renderer/components/ui'
 import type { ImportPreview as ImportPreviewType } from '@shared/types/epidata'
 
 interface ImportPreviewProps {

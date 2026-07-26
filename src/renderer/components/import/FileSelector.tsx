@@ -1,7 +1,5 @@
-import React, { useState } from 'react'
-import { Button } from '@renderer/components/ui/button'
-import { Input } from '@renderer/components/ui/input'
-import { Label } from '@renderer/components/ui/label'
+import { useState } from 'react'
+import { Button, Input, Label } from '@renderer/components/ui'
 
 interface FileSelectorProps {
   onFileSelected: (qesFilePath: string) => void

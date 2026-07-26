@@ -1,7 +1,4 @@
-import React from 'react'
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@renderer/components/ui/table'
-import { Badge } from '@renderer/components/ui/badge'
-import { Button } from '@renderer/components/ui/button'
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow, Badge, Button } from '@renderer/components/ui'
 import type { QESField } from '@shared/types/epidata'
 import type { QuestionDef } from '@shared/types/qnaire'
 
