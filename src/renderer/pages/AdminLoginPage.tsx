@@ -1,56 +1,76 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
-import { MilestonePage } from '@renderer/components/common/MilestonePage'
+
 import { useCurrentRouteHandle } from '@renderer/app/route-metadata'
-import { Button, Input, Label, Modal } from '@renderer/components/ui'
+import { MilestonePage } from '@renderer/components/common/MilestonePage'
+import { Button, Input } from '@renderer/components/ui'
+
+function loginErrorMessage(code: string | undefined): string {
+  switch (code) {
+    case 'PROJECT_NOT_UNLOCKED':
+      return '请先在欢迎页创建或打开并解锁一个项目。'
+    case 'INVALID_ADMIN_PASSWORD':
+      return '项目密码不正确。'
+    case 'ADMIN_LOGIN_LOCKED':
+      return '密码错误次数过多，管理员登录已暂时锁定。'
+    default:
+      return '管理员验证失败，请重试。'
+  }
+}
 
 export function AdminLoginPage() {
   const navigate = useNavigate()
-  const handle = useCurrentRouteHandle<{ title: string; description: string }>()
+  const handle = useCurrentRouteHandle()
   const [password, setPassword] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [isLoading, setIsLoading] = useState(false)
-  const [attempts, setAttempts] = useState(0)
-  const [isLocked, setIsLocked] = useState(false)
+  const [lockoutUntil, setLockoutUntil] = useState<number | null>(null)
+  const [currentTime, setCurrentTime] = useState(() => Date.now())
+  if (handle === null) throw new Error('ADMIN_LOGIN_ROUTE_METADATA_MISSING')
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault()
-    
-    if (isLocked) {
-      setError('账户已锁定，请5分钟后再试')
+  useEffect(() => {
+    let active = true
+    void window.easyEpi.admin.checkSession().then((result) => {
+      if (active && result.isAuthenticated) navigate('/admin/data', { replace: true })
+    }).catch(() => undefined)
+    return () => { active = false }
+  }, [navigate])
+
+  useEffect(() => {
+    if (lockoutUntil === null) return
+    const timer = window.setInterval(() => {
+      if (Date.now() >= lockoutUntil) {
+        setLockoutUntil(null)
+        setError(null)
+      }
+      setCurrentTime(Date.now())
+    }, 1000)
+    return () => window.clearInterval(timer)
+  }, [lockoutUntil])
+
+  const remainingSeconds = lockoutUntil === null
+    ? 0
+    : Math.max(0, Math.ceil((lockoutUntil - currentTime) / 1000))
+
+  const submit = async (event: React.FormEvent) => {
+    event.preventDefault()
+    if (password.length === 0) {
+      setError('请输入当前项目密码。')
       return
     }
-
-    if (!password.trim()) {
-      setError('请输入密码')
-      return
-    }
-
     setIsLoading(true)
     setError(null)
-
     try {
       const result = await window.easyEpi.admin.login({ password })
-      
       if (result.success) {
-        navigate('/admin/dashboard')
-      } else {
-        const newAttempts = attempts + 1
-        setAttempts(newAttempts)
-        
-        if (newAttempts >= 5) {
-          setIsLocked(true)
-          setError('密码错误次数过多，账户已锁定5分钟')
-          setTimeout(() => {
-            setIsLocked(false)
-            setAttempts(0)
-          }, 5 * 60 * 1000)
-        } else {
-          setError(`密码错误，还剩${5 - newAttempts}次尝试机会`)
-        }
+        setPassword('')
+        navigate('/admin/data', { replace: true })
+        return
       }
-    } catch (err) {
-      setError((err as Error).message)
+      if (result.lockoutUntil !== undefined) setLockoutUntil(result.lockoutUntil)
+      setError(loginErrorMessage(result.error))
+    } catch {
+      setError('无法完成管理员验证，请检查项目状态后重试。')
     } finally {
       setIsLoading(false)
     }
@@ -59,62 +79,40 @@ export function AdminLoginPage() {
   return (
     <MilestonePage
       title={handle.title}
-      description={handle.description}
-      demoMessage="M5 管理员验证功能已启用，可使用默认密码 admin123 登录。"
+      description={handle.description ?? '使用当前项目密码进入数据管理后台。'}
     >
-      <h2 className="m-0 text-[length:var(--font-size-xl)]">管理员验证</h2>
-      
-      <div className="max-w-md mx-auto">
-        <div className="rounded-lg border bg-card p-6 shadow-sm">
-          <p className="text-sm text-muted-foreground mb-6">
-            请输入管理员密码以访问数据管理后台
-          </p>
-
-          <form onSubmit={handleSubmit} className="space-y-4">
-            <div className="space-y-2">
-              <Label htmlFor="password">密码</Label>
-              <Input
-                id="password"
-                type="password"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                placeholder="请输入管理员密码"
-                disabled={isLoading || isLocked}
-              />
-            </div>
-
-            {error && (
-              <p className="text-sm text-destructive">{error}</p>
-            )}
-
-            <Button
-              type="submit"
-              className="w-full"
-              disabled={isLoading || isLocked}
-            >
-              {isLoading ? '验证中...' : '登录'}
-            </Button>
-          </form>
-        </div>
-      </div>
-
-      <div className="flex flex-wrap justify-center gap-[var(--space-3)]">
-        <Modal
-          trigger={<Button>了解后续能力</Button>}
-          title="M5 后续能力说明"
-          description="管理员验证功能尚未完全实现。"
-        >
-          <p className="text-[var(--color-text-secondary)]">
-            M5 将实现完整的管理员验证功能，包括密码保护、会话管理、账户锁定等。当前页面仅用于确认信息结构和安全返回路径。
-          </p>
-        </Modal>
+      <section className="mx-auto grid w-full max-w-md gap-[var(--space-4)] rounded-[var(--radius-2)] border border-[var(--color-border-default)] bg-[var(--color-surface-raised)] p-[var(--space-5)]">
+        <h2 className="m-0 text-[length:var(--font-size-xl)]">管理员验证</h2>
+        <p className="m-0 text-[var(--color-text-secondary)]">
+          管理后台使用当前已打开项目的密码。密码只会发送到本机主进程验证。
+        </p>
+        <form className="grid gap-[var(--space-4)]" onSubmit={submit}>
+          <Input
+            id="admin-password"
+            label="当前项目密码"
+            type="password"
+            autoComplete="current-password"
+            value={password}
+            onChange={(event) => setPassword(event.target.value)}
+            disabled={isLoading || remainingSeconds > 0}
+            error={error ?? undefined}
+          />
+          {remainingSeconds > 0 ? (
+            <p className="m-0" role="status" aria-live="polite">
+              请在 {remainingSeconds} 秒后重试。
+            </p>
+          ) : null}
+          <Button type="submit" loading={isLoading} disabled={remainingSeconds > 0}>
+            登录管理后台
+          </Button>
+        </form>
         <Link
-          className="inline-flex min-h-11 items-center justify-center rounded-[var(--radius-1)] border border-[var(--color-border-strong)] bg-[var(--color-surface-base)] px-[var(--space-4)] py-[var(--space-2)] font-[var(--font-weight-semibold)] text-[var(--color-text-primary)]"
+          className="text-[var(--color-text-link)]"
           to="/"
         >
           返回欢迎页
         </Link>
-      </div>
+      </section>
     </MilestonePage>
   )
 }

@@ -1,101 +1,145 @@
-import { ipcMain } from 'electron'
-import { DataService } from '../services/data.service'
-import { ExportService } from '../services/export.service'
-import { BaselineService } from '../services/baseline.service'
+import type {
+  AdminChangePasswordRequest,
+  AdminChangePasswordResult,
+  AdminGetRecordsRequest,
+  AdminRecordsResult,
+  AdminUpdateRecordRequest
+} from '@shared/admin-contract'
 import {
+  ADMIN_CHANGE_PASSWORD_CHANNEL,
+  ADMIN_CHECK_SESSION_CHANNEL,
+  ADMIN_DELETE_RECORDS_CHANNEL,
+  ADMIN_GET_RECORDS_CHANNEL,
   ADMIN_LOGIN_CHANNEL,
   ADMIN_LOGOUT_CHANNEL,
-  ADMIN_CHECK_SESSION_CHANNEL,
-  ADMIN_CHANGE_PASSWORD_CHANNEL,
-  ADMIN_GET_RECORDS_CHANNEL,
   ADMIN_UPDATE_RECORD_CHANNEL,
-  ADMIN_DELETE_RECORDS_CHANNEL,
-  parseAdminLoginRequest,
   parseAdminChangePasswordRequest,
+  parseAdminDeleteRecordsRequest,
   parseAdminGetRecordsRequest,
-  parseAdminUpdateRecordRequest,
-  parseAdminDeleteRecordsRequest
+  parseAdminLoginRequest,
+  parseAdminUpdateRecordRequest
 } from '@shared/admin-contract'
-import { assertTrustedSender } from './types'
 
-const dataService = new DataService()
-const exportService = new ExportService()
-const baselineService = new BaselineService()
+import type { AdminSessionService } from '../services/admin-session.service'
+import type { ProjectIpcState } from './project.ipc'
+import { assertTrustedSender, type IpcInvokeEventLike, type IpcMainLike } from './types'
 
-// Admin password (in real app, this would be hashed and stored securely)
-let adminPassword = 'admin123'
-let loginAttempts = 0
-let lockoutUntil: number | null = null
+export interface AdminDataService {
+  getRecords(options: AdminGetRecordsRequest): Promise<AdminRecordsResult>
+  updateRecord(id: string, data: AdminUpdateRecordRequest['data']): Promise<void>
+  deleteRecords(ids: string[]): Promise<void>
+}
+
+export interface AdminIpcServices {
+  sessionService: AdminSessionService
+  dataService: AdminDataService
+  changeProjectPassword?: (
+    request: AdminChangePasswordRequest
+  ) => Promise<AdminChangePasswordResult>
+}
+
+const SAFE_PASSWORD_CHANGE_ERRORS = new Set([
+  'INVALID_OLD_PASSWORD',
+  'NO_PROJECT_OPEN',
+  'PASSWORD_UNCHANGED',
+  'PROJECT_NOT_UNLOCKED',
+  'WEAK_NEW_PASSWORD'
+])
+
+function passwordChangeError(error: unknown): AdminChangePasswordResult {
+  const code = error instanceof Error ? error.message : ''
+  return {
+    success: false,
+    error: SAFE_PASSWORD_CHANGE_ERRORS.has(code) ? code : 'PASSWORD_CHANGE_FAILED'
+  }
+}
 
 export function registerAdminIpcHandlers(
+  ipcMain: IpcMainLike,
+  projectState: ProjectIpcState,
+  services: AdminIpcServices,
   packagedRendererUrl: string,
   developmentOrigin?: string
 ): () => void {
-  ipcMain.handle(ADMIN_LOGIN_CHANNEL, async (event, request) => {
+  const { sessionService, dataService, changeProjectPassword } = services
+
+  ipcMain.handle(
+    ADMIN_LOGIN_CHANNEL,
+    async (event: IpcInvokeEventLike, rawRequest: unknown) => {
+      assertTrustedSender(event, packagedRendererUrl, developmentOrigin)
+      const request = parseAdminLoginRequest(rawRequest)
+      return sessionService.login(request.password)
+    }
+  )
+
+  ipcMain.handle(ADMIN_LOGOUT_CHANNEL, async (event: IpcInvokeEventLike) => {
     assertTrustedSender(event, packagedRendererUrl, developmentOrigin)
-    const { password } = parseAdminLoginRequest(request)
-
-    // Check lockout
-    if (lockoutUntil && Date.now() < lockoutUntil) {
-      return { success: false, error: '账户已锁定', lockoutUntil }
-    }
-
-    if (password === adminPassword) {
-      loginAttempts = 0
-      lockoutUntil = null
-      return { success: true }
-    }
-
-    loginAttempts++
-    if (loginAttempts >= 5) {
-      lockoutUntil = Date.now() + 5 * 60 * 1000
-    }
-    return { success: false, error: '密码错误' }
-  })
-
-  ipcMain.handle(ADMIN_LOGOUT_CHANNEL, async (event) => {
-    assertTrustedSender(event, packagedRendererUrl, developmentOrigin)
+    sessionService.logout()
     return { ok: true }
   })
 
-  ipcMain.handle(ADMIN_CHECK_SESSION_CHANNEL, async (event) => {
+  ipcMain.handle(ADMIN_CHECK_SESSION_CHANNEL, async (event: IpcInvokeEventLike) => {
     assertTrustedSender(event, packagedRendererUrl, developmentOrigin)
-    return { isAuthenticated: true }
+    return sessionService.checkSession()
   })
 
-  ipcMain.handle(ADMIN_CHANGE_PASSWORD_CHANNEL, async (event, request) => {
-    assertTrustedSender(event, packagedRendererUrl, developmentOrigin)
-    const { oldPassword, newPassword } = parseAdminChangePasswordRequest(request)
+  ipcMain.handle(
+    ADMIN_CHANGE_PASSWORD_CHANNEL,
+    async (event: IpcInvokeEventLike, rawRequest: unknown) => {
+      assertTrustedSender(event, packagedRendererUrl, developmentOrigin)
+      sessionService.authorize()
+      const request = parseAdminChangePasswordRequest(rawRequest)
+      if (!projectState.currentProject || !projectState.auth.encryptionKey) {
+        return { success: false, error: 'PROJECT_NOT_UNLOCKED' }
+      }
+      if (!sessionService.verifyCurrentPassword(request.oldPassword)) {
+        return { success: false, error: 'INVALID_OLD_PASSWORD' }
+      }
+      if (!changeProjectPassword) {
+        return { success: false, error: 'PASSWORD_CHANGE_UNAVAILABLE' }
+      }
 
-    if (oldPassword !== adminPassword) {
-      return { success: false, error: '旧密码错误' }
+      try {
+        const result = await changeProjectPassword(request)
+        if (result.success) sessionService.rebindAfterPasswordChange()
+        return result
+      } catch (error) {
+        return passwordChangeError(error)
+      }
     }
+  )
 
-    adminPassword = newPassword
-    return { success: true }
-  })
+  ipcMain.handle(
+    ADMIN_GET_RECORDS_CHANNEL,
+    async (event: IpcInvokeEventLike, rawRequest: unknown) => {
+      assertTrustedSender(event, packagedRendererUrl, developmentOrigin)
+      sessionService.authorize()
+      return dataService.getRecords(parseAdminGetRecordsRequest(rawRequest))
+    }
+  )
 
-  ipcMain.handle(ADMIN_GET_RECORDS_CHANNEL, async (event, request) => {
-    assertTrustedSender(event, packagedRendererUrl, developmentOrigin)
-    const options = parseAdminGetRecordsRequest(request)
-    return dataService.getRecords(options)
-  })
+  ipcMain.handle(
+    ADMIN_UPDATE_RECORD_CHANNEL,
+    async (event: IpcInvokeEventLike, rawRequest: unknown) => {
+      assertTrustedSender(event, packagedRendererUrl, developmentOrigin)
+      sessionService.authorize()
+      const { id, data } = parseAdminUpdateRecordRequest(rawRequest)
+      await dataService.updateRecord(id, data)
+      return { ok: true }
+    }
+  )
 
-  ipcMain.handle(ADMIN_UPDATE_RECORD_CHANNEL, async (event, request) => {
-    assertTrustedSender(event, packagedRendererUrl, developmentOrigin)
-    const { id, data } = parseAdminUpdateRecordRequest(request)
-    await dataService.updateRecord(id, data)
-    return { ok: true }
-  })
+  ipcMain.handle(
+    ADMIN_DELETE_RECORDS_CHANNEL,
+    async (event: IpcInvokeEventLike, rawRequest: unknown) => {
+      assertTrustedSender(event, packagedRendererUrl, developmentOrigin)
+      sessionService.authorize()
+      const { ids } = parseAdminDeleteRecordsRequest(rawRequest)
+      await dataService.deleteRecords(ids)
+      return { ok: true }
+    }
+  )
 
-  ipcMain.handle(ADMIN_DELETE_RECORDS_CHANNEL, async (event, request) => {
-    assertTrustedSender(event, packagedRendererUrl, developmentOrigin)
-    const { ids } = parseAdminDeleteRecordsRequest(request)
-    await dataService.deleteRecords(ids)
-    return { ok: true }
-  })
-
-  // Return dispose function
   return () => {
     ipcMain.removeHandler(ADMIN_LOGIN_CHANNEL)
     ipcMain.removeHandler(ADMIN_LOGOUT_CHANNEL)

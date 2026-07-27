@@ -6,7 +6,6 @@ import { vi } from 'vitest'
 
 import { createAppRoutes } from '@renderer/app/routes'
 import { AdminLoginPage } from '@renderer/pages/AdminLoginPage'
-import { BaselinePage } from '@renderer/pages/BaselinePage'
 import { DerivedPage } from '@renderer/pages/DerivedPage'
 import { ImportPage } from '@renderer/pages/ImportPage'
 import { WelcomePage } from '@renderer/pages/WelcomePage'
@@ -89,12 +88,40 @@ describe('welcome page', () => {
 })
 
 describe('standard milestone pages', () => {
+  beforeEach(() => {
+    Object.defineProperty(window, 'easyEpi', {
+      configurable: true,
+      value: {
+        admin: {
+          checkSession: vi.fn().mockResolvedValue({ isAuthenticated: false }),
+          login: vi.fn()
+        },
+        qnaire: {
+          getData: vi.fn().mockResolvedValue({ name: '', questions: [], conditionRules: [], keyQuestionIds: [] })
+        }
+      }
+    })
+  })
+
+  afterEach(() => {
+    Reflect.deleteProperty(window, 'easyEpi')
+  })
+
   const cases = [
-    { path: '/import', title: 'EpiData 导入', milestone: 'M6', Page: ImportPage },
-    { path: '/admin/login', title: '管理员验证', milestone: 'M5', Page: AdminLoginPage },
-    { path: '/admin/baseline', title: '基线表', milestone: 'M5', Page: BaselinePage },
     { path: '/derived', title: '衍生变量', milestone: 'M7', Page: DerivedPage }
   ]
+
+  it('renders the completed EpiData import page without placeholder claims', () => {
+    renderRoute(
+      [{ path: '/import', handle: { title: 'EpiData 导入', description: '导入数据' }, element: <ImportPage /> }],
+      '/import'
+    )
+
+    expect(screen.getByRole('heading', { level: 1, name: 'EpiData 导入' })).toBeVisible()
+    expect(screen.getByRole('button', { name: '选择文件' })).toBeVisible()
+    expect(screen.queryByText(/尚未实现|演示界面|不会保存/)).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('演示说明')).not.toBeInTheDocument()
+  })
 
   it.each(cases)(
     'renders shared milestone structure and safe recovery for $path',

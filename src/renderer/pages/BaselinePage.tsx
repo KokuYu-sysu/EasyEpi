@@ -1,235 +1,215 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
-import { MilestonePage } from '@renderer/components/common/MilestonePage'
-import { useCurrentRouteHandle } from '@renderer/app/route-metadata'
-import { Button, Select, Label, Modal } from '@renderer/components/ui'
 
-interface BaselineRow {
-  variable: string
-  label: string
-  total?: string
-  group1?: string
-  group2?: string
-  pValue?: number
+import { useCurrentRouteHandle } from '@renderer/app/route-metadata'
+import { MilestonePage } from '@renderer/components/common/MilestonePage'
+import { Button, Select } from '@renderer/components/ui'
+import type { BaselineTable } from '@shared/baseline-contract'
+import type { QuestionDef } from '@shared/types/qnaire'
+
+function joinPath(folder: string, name: string): string {
+  const separator = folder.includes('\\') ? '\\' : '/'
+  return `${folder.replace(/[\\/]$/, '')}${separator}${name}`
+}
+
+function isStatisticalQuestion(question: QuestionDef): boolean {
+  return ['numeric_range', 'single_choice', 'multiple_choice'].includes(question.type)
+}
+
+function isExpiredAdminSession(error: unknown): boolean {
+  return String(error).includes('ADMIN_SESSION_REQUIRED')
 }
 
 export function BaselinePage() {
   const navigate = useNavigate()
-  const handle = useCurrentRouteHandle<{ title: string; description: string }>()
-  const [groupVariable, setGroupVariable] = useState<string>('')
-  const [isGenerating, setIsGenerating] = useState(false)
-  const [tableData, setTableData] = useState<BaselineRow[]>([])
+  const handle = useCurrentRouteHandle()
+  const [questions, setQuestions] = useState<QuestionDef[]>([])
+  const [selectedIds, setSelectedIds] = useState<string[]>([])
+  const [groupQuestionId, setGroupQuestionId] = useState('none')
+  const [statisticalMethod, setStatisticalMethod] = useState<'auto' | 'manual'>('auto')
+  const [continuousTest, setContinuousTest] = useState<'welch_t' | 'none'>('welch_t')
+  const [categoricalTest, setCategoricalTest] = useState<'chi_square' | 'none'>('chi_square')
+  const [table, setTable] = useState<BaselineTable | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [message, setMessage] = useState<string | null>(null)
+  if (handle === null) throw new Error('BASELINE_ROUTE_METADATA_MISSING')
 
-  // 模拟变量列表
-  const variables = [
-    { value: 'age', label: '年龄' },
-    { value: 'sex', label: '性别' },
-    { value: 'bmi', label: 'BMI' },
-    { value: 'blood_pressure', label: '血压' },
-    { value: 'smoking', label: '吸烟状态' }
-  ]
+  useEffect(() => {
+    let active = true
+    void Promise.all([window.easyEpi.admin.checkSession(), window.easyEpi.qnaire.getData()])
+      .then(([session, questionnaire]) => {
+        if (!active) return
+        if (!session.isAuthenticated) {
+          navigate('/admin/login', { replace: true })
+          return
+        }
+        const statistical = questionnaire.questions.filter(isStatisticalQuestion)
+        setQuestions(questionnaire.questions)
+        setSelectedIds(statistical.map((question) => question.id))
+        setLoading(false)
+      })
+      .catch(() => navigate('/admin/login', { replace: true }))
+    return () => { active = false }
+  }, [navigate])
 
-  // 模拟分组变量
-  const groupVariables = [
-    { value: '', label: '不分组' },
-    { value: 'treatment', label: '治疗组' },
-    { value: 'gender', label: '性别' }
-  ]
+  const request = {
+    ...(selectedIds.length > 0 ? { selectedQuestionIds: selectedIds } : {}),
+    ...(groupQuestionId === 'none' ? {} : { groupQuestionId }),
+    ...(statisticalMethod === 'auto' ? {} : {
+      statisticalMethod,
+      continuousTest,
+      categoricalTest
+    })
+  }
 
-  const handleGenerate = async () => {
-    setIsGenerating(true)
-    
-    // 模拟生成基线表
-    await new Promise(resolve => setTimeout(resolve, 1000))
-    
-    const mockData: BaselineRow[] = [
-      {
-        variable: 'age',
-        label: '年龄 (岁)',
-        total: '45.3±12.1',
-        group1: '44.8±11.9',
-        group2: '45.9±12.3',
-        pValue: 0.521
-      },
-      {
-        variable: 'sex',
-        label: '性别',
-        total: '',
-        group1: '',
-        group2: '',
-        pValue: 0.673
-      },
-      {
-        variable: 'sex_male',
-        label: '  男',
-        total: '98 (49.0%)',
-        group1: '47 (47.0%)',
-        group2: '51 (51.0%)'
-      },
-      {
-        variable: 'sex_female',
-        label: '  女',
-        total: '102 (51.0%)',
-        group1: '53 (53.0%)',
-        group2: '49 (49.0%)'
-      },
-      {
-        variable: 'bmi',
-        label: 'BMI (kg/m²)',
-        total: '24.5±3.2',
-        group1: '24.3±3.1',
-        group2: '24.7±3.3',
-        pValue: 0.384
+  const generate = async () => {
+    if (selectedIds.length === 0) {
+      setMessage('请至少选择一个统计变量。')
+      return
+    }
+    setLoading(true)
+    setMessage(null)
+    try {
+      const result = await window.easyEpi.baseline.generate(request)
+      setTable(result)
+      setMessage(`已根据当前加密数据生成 ${result.rows.length} 行统计结果。`)
+    } catch (error) {
+      if (isExpiredAdminSession(error)) {
+        navigate('/admin/login', { replace: true })
+        return
       }
-    ]
-    
-    setTableData(mockData)
-    setIsGenerating(false)
+      setMessage('基线表生成失败，请重新登录并检查数据。')
+    } finally {
+      setLoading(false)
+    }
   }
 
-  const handleExport = () => {
-    // 模拟导出CSV
-    const csv = [
-      ['Variable', 'Total', 'Group 1', 'Group 2', 'P value'],
-      ...tableData.map(row => [
-        row.label,
-        row.total || '',
-        row.group1 || '',
-        row.group2 || '',
-        row.pValue?.toString() || ''
-      ])
-    ].map(row => row.join(',')).join('\n')
-
-    const blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8' })
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = url
-    a.download = 'baseline_table.csv'
-    a.click()
-    URL.revokeObjectURL(url)
+  const exportTable = async () => {
+    const folder = await window.easyEpi.dialog.selectFolder()
+    if (folder.canceled || folder.filePaths.length === 0) return
+    try {
+      const result = await window.easyEpi.baseline.export({
+        ...request,
+        outputPath: joinPath(folder.filePaths[0]!, 'easyepi_baseline.csv')
+      })
+      setMessage(result.success
+        ? `基线表已导出：${result.outputPath}`
+        : `基线表导出失败：${result.error ?? '未知错误'}`)
+    } catch (error) {
+      if (isExpiredAdminSession(error)) {
+        navigate('/admin/login', { replace: true })
+        return
+      }
+      setMessage('基线表导出失败，请检查目标目录。')
+    }
   }
+
+  const candidateQuestions = questions.filter(isStatisticalQuestion)
+  const groupQuestions = questions.filter((question) => question.type === 'single_choice')
 
   return (
     <MilestonePage
       title={handle.title}
-      description={handle.description}
-      demoMessage="M5 基线表功能已启用，可生成基线特征统计表。"
+      description={handle.description ?? '从当前加密记录生成基线统计表。'}
+      actions={<Link className="text-[var(--color-text-link)]" to="/admin/data">返回数据管理</Link>}
     >
-      <h2 className="m-0 text-[length:var(--font-size-xl)]">基线表生成</h2>
-      
-      <div className="space-y-6">
-        {/* 控制面板 */}
-        <div className="rounded-lg border bg-card p-4">
-          <h3 className="text-lg font-semibold mb-4">基线表生成</h3>
-          
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <div className="space-y-2">
-              <Label>分组变量</Label>
-              <Select
-                value={groupVariable}
-                onValueChange={setGroupVariable}
-                options={groupVariables}
+      <section className="grid gap-[var(--space-4)] rounded-[var(--radius-2)] border border-[var(--color-border-default)] p-[var(--space-4)]">
+        <h2 className="m-0">基线表设置</h2>
+        <Select
+          label="分组变量"
+          value={groupQuestionId}
+          onValueChange={setGroupQuestionId}
+          options={[
+            { value: 'none', label: '不分组' },
+            ...groupQuestions.map((question) => ({ value: question.id, label: `${question.content} (${question.variableName})` }))
+          ]}
+        />
+        <Select
+          label="统计方法"
+          value={statisticalMethod}
+          onValueChange={(value) => setStatisticalMethod(value as 'auto' | 'manual')}
+          options={[
+            { value: 'auto', label: '自动选择检验方法' },
+            { value: 'manual', label: '手动指定检验方法' }
+          ]}
+        />
+        {statisticalMethod === 'manual' ? (
+          <div className="grid gap-[var(--space-3)] md:grid-cols-2">
+            <Select
+              label="连续变量检验"
+              value={continuousTest}
+              onValueChange={(value) => setContinuousTest(value as 'welch_t' | 'none')}
+              options={[
+                { value: 'welch_t', label: 'Welch t 检验' },
+                { value: 'none', label: '仅描述统计' }
+              ]}
+            />
+            <Select
+              label="分类变量检验"
+              value={categoricalTest}
+              onValueChange={(value) => setCategoricalTest(value as 'chi_square' | 'none')}
+              options={[
+                { value: 'chi_square', label: 'Pearson χ² 检验' },
+                { value: 'none', label: '仅描述统计' }
+              ]}
+            />
+          </div>
+        ) : null}
+        <fieldset className="grid gap-[var(--space-2)]">
+          <legend>统计变量</legend>
+          {candidateQuestions.map((question) => (
+            <label key={question.id} className="flex items-center gap-[var(--space-2)]">
+              <input
+                type="checkbox"
+                checked={selectedIds.includes(question.id)}
+                disabled={question.id === groupQuestionId}
+                onChange={(event) => setSelectedIds((current) =>
+                  event.target.checked
+                    ? [...new Set([...current, question.id])]
+                    : current.filter((id) => id !== question.id)
+                )}
               />
-            </div>
-            
-            <div className="flex items-end gap-2">
-              <Button
-                onClick={handleGenerate}
-                disabled={isGenerating}
-              >
-                {isGenerating ? '生成中...' : '生成基线表'}
-              </Button>
-              
-              {tableData.length > 0 && (
-                <Button variant="outline" onClick={handleExport}>
-                  导出CSV
-                </Button>
-              )}
-            </div>
-          </div>
+              {question.content} ({question.variableName})
+            </label>
+          ))}
+        </fieldset>
+        <div className="flex flex-wrap gap-[var(--space-2)]">
+          <Button loading={loading} onClick={() => void generate()}>生成基线表</Button>
+          <Button variant="secondary" disabled={table === null} onClick={() => void exportTable()}>导出 UTF-8 CSV</Button>
         </div>
+        {message ? <p className="m-0" role="status" aria-live="polite">{message}</p> : null}
+      </section>
 
-        {/* 基线表预览 */}
-        {tableData.length > 0 && (
-          <div className="rounded-lg border bg-card overflow-hidden">
-            <div className="p-4 border-b">
-              <h3 className="text-lg font-semibold">Table 1. Baseline Characteristics</h3>
-              <p className="text-sm text-muted-foreground">
-                {groupVariable ? `按 ${groupVariables.find(g => g.value === groupVariable)?.label} 分组` : '总体统计'}
-              </p>
-            </div>
-            
-            <div className="overflow-x-auto">
-              <table className="w-full">
-                <thead className="bg-muted">
-                  <tr>
-                    <th className="p-3 text-left font-medium">Variable</th>
-                    <th className="p-3 text-center font-medium">
-                      Total (n=200)
-                    </th>
-                    {groupVariable && (
-                      <>
-                        <th className="p-3 text-center font-medium">Group 1 (n=100)</th>
-                        <th className="p-3 text-center font-medium">Group 2 (n=100)</th>
-                        <th className="p-3 text-center font-medium">P value</th>
-                      </>
-                    )}
-                  </tr>
-                </thead>
-                <tbody>
-                  {tableData.map((row, index) => (
-                    <tr
-                      key={row.variable}
-                      className={index % 2 === 0 ? 'bg-background' : 'bg-muted/50'}
-                    >
-                      <td className="p-3">
-                        {row.label}
-                      </td>
-                      <td className="p-3 text-center">{row.total}</td>
-                      {groupVariable && (
-                        <>
-                          <td className="p-3 text-center">{row.group1}</td>
-                          <td className="p-3 text-center">{row.group2}</td>
-                          <td className="p-3 text-center">
-                            {row.pValue !== undefined ? row.pValue.toFixed(3) : ''}
-                          </td>
-                        </>
-                      )}
-                    </tr>
+      {table ? (
+        <section className="min-w-0 overflow-x-auto rounded-[var(--radius-2)] border border-[var(--color-border-default)]">
+          <table className="w-full min-w-[48rem] border-collapse">
+            <caption className="p-[var(--space-3)] text-left font-semibold">Table 1. 基线特征</caption>
+            <thead className="bg-[var(--color-surface-sunken)]">
+              <tr>
+                <th className="p-[var(--space-3)] text-left">变量</th>
+                {table.headers.map((header) => <th key={header.key} className="p-[var(--space-3)]">{header.label}</th>)}
+                {groupQuestionId !== 'none' ? <th className="p-[var(--space-3)]">P 值 / 检验</th> : null}
+              </tr>
+            </thead>
+            <tbody>
+              {table.rows.map((row) => (
+                <tr key={row.variable} className="border-t border-[var(--color-border-default)]">
+                  <th className="p-[var(--space-3)] text-left" scope="row">{row.label}</th>
+                  <td className="p-[var(--space-3)] text-center">{row.total}</td>
+                  {table.headers.slice(1).map((header) => (
+                    <td key={header.key} className="p-[var(--space-3)] text-center">{row.groups?.[header.key] ?? '—'}</td>
                   ))}
-                </tbody>
-              </table>
-            </div>
-          </div>
-        )}
-
-        {/* 空状态 */}
-        {tableData.length === 0 && !isGenerating && (
-          <div className="text-center py-12 text-muted-foreground">
-            <p className="text-lg">选择分组变量后点击"生成基线表"</p>
-            <p className="text-sm mt-2">系统将自动计算各变量的统计描述</p>
-          </div>
-        )}
-
-        {/* 操作按钮 */}
-        <div className="flex flex-wrap justify-center gap-[var(--space-3)]">
-          <Modal
-            trigger={<Button>了解后续能力</Button>}
-            title="M5 后续能力说明"
-            description="基线表功能尚未完全实现。"
-          >
-            <p className="text-[var(--color-text-secondary)]">
-              M5 将实现完整的基线表生成功能，包括变量分类、统计检验、分组统计等。当前页面仅用于确认信息结构和安全返回路径。
-            </p>
-          </Modal>
-          <Link
-            className="inline-flex min-h-11 items-center justify-center rounded-[var(--radius-1)] border border-[var(--color-border-strong)] bg-[var(--color-surface-base)] px-[var(--space-4)] py-[var(--space-2)] font-[var(--font-weight-semibold)] text-[var(--color-text-primary)]"
-            to="/admin/dashboard"
-          >
-            返回数据管理
-          </Link>
-        </div>
-      </div>
+                  {groupQuestionId !== 'none' ? (
+                    <td className="p-[var(--space-3)] text-center">
+                      {row.pValue === undefined ? '—' : `${row.pValue.toFixed(4)} (${row.testUsed})`}
+                    </td>
+                  ) : null}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </section>
+      ) : null}
     </MilestonePage>
   )
 }

@@ -4,6 +4,9 @@ export interface IpcInvokeEventLike {
   senderFrame?: {
     url: string
   } | null
+  sender?: {
+    send(channel: string, payload: unknown): void
+  }
 }
 
 export interface IpcMainLike {

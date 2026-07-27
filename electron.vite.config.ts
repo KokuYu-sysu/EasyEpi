@@ -11,7 +11,11 @@ export default defineConfig({
   main: {
     build: {
       rollupOptions: {
-        input: resolve(projectRoot, 'src/main/index.ts')
+        input: resolve(projectRoot, 'src/main/index.ts'),
+        output: {
+          preserveModules: true,
+          preserveModulesRoot: resolve(projectRoot, 'src/main')
+        }
       }
     },
     resolve: {

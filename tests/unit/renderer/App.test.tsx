@@ -49,6 +49,29 @@ function createApi(): DesktopApi {
       getProgress: vi.fn().mockResolvedValue({ ok: true, currentIndex: 0, batchCount: 0, batchStartTime: Date.now(), currentAnswers: {} }),
       saveProgress: vi.fn().mockResolvedValue({ ok: true }),
       checkKeyDuplicate: vi.fn().mockResolvedValue({ ok: true, isDuplicate: false })
+    },
+    epidata: {
+      import: vi.fn(),
+      preview: vi.fn(),
+      validate: vi.fn(),
+      onImportProgress: vi.fn(),
+      offImportProgress: vi.fn()
+    },
+    admin: {
+      login: vi.fn(),
+      logout: vi.fn(),
+      checkSession: vi.fn(),
+      changePassword: vi.fn(),
+      getRecords: vi.fn(),
+      updateRecord: vi.fn(),
+      deleteRecords: vi.fn()
+    },
+    exportData: {
+      csv: vi.fn()
+    },
+    baseline: {
+      generate: vi.fn(),
+      export: vi.fn()
     }
   }
 }

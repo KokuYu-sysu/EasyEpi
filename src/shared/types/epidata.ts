@@ -1,3 +1,5 @@
+import type { QuestionDef } from './qnaire'
+
 export enum QESFieldType {
   INTEGER = 'INTEGER',
   DECIMAL = 'DECIMAL',
@@ -18,6 +20,7 @@ export interface QESField {
   length: number
   decimals: number
   comment: string | null
+  valueLabels?: Array<{ value: string; label: string }>
 }
 
 export interface QESBlock {
@@ -66,6 +69,8 @@ export interface ImportPreview {
   encoding?: string
   version?: string
   warnings: string[]
+  fields: QESField[]
+  mappedQuestions: QuestionDef[]
 }
 
 export interface ImportProgress {

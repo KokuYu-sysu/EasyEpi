@@ -10,7 +10,7 @@ import {
   rmSync,
   writeFileSync
 } from 'node:fs'
-import { dirname, join } from 'node:path'
+import { basename, dirname, extname, join } from 'node:path'
 
 import { DATA_MAGIC, DATA_VERSION } from '@shared/types/project'
 import type { RecordData } from '@shared/types/record'
@@ -166,8 +166,32 @@ function writeDataFile(
   atomicWriteFile(filePath, Buffer.concat([newHeader, encryptPayload(payload, key)]))
 }
 
+export function createReencryptedDataFileContents(
+  filePath: string,
+  oldKey: Buffer,
+  newKey: Buffer,
+  lastModifiedAt = Date.now()
+): Buffer {
+  const { header, payload } = readDataFile(filePath, oldKey)
+  const newHeader = Buffer.alloc(HEADER_SIZE)
+  writeHeader(newHeader, payload.records.length, header.createdAt, lastModifiedAt)
+  return Buffer.concat([newHeader, encryptPayload(payload, newKey)])
+}
+
 export function getDataFilePath(folderPath: string, projectName: string): string {
   return join(folderPath, `${projectName}.easyepi_data`)
+}
+
+export function resolveProjectDataFilePath(projectFilePath: string, logicalProjectName: string): string {
+  const folderPath = dirname(projectFilePath)
+  const fileBasedPath = join(
+    folderPath,
+    `${basename(projectFilePath, extname(projectFilePath))}.easyepi_data`
+  )
+  const logicalNamePath = getDataFilePath(folderPath, logicalProjectName)
+  if (existsSync(fileBasedPath)) return fileBasedPath
+  if (logicalNamePath !== fileBasedPath && existsSync(logicalNamePath)) return logicalNamePath
+  return fileBasedPath
 }
 
 export function createDataFile(filePath: string, key: Buffer): void {
@@ -193,6 +217,12 @@ export function loadRecords(filePath: string, key: Buffer): RecordData[] {
 export function appendRecord(filePath: string, key: Buffer, record: RecordData): void {
   const { header, payload } = readDataFile(filePath, key)
   payload.records.push(record)
+  writeDataFile(filePath, key, header, payload)
+}
+
+export function replaceRecords(filePath: string, key: Buffer, records: RecordData[]): void {
+  const { header, payload } = readDataFile(filePath, key)
+  payload.records = [...records]
   writeDataFile(filePath, key, header, payload)
 }
 

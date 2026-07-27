@@ -22,13 +22,14 @@ import {
 
 import {
   createDataFile,
+  getDataFilePath,
   loadRecords,
   appendRecord,
   deleteRecords,
   checkKeyDuplicate,
-  getDataFilePath,
   loadEntryProgress,
   saveEntryProgress,
+  resolveProjectDataFilePath,
   type PersistedEntryProgress
 } from '../services/record.service'
 
@@ -62,9 +63,12 @@ function ensureDataFile(projectState: ProjectIpcState): { filePath: string; key:
   const key = projectState.auth.encryptionKey
   if (!key) throw new Error('PROJECT_NOT_UNLOCKED')
 
-  const folderPath = projectState.currentProject.meta.folderPath
-  const name = projectState.currentProject.meta.name
-  const filePath = getDataFilePath(folderPath, name)
+  const filePath = projectState.currentFilePath
+    ? resolveProjectDataFilePath(projectState.currentFilePath, projectState.currentProject.meta.name)
+    : getDataFilePath(
+        projectState.currentProject.meta.folderPath,
+        projectState.currentProject.meta.name
+      )
 
   if (!existsSync(filePath)) {
     createDataFile(filePath, key)

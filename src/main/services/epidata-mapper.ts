@@ -1,83 +1,95 @@
-import { QESField, QESFieldType, QESParseResult } from '@shared/types/epidata'
-import { QuestionDef, QuestionType, QuestionnaireDef, ConstraintType, OptionItem } from '@shared/types/qnaire'
+import { randomUUID } from 'node:crypto'
+
+import { QESFieldType } from '@shared/types/epidata'
+import type { QESField, QESParseResult } from '@shared/types/epidata'
+import type {
+  ConstraintDef,
+  OptionItem,
+  QuestionDef,
+  QuestionnaireDef,
+  QuestionType
+} from '@shared/types/qnaire'
+
+export type FieldMappingOverrides = Record<string, QuestionType>
 
 export class EpiDataMapper {
-  mapFieldToQuestion(field: QESField): QuestionDef {
-    const type = this.mapFieldType(field.type)
-    const constraint = this.mapConstraint(field)
-    const options = this.mapOptions(field)
-
+  mapFieldToQuestion(field: QESField, overrideType?: QuestionType): QuestionDef {
+    const type = overrideType ?? this.mapFieldType(field.type)
     return {
-      id: this.generateId(),
+      id: randomUUID(),
       content: field.label || field.name,
       variableName: field.name,
       type,
-      options,
-      constraint,
-      isKey: false,
-      allowSkip: true,
+      options: this.mapOptions(field, type),
+      constraint: this.mapConstraint(field, type),
+      isKey: field.type === QESFieldType.ID_NUMBER,
+      allowSkip: field.type !== QESFieldType.ID_NUMBER,
       order: 0
     }
   }
 
-  mapQESToQuestionnaire(result: QESParseResult): QuestionnaireDef {
+  mapQESToQuestionnaire(
+    result: QESParseResult,
+    overrides: FieldMappingOverrides = {}
+  ): QuestionnaireDef {
     const questions = result.fields.map((field, index) => {
-      const question = this.mapFieldToQuestion(field)
+      const question = this.mapFieldToQuestion(field, overrides[field.name])
       question.order = index
       return question
     })
-
     return {
       questions,
       conditionRules: [],
-      keyQuestionIds: [],
+      keyQuestionIds: questions.filter((question) => question.isKey).map((question) => question.id),
       name: result.metadata.title || 'Imported Questionnaire'
     }
   }
 
-  private mapFieldType(qesType: QESFieldType): QuestionType {
-    switch (qesType) {
+  private mapFieldType(type: QESFieldType): QuestionType {
+    switch (type) {
       case QESFieldType.INTEGER:
       case QESFieldType.DECIMAL:
+      case QESFieldType.ID_NUMBER:
         return 'numeric_range'
-      case QESFieldType.TEXT:
-        return 'free_text'
       case QESFieldType.UPPERCASE:
+      case QESFieldType.SOUNDEX:
         return 'fixed_length'
       case QESFieldType.BOOLEAN:
         return 'single_choice'
       case QESFieldType.DATE_DMY:
       case QESFieldType.DATE_MDY:
+      case QESFieldType.TODAY_DATE:
         return 'date'
+      case QESFieldType.TEXT:
       default:
         return 'free_text'
     }
   }
 
-  private mapConstraint(field: QESField): { type: ConstraintType; fixedLength?: number; minValue?: number; maxValue?: number } {
-    switch (field.type) {
-      case QESFieldType.INTEGER:
-        return { type: 'integer' }
-      case QESFieldType.DECIMAL:
-        return { type: 'decimal' }
-      case QESFieldType.UPPERCASE:
-        return { type: 'english', fixedLength: field.length }
-      default:
-        return { type: 'none' }
+  private mapConstraint(field: QESField, questionType: QuestionType): ConstraintDef {
+    if (questionType === 'date') return { type: 'date' }
+    if (questionType === 'numeric_range') {
+      return { type: field.type === QESFieldType.DECIMAL ? 'decimal' : 'integer' }
     }
+    if (questionType === 'fixed_length') {
+      return {
+        type: field.type === QESFieldType.UPPERCASE ? 'english' : 'alphanumeric',
+        fixedLength: field.length
+      }
+    }
+    return { type: 'none' }
   }
 
-  private mapOptions(field: QESField): OptionItem[] {
-    if (field.type === QESFieldType.BOOLEAN) {
+  private mapOptions(field: QESField, questionType: QuestionType): OptionItem[] {
+    if (field.valueLabels !== undefined && field.valueLabels.length > 0) {
+      return field.valueLabels
+    }
+    if (field.type === QESFieldType.BOOLEAN || questionType === 'single_choice') {
       return [
-        { value: '1', label: 'Yes' },
-        { value: '0', label: 'No' }
+        { value: 'Y', label: 'Yes' },
+        { value: 'N', label: 'No' }
       ]
     }
     return []
-  }
-
-  private generateId(): string {
-    return Math.random().toString(36).substring(2, 15)
   }
 }

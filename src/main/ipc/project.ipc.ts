@@ -18,6 +18,7 @@ import {
   verifyAndDeriveKey,
   getProjectFilePath
 } from '../services/project.service'
+import { recoverProjectRekeyTransaction } from '../services/project-rekey.service'
 
 import { type IpcMainLike, type IpcInvokeEventLike, assertTrustedSender } from './types'
 
@@ -68,6 +69,8 @@ export function registerProjectIpc(
     assertTrustedSender(event, packagedRendererUrl, developmentOrigin)
     const request = parseProjectOpenRequest(rawRequest)
 
+    // Recover an interrupted password-change transaction before reading either file.
+    recoverProjectRekeyTransaction(request.filePath)
     // Read header to get salt and password hash (unencrypted)
     const header = readProjectHeader(request.filePath)
 

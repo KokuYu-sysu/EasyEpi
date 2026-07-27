@@ -1,6 +1,6 @@
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process'
 import { once } from 'node:events'
-import { access, mkdir, readFile } from 'node:fs/promises'
+import { access, mkdir, readFile, writeFile } from 'node:fs/promises'
 import { createServer } from 'node:net'
 import { basename, dirname, isAbsolute, join } from 'node:path'
 
@@ -15,6 +15,7 @@ import {
 } from '@playwright/test'
 
 import type { DesktopApi } from '../../src/shared/desktop-api'
+import iconv from 'iconv-lite'
 
 const hostileDevelopmentUrl = 'https://attacker.invalid/easyepi'
 
@@ -30,6 +31,24 @@ interface PortableSession {
 }
 
 type RendererWindow = Window & { easyEpi: DesktopApi }
+
+function epidataHeaderField(name: string, typeCode: number, width: number, question: string): string {
+  return [
+    typeCode === 0 ? '#' : '_',
+    name.padEnd(10),
+    ' ',
+    '1'.padStart(4),
+    '1'.padStart(4),
+    '30'.padStart(4),
+    '20'.padStart(4),
+    '1'.padStart(4),
+    String(typeCode).padStart(4),
+    String(width).padStart(4),
+    '112'.padStart(4),
+    ' ',
+    question
+  ].join('')
+}
 
 async function assertEasyEpiWindow(window: Page): Promise<void> {
   await expect(window).toHaveTitle('EasyEpi')
@@ -157,7 +176,14 @@ async function launchPortable(paths: PackagedPaths): Promise<PortableSession> {
 
 async function closePortable(session: PortableSession | undefined): Promise<void> {
   if (session === undefined) return
-  await session.browser.close()
+  try {
+    const context = session.browser.contexts()[0]
+    const cdp = context === undefined ? undefined : await context.newCDPSession(session.window)
+    await cdp?.send('Browser.close')
+  } catch {
+    // The browser may close the CDP connection before acknowledging Browser.close.
+  }
+  await session.browser.close().catch(() => undefined)
   await stopProcessTree(session.child)
 }
 
@@ -311,6 +337,204 @@ test('submits and reopens an encrypted M4 record in the packaged executable', as
         })
       )
     ).resolves.toMatchObject({ ok: false, error: 'KEY_DUPLICATE' })
+  } finally {
+    await closePortable(session)
+  }
+})
+
+test('runs phase-four administration and password re-encryption in the packaged executable', async () => {
+  const paths = readPackagedPaths()
+  test.skip(!basename(paths.executablePath).toLowerCase().includes('-portable-'))
+  await access(paths.executablePath)
+  const projectFolder = join(paths.userDataDir, 'phase4-packaged-project')
+  const projectFile = join(projectFolder, 'Phase 4 EXE.easyepi')
+  const dataFile = join(projectFolder, 'Phase 4 EXE.easyepi_data')
+  const exportPath = join(paths.userDataDir, 'phase4-packaged-export.csv')
+  const baselinePath = join(paths.userDataDir, 'phase4-packaged-baseline.csv')
+  await mkdir(projectFolder, { recursive: true })
+
+  let session: PortableSession | undefined
+  try {
+    session = await launchPortable(paths)
+    const { window } = session
+    await window.evaluate(
+      async ({ folderPath }) => {
+        const api = (globalThis as unknown as RendererWindow).easyEpi
+        await api.project.create({
+          name: 'Phase 4 EXE',
+          folderPath,
+          password: 'old-password'
+        })
+        await api.qnaire.addQuestion({
+          id: 'phase4-exe-key',
+          content: 'Participant ID',
+          variableName: 'participant_id',
+          type: 'fixed_length',
+          options: [],
+          constraint: { type: 'alphanumeric', fixedLength: 3 },
+          isKey: true,
+          allowSkip: false,
+          order: 0
+        })
+        await api.qnaire.addQuestion({
+          id: 'phase4-exe-age',
+          content: 'Age',
+          variableName: 'age',
+          type: 'numeric_range',
+          options: [],
+          constraint: { type: 'integer', minValue: 0, maxValue: 120 },
+          isKey: false,
+          allowSkip: false,
+          order: 1
+        })
+        await api.project.save({ folderPath })
+        await api.record.submit({ 'phase4-exe-key': 'P01', 'phase4-exe-age': '28' })
+        globalThis.location.hash = '#/admin/data'
+      },
+      { folderPath: projectFolder }
+    )
+
+    await expect(window.getByRole('heading', { level: 2, name: '管理员验证' })).toBeVisible()
+    await window.getByLabel('当前项目密码').fill('old-password')
+    await window.getByRole('button', { name: '登录管理后台' }).click()
+    await expect(window.getByText('共 1 条记录')).toBeVisible()
+
+    await expect(
+      window.evaluate(
+        ({ outputPath }) => (globalThis as unknown as RendererWindow).easyEpi.exportData.csv({
+          outputPath,
+          encoding: 'one_hot',
+          fileEncoding: 'gbk',
+          scope: 'all'
+        }),
+        { outputPath: exportPath }
+      )
+    ).resolves.toMatchObject({ success: true, recordCount: 1 })
+    await expect(
+      window.evaluate(
+        ({ outputPath }) => (globalThis as unknown as RendererWindow).easyEpi.baseline.export({
+          outputPath,
+          selectedQuestionIds: ['phase4-exe-age']
+        }),
+        { outputPath: baselinePath }
+      )
+    ).resolves.toMatchObject({ success: true })
+    const rawExport = await readFile(exportPath)
+    expect([...rawExport.subarray(0, 3)]).not.toEqual([0xef, 0xbb, 0xbf])
+    expect(iconv.decode(rawExport, 'gbk')).toContain('participant_id')
+    expect([...(await readFile(baselinePath)).subarray(0, 3)]).toEqual([0xef, 0xbb, 0xbf])
+
+    await expect(
+      window.evaluate(() => (globalThis as unknown as RendererWindow).easyEpi.admin.changePassword({
+        oldPassword: 'old-password',
+        newPassword: 'new-password'
+      }))
+    ).resolves.toMatchObject({ success: true })
+    expect((await readFile(projectFile)).includes(Buffer.from('P01'))).toBe(false)
+    expect((await readFile(dataFile)).includes(Buffer.from('P01'))).toBe(false)
+
+    await window.evaluate(() => (globalThis as unknown as RendererWindow).easyEpi.project.close())
+    await expect(
+      window.evaluate(
+        ({ filePath }) => (globalThis as unknown as RendererWindow).easyEpi.project.open({
+          filePath,
+          password: 'old-password'
+        }),
+        { filePath: projectFile }
+      )
+    ).resolves.toMatchObject({ ok: false })
+    await expect(
+      window.evaluate(
+        ({ filePath }) => (globalThis as unknown as RendererWindow).easyEpi.project.open({
+          filePath,
+          password: 'new-password'
+        }),
+        { filePath: projectFile }
+      )
+    ).resolves.toMatchObject({ ok: true })
+    await expect(
+      window.evaluate(() => (globalThis as unknown as RendererWindow).easyEpi.record.list())
+    ).resolves.toMatchObject({ total: 1 })
+  } finally {
+    await closePortable(session)
+  }
+})
+
+test('imports and reopens encrypted EpiData records in the packaged executable', async () => {
+  const paths = readPackagedPaths()
+  test.skip(!basename(paths.executablePath).toLowerCase().includes('-portable-'))
+  await access(paths.executablePath)
+  const sourceFolder = join(paths.userDataDir, 'm5-epidata-source')
+  const targetFolder = join(paths.userDataDir, 'm5-epidata-target')
+  await mkdir(sourceFolder, { recursive: true })
+  await mkdir(targetFolder, { recursive: true })
+  const qesFilePath = join(sourceFolder, 'people.qes')
+  const projectFile = join(targetFolder, 'M5 EXE import.easyepi')
+  await writeFile(
+    qesFilePath,
+    ['Packaged EpiData', '{name} Participant name __________', '{age} Participant age ###'].join('\r\n'),
+    'utf8'
+  )
+  await writeFile(
+    join(sourceFolder, 'people.rec'),
+    [
+      '2 1 VLAB Filelabel: People',
+      epidataHeaderField('name', 1, 10, 'Participant name'),
+      epidataHeaderField('age', 0, 3, 'Participant age'),
+      'Alice      42!',
+      ''
+    ].join('\r\n'),
+    'latin1'
+  )
+
+  let session: PortableSession | undefined
+  try {
+    session = await launchPortable(paths)
+    const preview = await session.window.evaluate(
+      ({ filePath }) =>
+        (globalThis as unknown as RendererWindow).easyEpi.epidata.preview({ qesFilePath: filePath }),
+      { filePath: qesFilePath }
+    )
+    expect(preview).toMatchObject({ fieldCount: 2, recordCount: 1, encoding: 'utf-8' })
+
+    const result = await session.window.evaluate(
+      ({ filePath, targetPath }) =>
+        (globalThis as unknown as RendererWindow).easyEpi.epidata.import({
+          qesFilePath: filePath,
+          targetProjectPath: targetPath,
+          projectName: 'M5 EXE import',
+          password: 'm5-exe-password'
+        }),
+      { filePath: qesFilePath, targetPath: targetFolder }
+    )
+    expect(result).toMatchObject({ success: true, recordCount: 1, projectPath: projectFile })
+    await expect(
+      session.window.evaluate(() => (globalThis as unknown as RendererWindow).easyEpi.record.list())
+    ).resolves.toMatchObject({ total: 1 })
+
+    const rawProject = await readFile(projectFile, 'utf8')
+    const rawData = await readFile(join(targetFolder, 'M5 EXE import.easyepi_data'), 'utf8')
+    expect(rawProject).not.toContain('Alice')
+    expect(rawData).not.toContain('Alice')
+
+    await session.window.evaluate(() =>
+      (globalThis as unknown as RendererWindow).easyEpi.project.close()
+    )
+    await expect(
+      session.window.evaluate(
+        ({ filePath }) =>
+          (globalThis as unknown as RendererWindow).easyEpi.project.open({
+            filePath,
+            password: 'm5-exe-password'
+          }),
+        { filePath: projectFile }
+      )
+    ).resolves.toMatchObject({ ok: true })
+    await expect(
+      session.window.evaluate(() => (globalThis as unknown as RendererWindow).easyEpi.record.list())
+    ).resolves.toMatchObject({
+      total: 1
+    })
   } finally {
     await closePortable(session)
   }

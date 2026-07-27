@@ -30,6 +30,13 @@ import type {
   AdminUpdateRecordRequest,
   AdminDeleteRecordsRequest
 } from './admin-contract'
+import type { ExportCsvRequest, ExportCsvResult } from './export-contract'
+import type {
+  BaselineExportRequest,
+  BaselineExportResult,
+  BaselineGenerateRequest,
+  BaselineTable
+} from './baseline-contract'
 
 export interface DialogResult {
   canceled: boolean
@@ -96,6 +103,13 @@ export interface DesktopApi {
     getRecords(request: AdminGetRecordsRequest): Promise<AdminRecordsResult>
     updateRecord(request: AdminUpdateRecordRequest): Promise<{ ok: boolean }>
     deleteRecords(request: AdminDeleteRecordsRequest): Promise<{ ok: boolean }>
+  }
+  exportData: {
+    csv(request: ExportCsvRequest): Promise<ExportCsvResult>
+  }
+  baseline: {
+    generate(request?: BaselineGenerateRequest): Promise<BaselineTable>
+    export(request: BaselineExportRequest): Promise<BaselineExportResult>
   }
 }
 

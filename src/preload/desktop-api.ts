@@ -71,6 +71,22 @@ import {
   type AdminUpdateRecordRequest,
   type AdminDeleteRecordsRequest
 } from '@shared/admin-contract'
+import {
+  EXPORT_CSV_CHANNEL,
+  parseExportCsvRequest,
+  type ExportCsvRequest,
+  type ExportCsvResult
+} from '@shared/export-contract'
+import {
+  BASELINE_EXPORT_CHANNEL,
+  BASELINE_GENERATE_CHANNEL,
+  parseBaselineExportRequest,
+  parseBaselineGenerateRequest,
+  type BaselineExportRequest,
+  type BaselineExportResult,
+  type BaselineGenerateRequest,
+  type BaselineTable
+} from '@shared/baseline-contract'
 
 export interface DesktopInvoke {
   (channel: typeof SYSTEM_PING_CHANNEL, request: PingRequest): Promise<PingResponse>
@@ -132,6 +148,9 @@ export interface DesktopInvoke {
   (channel: typeof ADMIN_GET_RECORDS_CHANNEL, request: AdminGetRecordsRequest): Promise<unknown>
   (channel: typeof ADMIN_UPDATE_RECORD_CHANNEL, request: AdminUpdateRecordRequest): Promise<unknown>
   (channel: typeof ADMIN_DELETE_RECORDS_CHANNEL, request: AdminDeleteRecordsRequest): Promise<unknown>
+  (channel: typeof EXPORT_CSV_CHANNEL, request: ExportCsvRequest): Promise<unknown>
+  (channel: typeof BASELINE_GENERATE_CHANNEL, request: BaselineGenerateRequest): Promise<unknown>
+  (channel: typeof BASELINE_EXPORT_CHANNEL, request: BaselineExportRequest): Promise<unknown>
 }
 
 function parsePublicPreferencesResult(value: unknown): PreferencesResult {
@@ -264,6 +283,38 @@ export function createDesktopApi(invoke: DesktopInvoke): DesktopApi {
       (await invoke(ADMIN_DELETE_RECORDS_CHANNEL, request)) as unknown as { ok: boolean }
   })
 
-  const desktopApi = { system, preferences, dialog, project, qnaire, record, epidata, admin } satisfies DesktopApi
+  const exportData = Object.freeze({
+    csv: async (request: ExportCsvRequest) =>
+      (await invoke(
+        EXPORT_CSV_CHANNEL,
+        parseExportCsvRequest(request)
+      )) as unknown as ExportCsvResult
+  })
+
+  const baseline = Object.freeze({
+    generate: async (request: BaselineGenerateRequest = {}) =>
+      (await invoke(
+        BASELINE_GENERATE_CHANNEL,
+        parseBaselineGenerateRequest(request)
+      )) as unknown as BaselineTable,
+    export: async (request: BaselineExportRequest) =>
+      (await invoke(
+        BASELINE_EXPORT_CHANNEL,
+        parseBaselineExportRequest(request)
+      )) as unknown as BaselineExportResult
+  })
+
+  const desktopApi = {
+    system,
+    preferences,
+    dialog,
+    project,
+    qnaire,
+    record,
+    epidata,
+    admin,
+    exportData,
+    baseline
+  } satisfies DesktopApi
   return Object.freeze(desktopApi)
 }

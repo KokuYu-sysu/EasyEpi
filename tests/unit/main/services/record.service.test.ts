@@ -7,12 +7,14 @@ import {
   createDataFile,
   loadRecords,
   appendRecord,
+  replaceRecords,
   deleteRecords,
   checkKeyDuplicate,
   getDataFilePath,
   loadEntryProgress,
   saveEntryProgress,
-  atomicWriteFile
+  atomicWriteFile,
+  resolveProjectDataFilePath
 } from '../../../../src/main/services/record.service'
 import { DATA_MAGIC, DATA_VERSION } from '@shared/types/project'
 import { decrypt, encrypt } from '../../../../src/main/services/crypto.service'
@@ -72,6 +74,20 @@ describe('record.service', () => {
       }
       const records = loadRecords(filePath, TEST_KEY)
       expect(records).toHaveLength(5)
+    })
+
+    it('replaces all records in one encrypted atomic write for bulk imports', () => {
+      const filePath = join(TEST_DIR, 'bulk.easyepi_data')
+      createDataFile(filePath, TEST_KEY)
+      replaceRecords(filePath, TEST_KEY, [
+        { id: 'bulk-1', answers: { q1: 'A' }, createdAt: '', updatedAt: '' },
+        { id: 'bulk-2', answers: { q1: 'B' }, createdAt: '', updatedAt: '' }
+      ])
+
+      expect(loadRecords(filePath, TEST_KEY)).toEqual([
+        { id: 'bulk-1', answers: { q1: 'A' }, createdAt: '', updatedAt: '' },
+        { id: 'bulk-2', answers: { q1: 'B' }, createdAt: '', updatedAt: '' }
+      ])
     })
 
     it('preserves the previous file when the atomic replacement fails', () => {
@@ -184,6 +200,59 @@ describe('record.service', () => {
         currentIndex: 1
       })
     })
+
+    it('fills every omitted legacy progress field with safe defaults', () => {
+      const filePath = join(TEST_DIR, 'missing-progress-fields.easyepi_data')
+      createDataFile(filePath, TEST_KEY)
+      const current = readFileSync(filePath)
+      const payload = JSON.parse(decrypt(current.subarray(32), TEST_KEY).toString('utf8'))
+      payload.entryProgress = {}
+      writeFileSync(filePath, Buffer.concat([
+        current.subarray(0, 32),
+        encrypt(Buffer.from(JSON.stringify(payload)), TEST_KEY)
+      ]))
+
+      expect(loadEntryProgress(filePath, TEST_KEY)).toMatchObject({
+        hasDraft: false,
+        currentIndex: 0,
+        batchCount: 0,
+        currentAnswers: {}
+      })
+      expect(loadEntryProgress(filePath, TEST_KEY).batchStartTime).toBeGreaterThan(0)
+    })
+
+    it('derives a legacy draft from current answers when the index is zero', () => {
+      const filePath = join(TEST_DIR, 'legacy-answer-draft.easyepi_data')
+      createDataFile(filePath, TEST_KEY)
+      const current = readFileSync(filePath)
+      const payload = JSON.parse(decrypt(current.subarray(32), TEST_KEY).toString('utf8'))
+      delete payload.entryProgress.hasDraft
+      payload.entryProgress.currentIndex = 0
+      payload.entryProgress.currentAnswers = { q1: 'draft' }
+      writeFileSync(filePath, Buffer.concat([
+        current.subarray(0, 32),
+        encrypt(Buffer.from(JSON.stringify(payload)), TEST_KEY)
+      ]))
+      expect(loadEntryProgress(filePath, TEST_KEY).hasDraft).toBe(true)
+    })
+
+    it('rejects invalid payload shapes and header record-count mismatches', () => {
+      const invalidPath = join(TEST_DIR, 'invalid.easyepi_data')
+      createDataFile(invalidPath, TEST_KEY)
+      const invalid = readFileSync(invalidPath)
+      writeFileSync(invalidPath, Buffer.concat([
+        invalid.subarray(0, 32),
+        encrypt(Buffer.from('{}'), TEST_KEY)
+      ]))
+      expect(() => loadRecords(invalidPath, TEST_KEY)).toThrow('INVALID_DATA_PAYLOAD')
+
+      const mismatchPath = join(TEST_DIR, 'mismatch.easyepi_data')
+      createDataFile(mismatchPath, TEST_KEY)
+      const mismatch = readFileSync(mismatchPath)
+      mismatch.writeUInt32BE(2, 8)
+      writeFileSync(mismatchPath, mismatch)
+      expect(() => loadRecords(mismatchPath, TEST_KEY)).toThrow('DATA_RECORD_COUNT_MISMATCH')
+    })
   })
 
   describe('deleteRecords', () => {
@@ -256,6 +325,17 @@ describe('record.service', () => {
       expect(getDataFilePath('/projects', 'myproject')).toBe(
         join('/projects', 'myproject.easyepi_data')
       )
+    })
+
+    it('resolves a moved project by current basename, then its logical legacy name', () => {
+      const projectPath = join(TEST_DIR, 'renamed.easyepi')
+      const currentData = join(TEST_DIR, 'renamed.easyepi_data')
+      const logicalData = join(TEST_DIR, 'study.easyepi_data')
+      expect(resolveProjectDataFilePath(projectPath, 'study')).toBe(currentData)
+      writeFileSync(logicalData, '')
+      expect(resolveProjectDataFilePath(projectPath, 'study')).toBe(logicalData)
+      writeFileSync(currentData, '')
+      expect(resolveProjectDataFilePath(projectPath, 'study')).toBe(currentData)
     })
   })
 })

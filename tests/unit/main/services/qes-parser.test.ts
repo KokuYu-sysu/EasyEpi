@@ -1,122 +1,77 @@
-import { describe, it, expect } from 'vitest'
+import { describe, expect, it } from 'vitest'
+
 import { QESParser } from '@main/services/qes-parser'
 
 describe('QESParser', () => {
   const parser = new QESParser()
 
-  describe('field detection', () => {
-    it('should detect integer field ##', () => {
-      const content = `## age`
-      const result = parser.parse(content)
-      expect(result.fields).toHaveLength(1)
-      expect(result.fields[0]!.name).toBe('age')
-      expect(result.fields[0]!.type).toBe('INTEGER')
-      expect(result.fields[0]!.length).toBe(2)
-    })
+  it('parses classic QES fields where the field mask follows the question text', () => {
+    const result = parser.parse(`Community health survey
+{participant_id} Participant identifier <idnum>
+name Participant name __________
+bmi Body mass index #.##
+birth_date Date of birth <dd/mm/yyyy>
+smoker Current smoker <Y>
+code Site code <A   >`)
 
-    it('should detect decimal field #.##', () => {
-      const content = `#.## bmi`
-      const result = parser.parse(content)
-      expect(result.fields).toHaveLength(1)
-      expect(result.fields[0]!.name).toBe('bmi')
-      expect(result.fields[0]!.type).toBe('DECIMAL')
-      expect(result.fields[0]!.length).toBe(4)
-      expect(result.fields[0]!.decimals).toBe(2)
-    })
-
-    it('should detect text field _____', () => {
-      const content = `_____ name`
-      const result = parser.parse(content)
-      expect(result.fields).toHaveLength(1)
-      expect(result.fields[0]!.name).toBe('name')
-      expect(result.fields[0]!.type).toBe('TEXT')
-      expect(result.fields[0]!.length).toBe(5)
-    })
-
-    it('should detect uppercase field <A>', () => {
-      const content = `<A> code`
-      const result = parser.parse(content)
-      expect(result.fields).toHaveLength(1)
-      expect(result.fields[0]!.name).toBe('code')
-      expect(result.fields[0]!.type).toBe('UPPERCASE')
-    })
-
-    it('should detect boolean field <Y>', () => {
-      const content = `<Y> is_smoker`
-      const result = parser.parse(content)
-      expect(result.fields).toHaveLength(1)
-      expect(result.fields[0]!.name).toBe('is_smoker')
-      expect(result.fields[0]!.type).toBe('BOOLEAN')
-    })
+    expect(result.metadata.title).toBe('Community health survey')
+    expect(result.fields).toMatchObject([
+      { name: 'participant_id', label: 'Participant identifier', type: 'ID_NUM' },
+      { name: 'name', label: 'Participant name', type: 'TEXT', length: 10 },
+      { name: 'bmi', label: 'Body mass index', type: 'DECIMAL', length: 4, decimals: 2 },
+      { name: 'birth_date', label: 'Date of birth', type: 'DATE_DMY', length: 10 },
+      { name: 'smoker', label: 'Current smoker', type: 'BOOLEAN', length: 1 },
+      { name: 'code', label: 'Site code', type: 'UPPERCASE', length: 4 }
+    ])
   })
 
-  describe('block parsing', () => {
-    it('should parse LABEL block', () => {
-      const content = `
+  it('parses multiple fields on one line and concatenates explicit name fragments', () => {
+    const result = parser.parse(
+      'Procedure {start dat}e <dd/mm/yyyy> Procedure {start tim}e ##.##'
+    )
+
+    expect(result.fields).toMatchObject([
+      { name: 'startdat', label: 'Procedure start date', type: 'DATE_DMY' },
+      { name: 'starttim', label: 'Procedure start time', type: 'DECIMAL' }
+    ])
+  })
+
+  it('keeps support for mask-first definitions used by exported Manager templates', () => {
+    const result = parser.parse('## age "Age of participant"')
+
+    expect(result.fields).toMatchObject([
+      { name: 'age', label: 'Age of participant', type: 'INTEGER', length: 2 }
+    ])
+  })
+
+  it('parses rule blocks and attaches LABEL values to the matching field', () => {
+    const result = parser.parse(`sex Biological sex #
 LABEL sex
   1 "Male"
   2 "Female"
 END
-`
-      const result = parser.parse(content)
-      expect(result.blocks).toHaveLength(1)
-      expect(result.blocks[0]!.type).toBe('LABEL')
-      expect(result.blocks[0]!.content).toContain('sex')
-    })
+RANGE age
+  0 120
+END`)
 
-    it('should parse JUMPS block', () => {
-      const content = `
-JUMPS
-  smoke=1 > 5
-  smoke=2 > 10
-END
-`
-      const result = parser.parse(content)
-      expect(result.blocks).toHaveLength(1)
-      expect(result.blocks[0]!.type).toBe('JUMPS')
-    })
-
-    it('should parse RANGE block', () => {
-      const content = `
-RANGE
-  age 0 120
-END
-`
-      const result = parser.parse(content)
-      expect(result.blocks).toHaveLength(1)
-      expect(result.blocks[0]!.type).toBe('RANGE')
-    })
-
-    it('should parse LEGAL block', () => {
-      const content = `
-LEGAL
-  sex 1 2
-END
-`
-      const result = parser.parse(content)
-      expect(result.blocks).toHaveLength(1)
-      expect(result.blocks[0]!.type).toBe('LEGAL')
+    expect(result.blocks).toHaveLength(2)
+    expect(result.blocks.map((block) => block.type)).toEqual(['LABEL', 'RANGE'])
+    expect(result.fields[0]).toMatchObject({
+      name: 'sex',
+      valueLabels: [
+        { value: '1', label: 'Male' },
+        { value: '2', label: 'Female' }
+      ]
     })
   })
 
-  describe('label extraction', () => {
-    it('should extract label from field definition', () => {
-      const content = `## age "Age of participant"`
-      const result = parser.parse(content)
-      expect(result.fields[0]!.label).toBe('Age of participant')
-    })
+  it('rejects malformed input instead of silently returning an empty questionnaire', () => {
+    expect(() => parser.parse('Only headings and no fields')).toThrow('QES_NO_FIELDS')
+  })
 
-    it('should extract label from LABEL block', () => {
-      const content = `
-## sex
-LABEL sex
-  1 "Male"
-  2 "Female"
-END
-`
-      const result = parser.parse(content)
-      expect(result.fields[0]!.label).toBe('sex')
-      // Options should be extracted from LABEL block
-    })
+  it('rejects encrypted EpiData fields instead of silently omitting them', () => {
+    expect(() => parser.parse('{secret} Confidential value <E10>')).toThrow(
+      'QES_ENCRYPTED_FIELD_UNSUPPORTED'
+    )
   })
 })

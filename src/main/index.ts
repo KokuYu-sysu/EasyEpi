@@ -17,6 +17,13 @@ import { registerDialogIpc } from './dialog-ipc'
 import { createRecordIpcState, registerRecordIpc } from './ipc/record.ipc'
 import { registerEpiDataIpcHandlers } from './ipc/epidata.ipc'
 import { registerAdminIpcHandlers } from './ipc/admin.ipc'
+import { registerExportIpcHandlers } from './ipc/export.ipc'
+import { registerBaselineIpcHandlers } from './ipc/baseline.ipc'
+import { AdminSessionService } from './services/admin-session.service'
+import { DataService } from './services/data.service'
+import { ExportService } from './services/export.service'
+import { BaselineService } from './services/baseline.service'
+import { changeProjectPassword } from './services/project-rekey.service'
 
 const APP_ID = 'com.kokuyu.easyepi'
 const developmentUrl = resolveDevelopmentRendererUrl(
@@ -34,6 +41,10 @@ let disposeProjectIpc: (() => void) | undefined
 let disposeQnaireIpc: (() => void) | undefined
 let disposeDialogIpc: (() => void) | undefined
 let disposeRecordIpc: (() => void) | undefined
+let disposeEpiDataIpc: (() => void) | undefined
+let disposeAdminIpc: (() => void) | undefined
+let disposeExportIpc: (() => void) | undefined
+let disposeBaselineIpc: (() => void) | undefined
 
 app.setAppUserModelId(APP_ID)
 
@@ -111,8 +122,45 @@ void app.whenReady().then(() => {
     packagedRendererUrl,
     developmentUrl
   )
-  registerEpiDataIpcHandlers(packagedRendererUrl, developmentUrl)
-  registerAdminIpcHandlers(packagedRendererUrl, developmentUrl)
+  disposeEpiDataIpc = registerEpiDataIpcHandlers(
+    ipcMain,
+    projectState,
+    packagedRendererUrl,
+    developmentUrl
+  )
+  const adminSessionService = new AdminSessionService(projectState)
+  disposeAdminIpc = registerAdminIpcHandlers(
+    ipcMain,
+    projectState,
+    {
+      sessionService: adminSessionService,
+      dataService: new DataService(projectState),
+      changeProjectPassword: async ({ oldPassword, newPassword }) =>
+        changeProjectPassword(projectState, oldPassword, newPassword)
+    },
+    packagedRendererUrl,
+    developmentUrl
+  )
+  disposeExportIpc = registerExportIpcHandlers(
+    ipcMain,
+    projectState,
+    {
+      sessionService: adminSessionService,
+      exportService: new ExportService()
+    },
+    packagedRendererUrl,
+    developmentUrl
+  )
+  disposeBaselineIpc = registerBaselineIpcHandlers(
+    ipcMain,
+    projectState,
+    {
+      sessionService: adminSessionService,
+      baselineService: new BaselineService()
+    },
+    packagedRendererUrl,
+    developmentUrl
+  )
   createMainWindow()
 
   app.on('activate', () => {
@@ -141,4 +189,12 @@ app.on('will-quit', () => {
   disposeDialogIpc = undefined
   disposeRecordIpc?.()
   disposeRecordIpc = undefined
+  disposeEpiDataIpc?.()
+  disposeEpiDataIpc = undefined
+  disposeAdminIpc?.()
+  disposeAdminIpc = undefined
+  disposeExportIpc?.()
+  disposeExportIpc = undefined
+  disposeBaselineIpc?.()
+  disposeBaselineIpc = undefined
 })

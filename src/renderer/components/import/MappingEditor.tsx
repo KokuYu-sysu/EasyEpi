@@ -1,60 +1,50 @@
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow, Badge, Button } from '@renderer/components/ui'
+import { Badge, Select, Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@renderer/components/ui'
 import type { QESField } from '@shared/types/epidata'
-import type { QuestionDef } from '@shared/types/qnaire'
+import type { QuestionDef, QuestionType } from '@shared/types/qnaire'
+import { QUESTION_TYPE_LABELS } from '@shared/types/qnaire'
 
 interface MappingEditorProps {
   qesFields: QESField[]
   mappedQuestions: QuestionDef[]
-  onMappingChange: (fieldIndex: number, question: Partial<QuestionDef>) => void
+  onMappingChange: (fieldName: string, questionType: QuestionType) => void
 }
+
+const typeOptions = Object.entries(QUESTION_TYPE_LABELS).map(([value, label]) => ({ value, label }))
 
 export function MappingEditor({ qesFields, mappedQuestions, onMappingChange }: MappingEditorProps) {
   return (
-    <div className="space-y-4">
-      <h3 className="text-lg font-semibold">Field Mapping</h3>
+    <div className="grid gap-[var(--space-3)]">
+      <h3 className="m-0 text-[length:var(--font-size-lg)]">字段映射</h3>
       <Table>
         <TableHeader>
           <TableRow>
-            <TableHead>Variable Name</TableHead>
-            <TableHead>Original Type</TableHead>
-            <TableHead>Mapped To</TableHead>
-            <TableHead>Status</TableHead>
-            <TableHead>Actions</TableHead>
+            <TableHead>变量名</TableHead>
+            <TableHead>问题文本</TableHead>
+            <TableHead>原始类型</TableHead>
+            <TableHead>EasyEpi 题型</TableHead>
+            <TableHead>状态</TableHead>
           </TableRow>
         </TableHeader>
         <TableBody>
           {qesFields.map((field, index) => {
             const question = mappedQuestions[index]
-            const needsAttention = !question || (question.type === 'free_text' && field.type !== 'TEXT')
-            
             return (
-              <TableRow key={index}>
+              <TableRow key={field.name}>
                 <TableCell className="font-mono">{field.name}</TableCell>
+                <TableCell>{field.label}</TableCell>
+                <TableCell><Badge>{field.type}</Badge></TableCell>
                 <TableCell>
-                  <Badge variant="outline">{field.type}</Badge>
+                  <Select
+                    label={`${field.name} 映射题型`}
+                    value={question?.type ?? 'free_text'}
+                    onValueChange={(value) => onMappingChange(field.name, value as QuestionType)}
+                    options={typeOptions}
+                  />
                 </TableCell>
                 <TableCell>
-                  {question ? (
-                    <Badge>{question.type}</Badge>
-                  ) : (
-                    <Badge variant="destructive">Not Mapped</Badge>
-                  )}
-                </TableCell>
-                <TableCell>
-                  {needsAttention ? (
-                    <Badge variant="warning">⚠️ Needs Attention</Badge>
-                  ) : (
-                    <Badge variant="success">✅ Auto-mapped</Badge>
-                  )}
-                </TableCell>
-                <TableCell>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => onMappingChange(index, { type: 'free_text' })}
-                  >
-                    Edit
-                  </Button>
+                  <Badge variant={question === undefined ? 'danger' : 'success'}>
+                    {question === undefined ? '未映射' : '已映射'}
+                  </Badge>
                 </TableCell>
               </TableRow>
             )

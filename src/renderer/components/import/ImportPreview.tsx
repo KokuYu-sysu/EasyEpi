@@ -30,13 +30,13 @@ export function ImportPreview({ preview }: ImportPreviewProps) {
           {preview.encoding && (
             <div>
               <p className="text-sm font-medium text-muted-foreground">Encoding</p>
-              <Badge variant="outline">{preview.encoding}</Badge>
+              <Badge variant="info">{preview.encoding}</Badge>
             </div>
           )}
           {preview.version && (
             <div>
               <p className="text-sm font-medium text-muted-foreground">EpiData Version</p>
-              <Badge variant="outline">{preview.version}</Badge>
+              <Badge variant="info">{preview.version}</Badge>
             </div>
           )}
         </div>

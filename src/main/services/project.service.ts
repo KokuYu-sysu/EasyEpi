@@ -130,22 +130,31 @@ export function saveProject(
 ): void {
   const now = Date.now()
   data.meta.lastModifiedAt = new Date(now).toISOString()
+  const filePath = getProjectFilePath(folderPath, name)
+  writeFileSync(filePath, createProjectFileContents(data, encryptionKey, saltHex, hashHex, now))
+}
 
-  const jsonStr = JSON.stringify(data)
-  const plaintext = Buffer.from(jsonStr, 'utf-8')
+export function createProjectFileContents(
+  data: ProjectData,
+  encryptionKey: Buffer,
+  saltHex: string,
+  hashHex: string,
+  lastModifiedAt = Date.now()
+): Buffer {
+  const serializedData: ProjectData = {
+    ...data,
+    meta: { ...data.meta, lastModifiedAt: new Date(lastModifiedAt).toISOString() }
+  }
+  const plaintext = Buffer.from(JSON.stringify(serializedData), 'utf-8')
   const ciphertext = encrypt(plaintext, encryptionKey)
-
   const header = writeHeader({
     payloadLength: ciphertext.length,
     createdAt: new Date(data.meta.createdAt).getTime(),
-    lastModifiedAt: now,
+    lastModifiedAt,
     saltHex,
     hashHex
   })
-
-  const filePath = getProjectFilePath(folderPath, name)
-  const fileBuf = Buffer.concat([header, ciphertext])
-  writeFileSync(filePath, fileBuf)
+  return Buffer.concat([header, ciphertext])
 }
 
 /**

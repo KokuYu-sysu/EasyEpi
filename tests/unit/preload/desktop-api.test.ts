@@ -6,6 +6,11 @@ import {
   PREFERENCES_UPDATE_CHANNEL
 } from '@shared/preferences-contract'
 import { SYSTEM_PING_CHANNEL } from '@shared/system-contract'
+import {
+  BASELINE_EXPORT_CHANNEL,
+  BASELINE_GENERATE_CHANNEL
+} from '@shared/baseline-contract'
+import { EXPORT_CSV_CHANNEL } from '@shared/export-contract'
 import type { DesktopInvoke } from '../../../src/preload/desktop-api'
 import { createDesktopApi } from '../../../src/preload/desktop-api'
 
@@ -106,7 +111,18 @@ describe('createDesktopApi', () => {
   it('does not expose raw Electron or filesystem capabilities', () => {
     const api = createDesktopApi(vi.fn())
 
-    expect(Object.keys(api)).toEqual(['system', 'preferences', 'dialog', 'project', 'qnaire', 'record', 'epidata', 'admin'])
+    expect(Object.keys(api)).toEqual([
+      'system',
+      'preferences',
+      'dialog',
+      'project',
+      'qnaire',
+      'record',
+      'epidata',
+      'admin',
+      'exportData',
+      'baseline'
+    ])
     for (const forbidden of [
       'invoke',
       'channel',
@@ -119,5 +135,45 @@ describe('createDesktopApi', () => {
       expect(api).not.toHaveProperty(forbidden)
       expect(api.preferences).not.toHaveProperty(forbidden)
     }
+  })
+
+  it('exposes fixed export and baseline channels with renderer-side request validation', async () => {
+    const invoke = vi.fn(async (channel: string) => {
+      if (channel === BASELINE_GENERATE_CHANNEL) return { headers: [], rows: [] }
+      return { success: true }
+    })
+    const api = createDesktopApi(invoke as unknown as DesktopInvoke)
+
+    await api.exportData.csv({
+      outputPath: 'D:/reports/data.csv',
+      encoding: 'one_hot',
+      scope: 'selected',
+      selectedIds: ['record-1']
+    })
+    await api.baseline.generate({ selectedQuestionIds: ['age'], groupQuestionId: 'arm' })
+    await api.baseline.export({ outputPath: 'D:/reports/table.csv', selectedQuestionIds: ['age'] })
+
+    expect(invoke).toHaveBeenCalledWith(EXPORT_CSV_CHANNEL, {
+      outputPath: 'D:/reports/data.csv',
+      encoding: 'one_hot',
+      scope: 'selected',
+      selectedIds: ['record-1']
+    })
+    expect(invoke).toHaveBeenCalledWith(BASELINE_GENERATE_CHANNEL, {
+      selectedQuestionIds: ['age'],
+      groupQuestionId: 'arm'
+    })
+    expect(invoke).toHaveBeenCalledWith(BASELINE_EXPORT_CHANNEL, {
+      outputPath: 'D:/reports/table.csv',
+      selectedQuestionIds: ['age']
+    })
+
+    await expect(api.exportData.csv({
+      outputPath: 'D:/reports/data.csv',
+      encoding: 'one_hot',
+      scope: 'all',
+      records: [{ id: 'plaintext' }]
+    } as never)).rejects.toThrow('INVALID_EXPORT_REQUEST')
+    expect(invoke).toHaveBeenCalledTimes(3)
   })
 })
