@@ -8,6 +8,15 @@ import type {
 } from './qnaire-contract'
 import type { QuestionDef, ConditionRule, QuestionnaireDef } from './types/qnaire'
 import type {
+  DerivedValidateRequest,
+  DerivedValidateResult,
+  DerivedPreviewRequest,
+  DerivedPreviewResult,
+  DerivedListResult,
+  DerivedCrudResult,
+  DerivedDraft
+} from './derived-contract'
+import type {
   RecordSubmitResult,
   RecordListResult,
   EntryProgressResult,
@@ -37,6 +46,13 @@ import type {
   BaselineGenerateRequest,
   BaselineTable
 } from './baseline-contract'
+import type { QualityGetSummaryResult } from './quality-contract'
+import type {
+  DoubleEntryImportRequest,
+  DoubleEntryImportResult,
+  DoubleEntryCompareRequest,
+  DoubleEntryCompareResult
+} from './double-entry-contract'
 
 export interface DialogResult {
   canceled: boolean
@@ -71,6 +87,15 @@ export interface DesktopApi {
     updateConditionRule(id: string, patch: Partial<ConditionRule>): Promise<{ ok: boolean }>
     deleteConditionRule(id: string): Promise<{ ok: boolean }>
     updateMeta(name?: string, description?: string): Promise<{ ok: boolean }>
+  }
+  derived: {
+    getAll(): Promise<DerivedListResult>
+    validate(request: DerivedValidateRequest): Promise<DerivedValidateResult>
+    preview(request: DerivedPreviewRequest): Promise<DerivedPreviewResult>
+    add(variable: DerivedDraft): Promise<DerivedCrudResult>
+    update(id: string, patch: Partial<DerivedDraft>): Promise<DerivedCrudResult>
+    delete(id: string): Promise<DerivedCrudResult>
+    reorder(ids: string[]): Promise<DerivedCrudResult>
   }
   record: {
     submit(answers: Record<string, unknown>): Promise<RecordSubmitResult>
@@ -110,6 +135,13 @@ export interface DesktopApi {
   baseline: {
     generate(request?: BaselineGenerateRequest): Promise<BaselineTable>
     export(request: BaselineExportRequest): Promise<BaselineExportResult>
+  }
+  quality: {
+    getSummary(): Promise<QualityGetSummaryResult>
+  }
+  doubleEntry: {
+    import(request: DoubleEntryImportRequest): Promise<DoubleEntryImportResult>
+    compare(request: DoubleEntryCompareRequest): Promise<DoubleEntryCompareResult>
   }
 }
 

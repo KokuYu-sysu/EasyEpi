@@ -32,6 +32,7 @@ import {
   resolveProjectDataFilePath,
   type PersistedEntryProgress
 } from '../services/record.service'
+import { DerivedService } from '../services/derived/derived.service'
 
 import type { ProjectIpcState } from './project.ipc'
 import { type IpcMainLike, type IpcInvokeEventLike, assertTrustedSender } from './types'
@@ -162,10 +163,18 @@ export function registerRecordIpc(
       }
     }
 
+    const questionnaire = projectState.currentProject?.questionnaire
+    if (!questionnaire) return { ok: false, error: 'NO_PROJECT_OPEN' }
+    const derivedValues = new DerivedService().computeForRecord(questionnaire, normalizedAnswers)
+    const answers: Record<string, AnswerValue> = {
+      ...normalizedAnswers,
+      ...derivedValues
+    }
+
     const now = new Date().toISOString()
     const record: RecordData = {
       id: randomUUID(),
-      answers: normalizedAnswers,
+      answers,
       createdAt: now,
       updatedAt: now
     }

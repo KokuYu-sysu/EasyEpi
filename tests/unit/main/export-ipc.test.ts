@@ -101,13 +101,16 @@ function setup() {
   })
 
   const sessionService = { authorize: vi.fn(() => ({ isAuthenticated: true })) }
-  const exportCSV = vi.fn(async (): Promise<ExportCsvResult> => ({
-      success: true,
-      csvPath: 'D:/reports/study.csv',
-      dictionaryPath: 'D:/reports/study_dictionary.txt',
-      recordCount: 1,
-      columnCount: 6
-    }))
+  const exportCSV = vi.fn(async (request: unknown): Promise<ExportCsvResult> => {
+      void request
+      return {
+        success: true,
+        csvPath: 'D:/reports/study.csv',
+        dictionaryPath: 'D:/reports/study_dictionary.txt',
+        recordCount: 1,
+        columnCount: 6
+      }
+    })
   const exportService = { exportCSV }
   const handlers = new Map<string, Handler>()
   const ipcMain = {
@@ -191,6 +194,46 @@ describe('export IPC', () => {
         }
       ]
     })
+  })
+
+  it('computes derived columns for every record and passes them to the dictionary', async () => {
+    const { state, handlers, exportService } = setup()
+    state.currentProject!.questionnaire.derivedVariables = [
+      {
+        id: 'd1',
+        variableName: 'double_age',
+        label: '年龄翻倍',
+        formula: '{age} * 2',
+        resultType: 'numeric',
+        order: 0
+      }
+    ]
+    await handlers.get(EXPORT_CSV_CHANNEL)!(trustedEvent, {
+      outputPath: 'D:/reports/derived.csv',
+      encoding: 'multi_category',
+      scope: 'all'
+    })
+
+    const args = exportService.exportCSV.mock.calls[0]?.[0] as unknown as Record<string, unknown>
+    expect(args['derivedVariables']).toEqual([
+      { variableName: 'double_age', label: '年龄翻倍', formula: '{age} * 2', dependencies: ['age'] }
+    ])
+    const records = args['records'] as Array<Record<string, unknown>>
+    const record1 = records.find((record) => record['__easyepi_record_id'] === 'record-1')
+    const record2 = records.find((record) => record['__easyepi_record_id'] === 'record-2')
+    expect(record1!['double_age']).toBe('20')
+    expect(record2!['double_age']).toBe('40')
+  })
+
+  it('omits the derived option when the questionnaire has no derived variables', async () => {
+    const { handlers, exportService } = setup()
+    await handlers.get(EXPORT_CSV_CHANNEL)!(trustedEvent, {
+      outputPath: 'D:/reports/plain.csv',
+      encoding: 'multi_category',
+      scope: 'all'
+    })
+    const args = exportService.exportCSV.mock.calls[0]?.[0] as unknown as Record<string, unknown>
+    expect(args).not.toHaveProperty('derivedVariables')
   })
 
   it('returns stable failures without exposing service or filesystem paths', async () => {

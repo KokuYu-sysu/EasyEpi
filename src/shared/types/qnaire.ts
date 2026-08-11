@@ -1,3 +1,5 @@
+import type { DerivedVariableDef } from './derived'
+
 export type QuestionType =
   'single_choice' | 'multiple_choice' | 'fixed_length' | 'free_text' | 'numeric_range' | 'date'
 
@@ -66,8 +68,13 @@ export interface QuestionnaireDef {
   questions: QuestionDef[]
   conditionRules: ConditionRule[]
   keyQuestionIds: string[]
+  derivedVariables?: DerivedVariableDef[]
   name: string
   description?: string
+}
+
+export function getDerivedVariables(qnaire: QuestionnaireDef): DerivedVariableDef[] {
+  return qnaire.derivedVariables ?? []
 }
 
 export function isQuestionType(value: string): value is QuestionType {

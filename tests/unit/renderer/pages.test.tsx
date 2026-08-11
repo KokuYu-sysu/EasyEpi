@@ -1,4 +1,4 @@
-import { render, screen, within } from '@testing-library/react'
+import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { isValidElement } from 'react'
 import { createMemoryRouter, RouterProvider, type RouteObject } from 'react-router-dom'
@@ -6,7 +6,6 @@ import { vi } from 'vitest'
 
 import { createAppRoutes } from '@renderer/app/routes'
 import { AdminLoginPage } from '@renderer/pages/AdminLoginPage'
-import { DerivedPage } from '@renderer/pages/DerivedPage'
 import { ImportPage } from '@renderer/pages/ImportPage'
 import { WelcomePage } from '@renderer/pages/WelcomePage'
 import { ToastProvider } from '@renderer/components/ui'
@@ -107,10 +106,6 @@ describe('standard milestone pages', () => {
     Reflect.deleteProperty(window, 'easyEpi')
   })
 
-  const cases = [
-    { path: '/derived', title: '衍生变量', milestone: 'M7', Page: DerivedPage }
-  ]
-
   it('renders the completed EpiData import page without placeholder claims', () => {
     renderRoute(
       [{ path: '/import', handle: { title: 'EpiData 导入', description: '导入数据' }, element: <ImportPage /> }],
@@ -122,28 +117,6 @@ describe('standard milestone pages', () => {
     expect(screen.queryByText(/尚未实现|演示界面|不会保存/)).not.toBeInTheDocument()
     expect(screen.queryByLabelText('演示说明')).not.toBeInTheDocument()
   })
-
-  it.each(cases)(
-    'renders shared milestone structure and safe recovery for $path',
-    async ({ path, title, milestone, Page }) => {
-      const user = userEvent.setup()
-      renderRoute(
-        [{ path, handle: { title, description: `${title}页面说明` }, element: <Page /> }],
-        path
-      )
-
-      expect(screen.getByRole('heading', { level: 1, name: title })).toBeVisible()
-      expect(screen.getByLabelText('演示说明')).toBeVisible()
-      expect(screen.getByRole('heading', { level: 2 })).toBeVisible()
-      expect(screen.getAllByText(new RegExp(milestone)).length).toBeGreaterThan(0)
-      expect(screen.getByRole('link', { name: /返回/ })).toHaveAttribute('href')
-
-      await user.click(screen.getByRole('button', { name: /了解后续能力/ }))
-      const dialog = screen.getByRole('dialog')
-      expect(within(dialog).getAllByText(new RegExp(milestone)).length).toBeGreaterThan(0)
-      expect(dialog).toHaveTextContent(/尚未实现|尚未完全实现/)
-    }
-  )
 
   it('does not impersonate authentication on the administrator skeleton', () => {
     renderRoute(
@@ -172,6 +145,7 @@ describe('standard milestone pages', () => {
       '/admin/login',
       '/admin/data',
       '/admin/baseline',
+      '/admin/double-entry',
       '/derived'
     ]
 

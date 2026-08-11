@@ -141,6 +141,48 @@ describe('ExportService', () => {
     expect(readFileSync(result.csvPath!, 'utf8')).toContain('x')
   })
 
+  it('appends derived columns to the CSV and annotates them in the dictionary', async () => {
+    const result = await new ExportService().exportCSV({
+      records: [{ weight: '70', height: '170', bmi: '24.221453287197235' }],
+      questions: [
+        { variableName: 'weight', label: '体重', type: 'numeric_range' },
+        { variableName: 'height', label: '身高', type: 'numeric_range' }
+      ],
+      derivedVariables: [
+        {
+          variableName: 'bmi',
+          label: 'BMI',
+          formula: '{weight} / ({height} / 100) ^ 2',
+          dependencies: ['weight', 'height']
+        }
+      ],
+      encoding: 'multi_category',
+      outputPath: join(TEST_DIR, 'derived.csv')
+    })
+    const csv = readFileSync(result.csvPath!, 'utf8')
+    expect(csv).toContain('weight,height,bmi')
+    expect(csv).toContain('70,170,24.221453287197235')
+    const dictionary = readFileSync(result.dictionaryPath!, 'utf8')
+    expect(dictionary).toContain(
+      'bmi\tBMI\t衍生变量\t\t是\t{weight} / ({height} / 100) ^ 2\tweight, height'
+    )
+    expect(dictionary).toContain('weight\t体重\tnumeric_range\t连续/文本\t否\t\t')
+  })
+
+  it('emits the 7-column dictionary header with derived markers', async () => {
+    const result = await new ExportService().exportCSV({
+      records: [{ bmi: '24.2' }],
+      questions: [],
+      derivedVariables: [
+        { variableName: 'bmi', label: 'BMI', formula: '{weight}/2', dependencies: ['weight'] }
+      ],
+      encoding: 'multi_category',
+      outputPath: join(TEST_DIR, 'derived-header.csv')
+    })
+    const dictionary = readFileSync(result.dictionaryPath!, 'utf8')
+    expect(dictionary).toContain('变量名\t变量标签\t类型\t取值范围\t衍生变量\t公式\t依赖变量')
+  })
+
   it('rejects an unsupported encoding even if called outside the strict IPC contract', async () => {
     await expect(new ExportService().exportCSV({
       records: [], questions: [], encoding: 'unsupported' as never, outputPath: join(TEST_DIR, 'bad.csv')

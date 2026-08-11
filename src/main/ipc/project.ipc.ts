@@ -54,7 +54,13 @@ export function registerProjectIpc(
     const result = createProject(request.folderPath, request.name, request.password)
     state.currentProject = {
       meta: result.meta,
-      questionnaire: { name: request.name, questions: [], conditionRules: [], keyQuestionIds: [] }
+      questionnaire: {
+        name: request.name,
+        questions: [],
+        conditionRules: [],
+        keyQuestionIds: [],
+        derivedVariables: []
+      }
     }
     state.currentFilePath = getProjectFilePath(request.folderPath, request.name)
     state.currentSaltHex = result.salt

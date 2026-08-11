@@ -7,6 +7,7 @@ import {
 } from '@shared/export-contract'
 
 import type { AdminSessionService } from '../services/admin-session.service'
+import { DerivedService, extractVariableReferences } from '../services/derived/derived.service'
 import type { ExportOptions, ExportService } from '../services/export.service'
 import { loadRecords, resolveProjectDataFilePath } from '../services/record.service'
 import type { ProjectIpcState } from './project.ipc'
@@ -36,7 +37,11 @@ function buildExportOptions(
 
   const dataPath = resolveProjectDataFilePath(projectState.currentFilePath, project.meta.name)
   const allRecords = existsSync(dataPath) ? loadRecords(dataPath, key) : []
-  const usedNames = new Set(project.questionnaire.questions.map((question) => question.variableName))
+  const derived = project.questionnaire.derivedVariables ?? []
+  const usedNames = new Set([
+    ...project.questionnaire.questions.map((question) => question.variableName),
+    ...derived.map((variable) => variable.variableName)
+  ])
   const uniqueMetadataName = (base: string): string => {
     let candidate = base
     while (usedNames.has(candidate)) candidate = `_${candidate}`
@@ -51,17 +56,25 @@ function buildExportOptions(
   const selected = request.scope === 'selected'
     ? new Set(request.selectedIds)
     : null
+  const derivedService = new DerivedService()
   const records = allRecords
     .filter((record) => selected === null || selected.has(record.id))
-    .map((record) => ({
-      [metadataHeaders[0]!]: record.id,
-      [metadataHeaders[1]!]: record.createdAt,
-      [metadataHeaders[2]!]: record.updatedAt,
-      ...Object.fromEntries(project.questionnaire.questions.map((question) => [
-        question.variableName,
-        record.answers[question.id] ?? record.answers[question.variableName]
-      ]))
-    }))
+    .map((record) => {
+      const row: Record<string, unknown> = {
+        [metadataHeaders[0]!]: record.id,
+        [metadataHeaders[1]!]: record.createdAt,
+        [metadataHeaders[2]!]: record.updatedAt,
+        ...Object.fromEntries(project.questionnaire.questions.map((question) => [
+          question.variableName,
+          record.answers[question.id] ?? record.answers[question.variableName]
+        ]))
+      }
+      const derivedValues = derivedService.computeFromContext(project.questionnaire, row)
+      for (const variable of derived) {
+        row[variable.variableName] = derivedValues[variable.variableName] ?? ''
+      }
+      return row
+    })
   const questions = project.questionnaire.questions.map((question) => ({
     variableName: question.variableName,
     label: question.content,
@@ -73,6 +86,16 @@ function buildExportOptions(
     records,
     questions,
     metadataHeaders,
+    ...(derived.length > 0
+      ? {
+          derivedVariables: derived.map((variable) => ({
+            variableName: variable.variableName,
+            label: variable.label,
+            formula: variable.formula,
+            dependencies: extractVariableReferences(variable.formula)
+          }))
+        }
+      : {}),
     encoding: request.encoding,
     ...(request.fileEncoding === undefined ? {} : { fileEncoding: request.fileEncoding }),
     ...(request.dummyReference === undefined

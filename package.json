@@ -1,7 +1,7 @@
 {
   "name": "easyepi",
   "productName": "EasyEpi",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "Offline questionnaire design and field data collection for epidemiological research",
   "author": "KokuYu-EasyEpi Team",
   "license": "UNLICENSED",
@@ -25,7 +25,7 @@
     "test:unit": "vitest run",
     "test:unit:watch": "vitest",
     "test:coverage": "vitest run --coverage",
-    "test:e2e": "pnpm build && playwright test tests/e2e/app.spec.ts tests/e2e/import.spec.ts tests/e2e/admin.spec.ts",
+    "test:e2e": "pnpm build && playwright test tests/e2e/app.spec.ts tests/e2e/import.spec.ts tests/e2e/admin.spec.ts tests/e2e/derived.spec.ts",
     "test:e2e:packaged": "playwright test tests/e2e/packaged.spec.ts",
     "check": "pnpm lint && pnpm typecheck && pnpm test:coverage && pnpm build",
     "build:win": "pnpm build && electron-builder --win nsis portable --x64"
@@ -39,6 +39,7 @@
     "@radix-ui/react-toast": "1.2.19",
     "@radix-ui/react-tooltip": "1.2.12",
     "iconv-lite": "0.7.0",
+    "katex": "0.16.27",
     "lucide-react": "1.24.0",
     "react": "18.3.1",
     "react-dom": "18.3.1",
@@ -54,6 +55,7 @@
     "@testing-library/jest-dom": "6.9.1",
     "@testing-library/react": "16.3.2",
     "@testing-library/user-event": "14.6.1",
+    "@types/katex": "0.16.7",
     "@types/node": "24.13.3",
     "@types/react": "18.3.31",
     "@types/react-dom": "18.3.7",

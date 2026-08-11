@@ -32,6 +32,20 @@ import {
 } from '@shared/qnaire-contract'
 import type { QuestionDef, ConditionRule, QuestionnaireDef } from '@shared/types/qnaire'
 import {
+  DERIVED_GET_ALL_CHANNEL,
+  DERIVED_VALIDATE_CHANNEL,
+  DERIVED_PREVIEW_CHANNEL,
+  DERIVED_ADD_CHANNEL,
+  DERIVED_UPDATE_CHANNEL,
+  DERIVED_DELETE_CHANNEL,
+  DERIVED_REORDER_CHANNEL,
+  type DerivedCrudResult,
+  type DerivedDraft,
+  type DerivedListResult,
+  type DerivedValidateRequest,
+  type DerivedPreviewRequest
+} from '@shared/derived-contract'
+import {
   RECORD_SUBMIT_CHANNEL,
   RECORD_LIST_CHANNEL,
   RECORD_DELETE_CHANNEL,
@@ -87,6 +101,13 @@ import {
   type BaselineGenerateRequest,
   type BaselineTable
 } from '@shared/baseline-contract'
+import { QUALITY_GET_SUMMARY_CHANNEL } from '@shared/quality-contract'
+import {
+  DOUBLE_ENTRY_IMPORT_CHANNEL,
+  DOUBLE_ENTRY_COMPARE_CHANNEL,
+  type DoubleEntryImportRequest,
+  type DoubleEntryCompareRequest
+} from '@shared/double-entry-contract'
 
 export interface DesktopInvoke {
   (channel: typeof SYSTEM_PING_CHANNEL, request: PingRequest): Promise<PingResponse>
@@ -114,6 +135,13 @@ export interface DesktopInvoke {
     channel: typeof QNAIRE_UPDATE_META_CHANNEL,
     args: { name?: string; description?: string }
   ): Promise<unknown>
+  (channel: typeof DERIVED_GET_ALL_CHANNEL): Promise<unknown>
+  (channel: typeof DERIVED_VALIDATE_CHANNEL, request: DerivedValidateRequest): Promise<unknown>
+  (channel: typeof DERIVED_PREVIEW_CHANNEL, request: DerivedPreviewRequest): Promise<unknown>
+  (channel: typeof DERIVED_ADD_CHANNEL, request: { variable: DerivedDraft }): Promise<unknown>
+  (channel: typeof DERIVED_UPDATE_CHANNEL, request: { id: string; patch: Partial<DerivedDraft> }): Promise<unknown>
+  (channel: typeof DERIVED_DELETE_CHANNEL, request: { id: string }): Promise<unknown>
+  (channel: typeof DERIVED_REORDER_CHANNEL, request: { ids: string[] }): Promise<unknown>
   (channel: typeof RECORD_SUBMIT_CHANNEL, answers: Record<string, unknown>): Promise<unknown>
   (
     channel: typeof RECORD_LIST_CHANNEL,
@@ -151,6 +179,9 @@ export interface DesktopInvoke {
   (channel: typeof EXPORT_CSV_CHANNEL, request: ExportCsvRequest): Promise<unknown>
   (channel: typeof BASELINE_GENERATE_CHANNEL, request: BaselineGenerateRequest): Promise<unknown>
   (channel: typeof BASELINE_EXPORT_CHANNEL, request: BaselineExportRequest): Promise<unknown>
+  (channel: typeof QUALITY_GET_SUMMARY_CHANNEL): Promise<unknown>
+  (channel: typeof DOUBLE_ENTRY_IMPORT_CHANNEL, request: DoubleEntryImportRequest): Promise<unknown>
+  (channel: typeof DOUBLE_ENTRY_COMPARE_CHANNEL, request: DoubleEntryCompareRequest): Promise<unknown>
 }
 
 function parsePublicPreferencesResult(value: unknown): PreferencesResult {
@@ -220,6 +251,26 @@ export function createDesktopApi(invoke: DesktopInvoke): DesktopApi {
       (await invoke(QNAIRE_DELETE_CONDITION_CHANNEL, id)) as { ok: boolean },
     updateMeta: async (name?: string, description?: string) =>
       (await invoke(QNAIRE_UPDATE_META_CHANNEL, { name, description })) as { ok: boolean }
+  })
+
+  const derived = Object.freeze({
+    getAll: async () => (await invoke(DERIVED_GET_ALL_CHANNEL)) as DerivedListResult,
+    validate: async (request: DerivedValidateRequest) =>
+      (await invoke(DERIVED_VALIDATE_CHANNEL, request)) as Awaited<
+        ReturnType<DesktopApi['derived']['validate']>
+      >,
+    preview: async (request: DerivedPreviewRequest) =>
+      (await invoke(DERIVED_PREVIEW_CHANNEL, request)) as Awaited<
+        ReturnType<DesktopApi['derived']['preview']>
+      >,
+    add: async (variable: DerivedDraft) =>
+      (await invoke(DERIVED_ADD_CHANNEL, { variable })) as DerivedCrudResult,
+    update: async (id: string, patch: Partial<DerivedDraft>) =>
+      (await invoke(DERIVED_UPDATE_CHANNEL, { id, patch })) as DerivedCrudResult,
+    delete: async (id: string) =>
+      (await invoke(DERIVED_DELETE_CHANNEL, { id })) as DerivedCrudResult,
+    reorder: async (ids: string[]) =>
+      (await invoke(DERIVED_REORDER_CHANNEL, { ids })) as DerivedCrudResult
   })
 
   const dialog = Object.freeze({
@@ -304,17 +355,37 @@ export function createDesktopApi(invoke: DesktopInvoke): DesktopApi {
       )) as unknown as BaselineExportResult
   })
 
+  const quality = Object.freeze({
+    getSummary: async () => (await invoke(QUALITY_GET_SUMMARY_CHANNEL)) as Awaited<
+      ReturnType<DesktopApi['quality']['getSummary']>
+    >
+  })
+
+  const doubleEntry = Object.freeze({
+    import: async (request: DoubleEntryImportRequest) =>
+      (await invoke(DOUBLE_ENTRY_IMPORT_CHANNEL, request)) as Awaited<
+        ReturnType<DesktopApi['doubleEntry']['import']>
+      >,
+    compare: async (request: DoubleEntryCompareRequest) =>
+      (await invoke(DOUBLE_ENTRY_COMPARE_CHANNEL, request)) as Awaited<
+        ReturnType<DesktopApi['doubleEntry']['compare']>
+      >
+  })
+
   const desktopApi = {
     system,
     preferences,
     dialog,
     project,
     qnaire,
+    derived,
     record,
     epidata,
     admin,
     exportData,
-    baseline
+    baseline,
+    quality,
+    doubleEntry
   } satisfies DesktopApi
   return Object.freeze(desktopApi)
 }

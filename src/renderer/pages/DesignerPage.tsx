@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { useStore } from 'zustand'
 
 import { useCurrentRouteHandle } from '@renderer/app/route-metadata'
@@ -8,6 +9,7 @@ import {
   Button,
   ConfirmDialog,
   EmptyState,
+  Modal,
   useToast
 } from '@renderer/components/ui'
 import {
@@ -170,6 +172,8 @@ export interface DesignerPageProps {
 
 export function DesignerPage({ store: injectedStore }: DesignerPageProps) {
   const [store] = useState(() => injectedStore ?? createQnaireStore())
+  const navigate = useNavigate()
+  const [showCompletionDialog, setShowCompletionDialog] = useState(false)
   const questions = useStore(store, (s) => s.questions)
   const conditionRules = useStore(store, (s) => s.conditionRules)
   const keyQuestionIds = useStore(store, (s) => s.keyQuestionIds)
@@ -277,6 +281,12 @@ export function DesignerPage({ store: injectedStore }: DesignerPageProps) {
                 预览问卷
               </Button>
               <Button onClick={handleSave}>保存问卷</Button>
+              <Button
+                onClick={() => setShowCompletionDialog(true)}
+                disabled={questions.length === 0 || keyCount === 0}
+              >
+                完成问卷设计
+              </Button>
               {keyCount > 0 && (
                 <Badge variant="success" className="self-center">
                   🔑 {keyCount} 个 Key
@@ -345,6 +355,38 @@ export function DesignerPage({ store: injectedStore }: DesignerPageProps) {
           )}
         </section>
       )}
+
+      <Modal
+        trigger={<Button className="sr-only">完成问卷设计对话框</Button>}
+        title="问卷设计已完成"
+        description="设计完成后可定义基于已有题目自动计算的衍生变量（如 BMI、年龄分组）。"
+        open={showCompletionDialog}
+        onOpenChange={(open) => { if (!open) setShowCompletionDialog(false) }}
+      >
+        <div className="grid gap-[var(--space-3)] pt-[var(--space-3)]">
+          <dl className="m-0 grid gap-[var(--space-2)] rounded-[var(--radius-2)] bg-[var(--color-surface-muted)] p-[var(--space-3)]">
+            <div className="flex justify-between">
+              <dt>题目总数</dt>
+              <dd className="m-0 font-semibold">{questions.length} 题</dd>
+            </div>
+            <div className="flex justify-between">
+              <dt>Key 字段</dt>
+              <dd className="m-0 font-semibold">{keyCount} 个</dd>
+            </div>
+            <div className="flex justify-between">
+              <dt>条件规则</dt>
+              <dd className="m-0 font-semibold">{conditionRules.length} 条</dd>
+            </div>
+          </dl>
+          <p className="m-0 text-[length:var(--font-size-sm)] text-[var(--color-text-secondary)]">
+            衍生变量在录入时自动计算，无需手动填写；导出时作为普通列输出。
+          </p>
+          <div className="flex justify-end gap-[var(--space-2)]">
+            <Button variant="secondary" onClick={() => setShowCompletionDialog(false)}>跳过</Button>
+            <Button onClick={() => { setShowCompletionDialog(false); navigate('/derived') }}>定义衍生变量</Button>
+          </div>
+        </div>
+      </Modal>
     </MilestonePage>
   )
 }

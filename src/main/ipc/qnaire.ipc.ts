@@ -47,6 +47,7 @@ export function registerQnaireIpc(
       questions: qnaire.questions,
       conditionRules: qnaire.conditionRules,
       keyQuestionIds: qnaire.keyQuestionIds,
+      derivedVariables: qnaire.derivedVariables ?? [],
       name: qnaire.name,
       description: qnaire.description
     }

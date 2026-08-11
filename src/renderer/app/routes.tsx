@@ -8,6 +8,7 @@ import { AdminDashboard } from '@renderer/pages/AdminDashboard'
 import { BaselinePage } from '@renderer/pages/BaselinePage'
 import { DerivedPage } from '@renderer/pages/DerivedPage'
 import { DesignerPage } from '@renderer/pages/DesignerPage'
+import { DoubleEntryPage } from '@renderer/pages/DoubleEntryPage'
 import { EntryPage } from '@renderer/pages/EntryPage'
 import { ImportPage } from '@renderer/pages/ImportPage'
 import { NotFoundPage } from '@renderer/pages/NotFoundPage'
@@ -32,6 +33,7 @@ export const PRODUCTION_ROUTES: ProductionRouteDefinition[] = [
   { path: '/admin/login', handle: { title: '管理员验证', description: '使用当前项目密码进入数据管理后台。' } },
   { path: '/admin/data', handle: { title: '数据管理', description: '查看、编辑、删除和导出当前项目的加密记录。' } },
   { path: '/admin/baseline', handle: { title: '基线表', description: '生成分组描述统计与统计检验。' } },
+  { path: '/admin/double-entry', handle: { title: '双录入验证', description: '导入次录入 CSV 并与当前数据逐字段比对。' } },
   { path: '/derived', handle: { title: '衍生变量', description: '配置由已有字段计算的变量。' } }
 ]
 
@@ -44,6 +46,7 @@ const implementedRouteElements: Record<string, React.ReactElement> = {
   '/admin/login': <AdminLoginPage />,
   '/admin/data': <AdminDashboard />,
   '/admin/baseline': <BaselinePage />,
+  '/admin/double-entry': <DoubleEntryPage />,
   '/derived': <DerivedPage />
 }
 

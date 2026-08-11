@@ -15,7 +15,8 @@ export function createQuestionnaireDef(name: string): QuestionnaireDef {
     name,
     questions: [],
     conditionRules: [],
-    keyQuestionIds: []
+    keyQuestionIds: [],
+    derivedVariables: []
   }
 }
 

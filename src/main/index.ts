@@ -13,6 +13,9 @@ import {
 } from './window-policy'
 import { createProjectIpcState, registerProjectIpc } from './ipc/project.ipc'
 import { registerQnaireIpc } from './ipc/qnaire.ipc'
+import { registerDerivedIpc } from './ipc/derived.ipc'
+import { registerQualityIpcHandlers } from './ipc/quality.ipc'
+import { registerDoubleEntryIpcHandlers } from './ipc/double-entry.ipc'
 import { registerDialogIpc } from './dialog-ipc'
 import { createRecordIpcState, registerRecordIpc } from './ipc/record.ipc'
 import { registerEpiDataIpcHandlers } from './ipc/epidata.ipc'
@@ -23,6 +26,8 @@ import { AdminSessionService } from './services/admin-session.service'
 import { DataService } from './services/data.service'
 import { ExportService } from './services/export.service'
 import { BaselineService } from './services/baseline.service'
+import { QualityService } from './services/quality.service'
+import { DoubleEntryService } from './services/double-entry.service'
 import { changeProjectPassword } from './services/project-rekey.service'
 
 const APP_ID = 'com.kokuyu.easyepi'
@@ -39,6 +44,9 @@ let disposePreferencesIpc: (() => void) | undefined
 let disposeSystemIpc: (() => void) | undefined
 let disposeProjectIpc: (() => void) | undefined
 let disposeQnaireIpc: (() => void) | undefined
+let disposeDerivedIpc: (() => void) | undefined
+let disposeQualityIpc: (() => void) | undefined
+let disposeDoubleEntryIpc: (() => void) | undefined
 let disposeDialogIpc: (() => void) | undefined
 let disposeRecordIpc: (() => void) | undefined
 let disposeEpiDataIpc: (() => void) | undefined
@@ -109,6 +117,12 @@ void app.whenReady().then(() => {
     packagedRendererUrl,
     developmentUrl
   )
+  disposeDerivedIpc = registerDerivedIpc(
+    ipcMain,
+    projectState,
+    packagedRendererUrl,
+    developmentUrl
+  )
   disposeDialogIpc = registerDialogIpc(
     ipcMain,
     packagedRendererUrl,
@@ -161,6 +175,26 @@ void app.whenReady().then(() => {
     packagedRendererUrl,
     developmentUrl
   )
+  disposeQualityIpc = registerQualityIpcHandlers(
+    ipcMain,
+    projectState,
+    {
+      sessionService: adminSessionService,
+      qualityService: new QualityService()
+    },
+    packagedRendererUrl,
+    developmentUrl
+  )
+  disposeDoubleEntryIpc = registerDoubleEntryIpcHandlers(
+    ipcMain,
+    projectState,
+    {
+      sessionService: adminSessionService,
+      doubleEntryService: new DoubleEntryService()
+    },
+    packagedRendererUrl,
+    developmentUrl
+  )
   createMainWindow()
 
   app.on('activate', () => {
@@ -185,6 +219,8 @@ app.on('will-quit', () => {
   disposeProjectIpc = undefined
   disposeQnaireIpc?.()
   disposeQnaireIpc = undefined
+  disposeDerivedIpc?.()
+  disposeDerivedIpc = undefined
   disposeDialogIpc?.()
   disposeDialogIpc = undefined
   disposeRecordIpc?.()
@@ -197,4 +233,8 @@ app.on('will-quit', () => {
   disposeExportIpc = undefined
   disposeBaselineIpc?.()
   disposeBaselineIpc = undefined
+  disposeQualityIpc?.()
+  disposeQualityIpc = undefined
+  disposeDoubleEntryIpc?.()
+  disposeDoubleEntryIpc = undefined
 })

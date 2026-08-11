@@ -11,10 +11,18 @@ export interface ExportQuestion {
   options?: { value: string; label: string }[]
 }
 
+export interface ExportDerivedQuestion {
+  variableName: string
+  label: string
+  formula: string
+  dependencies: string[]
+}
+
 export interface ExportOptions {
   records: Record<string, unknown>[]
   questions: ExportQuestion[]
   metadataHeaders?: string[]
+  derivedVariables?: ExportDerivedQuestion[]
   encoding: EncodingType
   fileEncoding?: 'utf8_bom' | 'gbk'
   dummyReference?: 'first' | 'last'
@@ -94,7 +102,12 @@ export class ExportService {
         `${basename(csvPath, extname(csvPath))}_dictionary.txt`
       )
       writeFileSync(dictionaryPath, encodedFile(
-        this.generateDictionary(options.questions, options.encoding, options.dummyReference),
+        this.generateDictionary(
+          options.questions,
+          options.encoding,
+          options.dummyReference,
+          options.derivedVariables ?? []
+        ),
         fileEncoding
       ))
       return {
@@ -207,27 +220,37 @@ export class ExportService {
   private generateDictionary(
     questions: ExportQuestion[],
     encoding: EncodingType,
-    dummyReference: 'first' | 'last' = 'first'
+    dummyReference: 'first' | 'last' = 'first',
+    derivedVariables: ExportDerivedQuestion[] = []
   ): string {
-    const lines = ['变量名\t变量标签\t类型\t取值范围']
+    const lines = ['变量名\t变量标签\t类型\t取值范围\t衍生变量\t公式\t依赖变量']
     for (const question of questions) {
       const options = question.options ?? []
       const range = options.length > 0
         ? options.map((option) => `${option.value}=${option.label}`).join(', ')
         : '连续/文本'
-      lines.push(`${question.variableName}\t${question.label ?? question.variableName}\t${question.type}\t${range}`)
+      lines.push(
+        `${question.variableName}\t${question.label ?? question.variableName}\t${question.type}\t${range}\t否\t\t`
+      )
       if (question.type !== 'multiple_choice' || encoding === 'multi_category') continue
 
       const referenceIndex = dummyReference === 'last' ? options.length - 1 : 0
       options.forEach((option, index) => {
         if (encoding === 'dummy' && index === referenceIndex) return
         const suffix = encoding === 'dummy' ? '_d' : ''
-        lines.push(`${question.variableName}_${option.label}${suffix}\t${question.label ?? question.variableName}：${option.label}\t二分类\t0=否, 1=是`)
+        lines.push(
+          `${question.variableName}_${option.label}${suffix}\t${question.label ?? question.variableName}：${option.label}\t二分类\t0=否, 1=是\t否\t\t`
+        )
       })
       if (encoding === 'dummy' && options[referenceIndex]) {
         const reference = options[referenceIndex]!
         lines.push(`# ${question.variableName} 参考组：${reference.label} (${reference.value})`)
       }
+    }
+    for (const variable of derivedVariables) {
+      lines.push(
+        `${variable.variableName}\t${variable.label ?? variable.variableName}\t衍生变量\t\t是\t${variable.formula}\t${variable.dependencies.join(', ')}`
+      )
     }
     return lines.join('\n')
   }

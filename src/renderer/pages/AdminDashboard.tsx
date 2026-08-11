@@ -4,12 +4,13 @@ import { useNavigate } from 'react-router-dom'
 import { useCurrentRouteHandle } from '@renderer/app/route-metadata'
 import { DataTable, type DataColumn } from '@renderer/components/admin/DataTable'
 import { ExportDialog } from '@renderer/components/admin/ExportDialog'
+import { QualityDashboard } from '@renderer/components/admin/QualityDashboard'
 import { MilestonePage } from '@renderer/components/common/MilestonePage'
 import { Button, Input, Modal } from '@renderer/components/ui'
 import type { QuestionDef, QuestionnaireDef } from '@shared/types/qnaire'
 import type { RecordData } from '@shared/types/record'
 
-type AdminTab = 'data' | 'baseline' | 'export' | 'settings'
+type AdminTab = 'data' | 'baseline' | 'quality' | 'double-entry' | 'export' | 'settings'
 
 function adminError(error: unknown): string {
   const code = error instanceof Error ? error.message : String(error)
@@ -201,6 +202,8 @@ export function AdminDashboard() {
         {([
           ['data', '数据表格'],
           ['baseline', '基线表'],
+          ['quality', '数据质量'],
+          ['double-entry', '双录入'],
           ['export', '导出'],
           ['settings', '设置']
         ] as const).map(([value, label]) => (
@@ -255,6 +258,18 @@ export function AdminDashboard() {
           <h2>基线统计表</h2>
           <p>从当前加密记录生成可分组的描述统计和统计检验。</p>
           <Button onClick={() => navigate('/admin/baseline')}>打开基线表生成器</Button>
+        </section>
+      ) : null}
+
+      {activeTab === 'quality' ? (
+        <QualityDashboard onMessage={setMessage} />
+      ) : null}
+
+      {activeTab === 'double-entry' ? (
+        <section className="grid gap-[var(--space-3)]">
+          <h2>双录入验证</h2>
+          <p>导入次录入 CSV，按 Key 逐字段比对当前加密数据。</p>
+          <Button onClick={() => navigate('/admin/double-entry')}>打开双录入验证</Button>
         </section>
       ) : null}
 

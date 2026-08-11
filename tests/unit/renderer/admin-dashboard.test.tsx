@@ -50,7 +50,8 @@ describe('AdminDashboard', () => {
         },
         qnaire: { getData: vi.fn().mockResolvedValue(questionnaire) },
         dialog: { selectFolder: vi.fn() },
-        exportData: { csv: vi.fn() }
+        exportData: { csv: vi.fn() },
+        quality: { getSummary: vi.fn().mockResolvedValue({ ok: false, error: 'QUALITY_FAILED' }) }
       }
     })
   })

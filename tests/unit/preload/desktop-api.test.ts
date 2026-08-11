@@ -117,11 +117,14 @@ describe('createDesktopApi', () => {
       'dialog',
       'project',
       'qnaire',
+      'derived',
       'record',
       'epidata',
       'admin',
       'exportData',
-      'baseline'
+      'baseline',
+      'quality',
+      'doubleEntry'
     ])
     for (const forbidden of [
       'invoke',

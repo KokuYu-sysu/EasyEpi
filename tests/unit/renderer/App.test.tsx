@@ -42,6 +42,15 @@ function createApi(): DesktopApi {
       deleteConditionRule: vi.fn(),
       updateMeta: vi.fn()
     },
+    derived: {
+      getAll: vi.fn().mockResolvedValue({ ok: true, derivedVariables: [] }),
+      validate: vi.fn().mockResolvedValue({ ok: true }),
+      preview: vi.fn().mockResolvedValue({ ok: true, value: null }),
+      add: vi.fn().mockResolvedValue({ ok: true, derivedVariables: [] }),
+      update: vi.fn().mockResolvedValue({ ok: true, derivedVariables: [] }),
+      delete: vi.fn().mockResolvedValue({ ok: true, derivedVariables: [] }),
+      reorder: vi.fn().mockResolvedValue({ ok: true, derivedVariables: [] })
+    },
     record: {
       submit: vi.fn().mockResolvedValue({ ok: true, recordId: 'test-id' }),
       list: vi.fn().mockResolvedValue({ ok: true, records: [], total: 0 }),
@@ -72,6 +81,13 @@ function createApi(): DesktopApi {
     baseline: {
       generate: vi.fn(),
       export: vi.fn()
+    },
+    quality: {
+      getSummary: vi.fn().mockResolvedValue({ ok: false, error: 'QUALITY_FAILED' })
+    },
+    doubleEntry: {
+      import: vi.fn().mockResolvedValue({ ok: false, error: 'DOUBLE_ENTRY_FAILED' }),
+      compare: vi.fn().mockResolvedValue({ ok: false, error: 'DOUBLE_ENTRY_FAILED' })
     }
   }
 }
