@@ -150,7 +150,7 @@ test.describe('built Electron application', () => {
       .getByRole('navigation', { name: '欢迎页主要操作' })
       .getByRole('link', { name: '数据管理' })
       .click()
-    await expect(page.getByRole('heading', { name: '数据管理' })).toBeVisible()
+    await expect(page.getByRole('heading', { level: 1, name: '管理员验证' })).toBeVisible()
   })
 
   test('switches all themes and large text, then restores preferences after restart', async () => {
@@ -682,7 +682,7 @@ test.describe('built Electron application', () => {
       { path: '/', heading: '欢迎页' },
       { path: '/designer', heading: '问卷设计' },
       { path: '/entry', heading: '单题录入' },
-      { path: '/admin/data', heading: '数据管理' }
+      { path: '/admin/login', heading: '管理员验证' }
     ]) {
       await navigateHash(page, path)
       await expect.poll(() => page.evaluate(() => window.location.hash)).toBe(`#${path}`)

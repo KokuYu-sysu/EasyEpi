@@ -187,6 +187,22 @@ describe('DataService', () => {
     expect(updated?.updatedAt).not.toBe(before?.updatedAt)
   })
 
+  it('recomputes and preserves derived values after an administrator edit', async () => {
+    state.currentProject!.questionnaire.derivedVariables = [{
+      id: 'd1',
+      variableName: 'double_age',
+      label: '年龄翻倍',
+      formula: '{age} * 2',
+      resultType: 'numeric',
+      order: 0
+    }]
+    await service.updateRecord('r1', { answers: { age: 43 } })
+    expect((await service.getRecordById('r1'))?.answers).toMatchObject({
+      'q-age': 43,
+      double_age: '86'
+    })
+  })
+
   it('rejects an update that duplicates a key-field value', async () => {
     await expect(
       service.updateRecord('r2', { answers: { 'q-code': 'A001' } })

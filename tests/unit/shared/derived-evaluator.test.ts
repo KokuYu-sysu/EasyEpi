@@ -112,7 +112,9 @@ describe('evaluate functions', () => {
 
   it('DATE_DIFF computes year difference', () => {
     expect(value('DATE_DIFF("2026-08-11", "1990-01-15", "year")')).toBe(36)
+    expect(value('DATE_DIFF("1990-01-15", "2026-08-11", "year")')).toBe(36)
     expect(value('DATE_DIFF("2026-08-11", "2026-08-10", "day")')).toBe(1)
+    expect(value('DATE_DIFF("2026-08-10", "2026-08-11", "day")')).toBe(1)
   })
 
   it('YEAR and MONTH extract parts', () => {

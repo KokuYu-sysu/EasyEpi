@@ -102,9 +102,9 @@ test('completes the encrypted phase-four administrator workflow', async () => {
     await page.getByRole('button', { name: '登录管理后台' }).click()
 
     await expect(page.getByText('共 3 条记录')).toBeVisible()
-    await page.getByLabel('搜索记录').fill('B02')
+    await page.getByLabel('搜索记录').fill('control')
     await page.getByRole('button', { name: '搜索', exact: true }).click()
-    await expect(page.getByRole('row', { name: /B02/ })).toBeVisible()
+    await expect(page.getByRole('row', { name: /A01/ })).toBeVisible()
     await expect(page.getByText('共 1 条记录')).toBeVisible()
     await page.getByLabel('搜索记录').fill('')
     await page.getByRole('button', { name: '搜索', exact: true }).click()

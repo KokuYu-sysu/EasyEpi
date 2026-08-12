@@ -77,6 +77,95 @@ interface VariableReference {
   position?: number
 }
 
+type FormulaStaticType = DerivedResultType | 'boolean'
+
+function resultTypeOf(staticType: FormulaStaticType): DerivedResultType {
+  return staticType === 'boolean' ? 'categorical' : staticType
+}
+
+function isLiteralZero(node: AstNode): boolean {
+  return node.type === 'literal' && node.valueType === 'number' && node.value === 0
+}
+
+function validateAstTypes(
+  ast: AstNode,
+  variableTypes: Record<string, DerivedResultType>
+): FormulaError[] {
+  const errors: FormulaError[] = []
+  const mismatch = (message: string): void => {
+    errors.push({ code: 'TYPE_MISMATCH', message })
+  }
+  const requireNumeric = (type: FormulaStaticType, context: string): void => {
+    if (type !== 'numeric') mismatch(`${context}需要数值参数`)
+  }
+
+  const visit = (node: AstNode): FormulaStaticType => {
+    switch (node.type) {
+      case 'literal':
+        return node.valueType === 'number' ? 'numeric' : 'categorical'
+      case 'variable':
+        return variableTypes[node.name] ?? 'categorical'
+      case 'unary': {
+        requireNumeric(visit(node.operand), '一元运算符')
+        return 'numeric'
+      }
+      case 'binary': {
+        const left = visit(node.left)
+        const right = visit(node.right)
+        requireNumeric(left, `运算符 ${node.op} 左侧`)
+        requireNumeric(right, `运算符 ${node.op} 右侧`)
+        if (node.op === '/' && isLiteralZero(node.right)) {
+          errors.push({ code: 'DIVISION_BY_ZERO', message: '除数不能为 0' })
+        }
+        return 'numeric'
+      }
+      case 'compare': {
+        const left = visit(node.left)
+        const right = visit(node.right)
+        if (node.op !== '==' && node.op !== '!=') {
+          requireNumeric(left, `比较运算符 ${node.op} 左侧`)
+          requireNumeric(right, `比较运算符 ${node.op} 右侧`)
+        }
+        return 'boolean'
+      }
+      case 'call': {
+        const args = node.args.map(visit)
+        if (['ROUND', 'ABS', 'SQRT', 'LOG', 'LN', 'EXP', 'POW', 'MEAN', 'SUM'].includes(node.name)) {
+          args.forEach((type, index) => requireNumeric(type, `函数 ${node.name} 的第 ${index + 1} 个参数`))
+          return 'numeric'
+        }
+        if (node.name === 'DATE_DIFF') {
+          if (!['date', 'categorical'].includes(args[0]!)) mismatch('函数 DATE_DIFF 的第 1 个参数需要日期')
+          if (!['date', 'categorical'].includes(args[1]!)) mismatch('函数 DATE_DIFF 的第 2 个参数需要日期')
+          if (args[2] !== 'categorical') mismatch('函数 DATE_DIFF 的单位参数需要文本')
+          return 'numeric'
+        }
+        if (node.name === 'YEAR' || node.name === 'MONTH') {
+          if (!['date', 'categorical'].includes(args[0]!)) mismatch(`函数 ${node.name} 需要日期参数`)
+          return 'numeric'
+        }
+        if (node.name === 'TODAY') return 'date'
+        if (node.name === 'SUBSTR') {
+          if (args[0] !== 'categorical') mismatch('函数 SUBSTR 的第 1 个参数需要文本')
+          requireNumeric(args[1]!, '函数 SUBSTR 的第 2 个参数')
+          if (args[2] !== undefined) requireNumeric(args[2], '函数 SUBSTR 的第 3 个参数')
+          return 'categorical'
+        }
+        if (node.name === 'CONCAT') return 'categorical'
+        if (node.name === 'IF') {
+          return resultTypeOf(args[1]!) === resultTypeOf(args[2]!)
+            ? args[1]!
+            : 'categorical'
+        }
+        return 'categorical'
+      }
+    }
+  }
+
+  visit(ast)
+  return errors
+}
+
 function collectVariableRefs(ast: AstNode): VariableReference[] {
   const refs: VariableReference[] = []
   const visit = (node: AstNode): void => {
@@ -103,10 +192,39 @@ function collectVariableRefs(ast: AstNode): VariableReference[] {
   return refs
 }
 
-function materializeValue(value: { type: string; value: unknown }): string | null {
+function materializeValue(
+  value: { type: string; value: unknown },
+  displayDecimals?: number
+): string | null {
   if (value.value === null || value.value === undefined) return null
   if (typeof value.value === 'boolean') return value.value ? 'true' : 'false'
+  if (typeof value.value === 'number' && displayDecimals !== undefined) {
+    return String(Number(value.value.toFixed(displayDecimals)))
+  }
   return String(value.value)
+}
+
+function orderByDependencies(derived: DerivedVariableDef[]): DerivedVariableDef[] {
+  const byName = new Map(derived.map((item) => [item.variableName, item]))
+  const visited = new Set<string>()
+  const visiting = new Set<string>()
+  const ordered: DerivedVariableDef[] = []
+
+  const visit = (item: DerivedVariableDef): void => {
+    if (visited.has(item.id)) return
+    if (visiting.has(item.id)) return
+    visiting.add(item.id)
+    for (const reference of extractVariableReferences(item.formula)) {
+      const dependency = byName.get(reference)
+      if (dependency) visit(dependency)
+    }
+    visiting.delete(item.id)
+    visited.add(item.id)
+    ordered.push(item)
+  }
+
+  for (const item of [...derived].sort((a, b) => a.order - b.order)) visit(item)
+  return ordered
 }
 
 function buildContextFromQuestionnaire(
@@ -150,17 +268,27 @@ export class DerivedService {
     if (cycleError) errors.push(cycleError)
 
     if (errors.length > 0) return { ok: false, errors }
-    return { ok: true, errors: [], inferredType: this.inferType(formula, qnaire) }
+    const variableTypes = this.variableTypes(qnaire)
+    const typeErrors = validateAstTypes(parsed.ast, variableTypes)
+    if (typeErrors.length > 0) return { ok: false, errors: typeErrors }
+    return { ok: true, errors: [], inferredType: inferResultType(parsed.ast, variableTypes) }
   }
 
   inferType(formula: string, qnaire: QuestionnaireDef): DerivedResultType | undefined {
     const parsed = parseFormula(formula)
     if (!parsed.ok) return undefined
+    return inferResultType(parsed.ast, this.variableTypes(qnaire))
+  }
+
+  private variableTypes(qnaire: QuestionnaireDef): Record<string, DerivedResultType> {
     const variableTypes: Record<string, DerivedResultType> = {}
     for (const question of qnaire.questions) {
       variableTypes[question.variableName] = typeOfQuestion(question)
     }
-    return inferResultType(parsed.ast, variableTypes)
+    for (const variable of getDerivedVariables(qnaire)) {
+      variableTypes[variable.variableName] = variable.resultType
+    }
+    return variableTypes
   }
 
   private detectDerivedCycle(
@@ -239,7 +367,7 @@ export class DerivedService {
   ): Record<string, AnswerValue> {
     const result: Record<string, AnswerValue> = {}
     const working = { ...context }
-    const derived = [...getDerivedVariables(qnaire)].sort((a, b) => a.order - b.order)
+    const derived = orderByDependencies(getDerivedVariables(qnaire))
     for (const item of derived) {
       const parsed = parseFormula(item.formula)
       if (!parsed.ok) {
@@ -247,7 +375,7 @@ export class DerivedService {
         continue
       }
       const value = evaluate(parsed.ast, working)
-      const materialized = materializeValue(value)
+      const materialized = materializeValue(value, item.displayDecimals)
       result[item.variableName] = materialized
       if (materialized !== null) working[item.variableName] = materialized
     }
@@ -377,15 +505,36 @@ export class DerivedService {
     return { ok: true, qnaire: fullQnaire }
   }
 
-  static deleteDerivedVariable(qnaire: QuestionnaireDef, id: string): QuestionnaireDef {
-    return {
-      ...qnaire,
-      derivedVariables: getDerivedVariables(qnaire).filter((item) => item.id !== id)
+  static deleteDerivedVariable(qnaire: QuestionnaireDef, id: string): DerivedMutationResult {
+    const derived = getDerivedVariables(qnaire)
+    const existing = derived.find((item) => item.id === id)
+    if (!existing) {
+      return { ok: false, errors: [{ code: 'NOT_FOUND', message: '衍生变量不存在' }] }
     }
+    const dependent = derived.find(
+      (item) => item.id !== id && extractVariableReferences(item.formula).includes(existing.variableName)
+    )
+    if (dependent) {
+      return {
+        ok: false,
+        errors: [{
+          code: 'DERIVED_VARIABLE_IN_USE',
+          message: `衍生变量 "${existing.variableName}" 正被 "${dependent.variableName}" 引用`
+        }]
+      }
+    }
+    return { ok: true, qnaire: {
+      ...qnaire,
+      derivedVariables: derived.filter((item) => item.id !== id)
+    } }
   }
 
   static reorderDerivedVariables(qnaire: QuestionnaireDef, ids: string[]): QuestionnaireDef {
-    const byId = new Map(getDerivedVariables(qnaire).map((item) => [item.id, item]))
+    const derived = getDerivedVariables(qnaire)
+    const byId = new Map(derived.map((item) => [item.id, item]))
+    if (ids.length !== derived.length || ids.some((id) => !byId.has(id))) {
+      throw new Error('INVALID_DERIVED_REORDER')
+    }
     const next = ids
       .map((id, index) => {
         const item = byId.get(id)
@@ -426,6 +575,11 @@ export class DerivedService {
             message: `衍生变量 "${item.variableName}": ${error.message}`
           }))
         )
+      } else if (validation.inferredType !== item.resultType) {
+        errors.push({
+          code: 'RESULT_TYPE_MISMATCH',
+          message: `衍生变量 "${item.variableName}" 的公式结果为 ${validation.inferredType}，与声明类型 ${item.resultType} 不一致`
+        })
       }
     }
 

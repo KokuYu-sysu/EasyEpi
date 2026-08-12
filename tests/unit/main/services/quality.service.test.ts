@@ -47,6 +47,17 @@ describe('QualityService.analyze', () => {
     expect(summary.completeness.overall).toBeCloseTo(0.5, 3)
   })
 
+  it('excludes conditionally hidden questions from the completeness denominator', () => {
+    const summary = new QualityService().analyze(qnaire(), [
+      record('r1', { 'q-age': '30', 'q-smoke': '2' })
+    ])
+    const cigarettes = summary.completeness.perQuestion.find((item) => item.variableName === 'cig')!
+    expect(cigarettes.answered).toBe(0)
+    expect(cigarettes.applicable).toBe(0)
+    expect(cigarettes.rate).toBe(1)
+    expect(summary.completeness.overall).toBe(1)
+  })
+
   it('flags out-of-range and constraint violations as outliers', () => {
     const summary = new QualityService().analyze(qnaire(), [
       record('r1', { 'q-age': '999' }),

@@ -3,6 +3,7 @@ export interface QualityPerQuestion {
   variableName: string
   label: string
   answered: number
+  applicable: number
   rate: number
 }
 

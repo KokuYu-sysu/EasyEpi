@@ -46,11 +46,13 @@ describe('date builtins handle invalid input', () => {
     expect(callBuiltin('DATE_DIFF', ['2026-01-01', '2026-01-01', 'fortnight'])).toBeNull()
     expect(callBuiltin('DATE_DIFF', [null, null, 'year'])).toBeNull()
     expect(callBuiltin('DATE_DIFF', ['2026-13-40', '2026-01-01', 'year'])).toBeNull()
+    expect(callBuiltin('DATE_DIFF', ['2026-02-30', '2026-01-01', 'day'])).toBeNull()
   })
 
   it('YEAR and MONTH return null for invalid dates', () => {
     expect(callBuiltin('YEAR', ['bad'])).toBeNull()
     expect(callBuiltin('MONTH', [null])).toBeNull()
+    expect(callBuiltin('YEAR', ['2026-02-30'])).toBeNull()
   })
 })
 

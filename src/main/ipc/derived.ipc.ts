@@ -100,7 +100,9 @@ export function registerDerivedIpc(
   ipcMain.handle(DERIVED_DELETE_CHANNEL, async (event: IpcInvokeEventLike, rawRequest: unknown) => {
     assertTrustedSender(event, packagedRendererUrl, developmentOrigin)
     const request = parseDerivedDeleteRequest(rawRequest)
-    return mutate(DerivedService.deleteDerivedVariable(getQnaire(), request.id))
+    const result = DerivedService.deleteDerivedVariable(getQnaire(), request.id)
+    if (!result.ok) return { ok: false, errors: result.errors } satisfies DerivedCrudResult
+    return mutate(result.qnaire)
   })
 
   ipcMain.handle(DERIVED_REORDER_CHANNEL, async (event: IpcInvokeEventLike, rawRequest: unknown) => {

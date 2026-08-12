@@ -1,6 +1,7 @@
 import { existsSync } from 'node:fs'
 
 import type { ProjectIpcState } from '../ipc/project.ipc'
+import { DerivedService } from './derived/derived.service'
 import type { AnswerValue, RecordData } from '@shared/types/record'
 import {
   normalizeVisibleAnswers,
@@ -218,6 +219,8 @@ export class DataService {
       const duplicate = checkKeyDuplicate(filePath, key, keyFields, answers, id)
       if (duplicate.isDuplicate) throw new Error('KEY_DUPLICATE')
     }
+
+    Object.assign(answers, new DerivedService().computeForRecord(questionnaire, answers))
 
     records[index] = {
       ...current,

@@ -94,6 +94,36 @@ describe('QnaireService', () => {
     expect(q.questions.length).toBe(0)
   })
 
+  it('rejects deleting a question referenced by a derived formula', () => {
+    let q = createQuestionnaireDef('Test')
+    const weight = createQuestion('Weight', 'weight', 'numeric_range', 0)
+    q = addQuestion(q, weight)
+    q = {
+      ...q,
+      derivedVariables: [{
+        id: 'd1', variableName: 'double_weight', label: 'Double weight',
+        formula: '{weight} * 2', resultType: 'numeric', order: 0
+      }]
+    }
+    expect(() => deleteQuestion(q, weight.id)).toThrow('QUESTION_USED_BY_DERIVED_VARIABLE')
+  })
+
+  it('rejects renaming a question referenced by a derived formula', () => {
+    let q = createQuestionnaireDef('Test')
+    const weight = createQuestion('Weight', 'weight', 'numeric_range', 0)
+    q = addQuestion(q, weight)
+    q = {
+      ...q,
+      derivedVariables: [{
+        id: 'd1', variableName: 'double_weight', label: 'Double weight',
+        formula: '{weight} * 2', resultType: 'numeric', order: 0
+      }]
+    }
+    expect(() => updateQuestion(q, weight.id, { variableName: 'mass' })).toThrow(
+      'QUESTION_USED_BY_DERIVED_VARIABLE'
+    )
+  })
+
   it('deletes condition rules referencing the deleted question', () => {
     let q = createQuestionnaireDef('Test')
     const q1 = createQuestion('Q1', 'q1', 'single_choice', 0)

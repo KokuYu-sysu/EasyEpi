@@ -539,3 +539,130 @@ test('imports and reopens encrypted EpiData records in the packaged executable',
     await closePortable(session)
   }
 })
+
+test('runs the M6 derived, quality, export and double-entry workflow in the packaged executable', async () => {
+  const paths = readPackagedPaths()
+  test.skip(!basename(paths.executablePath).toLowerCase().includes('-portable-'))
+  await access(paths.executablePath)
+  const projectFolder = join(paths.userDataDir, 'm6-packaged-project')
+  const exportPath = join(paths.userDataDir, 'm6-packaged-export.csv')
+  const secondaryPath = join(paths.userDataDir, 'm6-secondary.csv')
+  await mkdir(projectFolder, { recursive: true })
+  await writeFile(secondaryPath, 'pid,age\nP01,31\n', 'utf8')
+
+  let session: PortableSession | undefined
+  try {
+    session = await launchPortable(paths)
+    const { window } = session
+    await window.evaluate(
+      async ({ folderPath }) => {
+        const api = (globalThis as unknown as RendererWindow).easyEpi
+        await api.project.create({
+          name: 'M6 EXE workflow',
+          folderPath,
+          password: 'm6-exe-password'
+        })
+        await api.qnaire.addQuestion({
+          id: 'm6-key',
+          content: 'Participant ID',
+          variableName: 'pid',
+          type: 'fixed_length',
+          options: [],
+          constraint: { type: 'alphanumeric', fixedLength: 3 },
+          isKey: true,
+          allowSkip: false,
+          order: 0
+        })
+        await api.qnaire.addQuestion({
+          id: 'm6-age',
+          content: 'Age',
+          variableName: 'age',
+          type: 'numeric_range',
+          options: [],
+          constraint: { type: 'integer', minValue: 0, maxValue: 120 },
+          isKey: false,
+          allowSkip: false,
+          order: 1
+        })
+        const derived = await api.derived.add({
+          variableName: 'double_age',
+          label: 'Double age',
+          formula: '{age} * 2',
+          resultType: 'numeric',
+          displayDecimals: 0
+        })
+        if (!derived.ok) throw new Error('M6_DERIVED_ADD_FAILED')
+        await api.project.save({ folderPath })
+        const submitted = await api.record.submit({ 'm6-key': 'P01', 'm6-age': '27' })
+        if (!submitted.ok) throw new Error(submitted.error ?? 'M6_SUBMIT_FAILED')
+      },
+      { folderPath: projectFolder }
+    )
+
+    await expect(
+      window.evaluate(() => (globalThis as unknown as RendererWindow).easyEpi.record.list())
+    ).resolves.toMatchObject({
+      total: 1,
+      records: [{ answers: expect.objectContaining({ double_age: '54' }) }]
+    })
+    await expect(
+      window.evaluate(() => (globalThis as unknown as RendererWindow).easyEpi.admin.login({ password: 'm6-exe-password' }))
+    ).resolves.toMatchObject({ success: true })
+    await expect(
+      window.evaluate(() => (globalThis as unknown as RendererWindow).easyEpi.quality.getSummary())
+    ).resolves.toMatchObject({
+      ok: true,
+      summary: expect.objectContaining({ records: 1, outliers: [], contradictions: [], duplicates: [] })
+    })
+
+    const exported = await window.evaluate(
+      ({ outputPath }) => (globalThis as unknown as RendererWindow).easyEpi.exportData.csv({
+        outputPath,
+        encoding: 'multi_category',
+        scope: 'all'
+      }),
+      { outputPath: exportPath }
+    )
+    expect(exported).toMatchObject({ success: true, recordCount: 1 })
+    await expect(readFile(exportPath, 'utf8')).resolves.toContain('double_age')
+    await expect(readFile(exported.dictionaryPath!, 'utf8')).resolves.toContain('衍生变量')
+
+    const comparison = await window.evaluate(
+      ({ secondaryFilePath }) => (globalThis as unknown as RendererWindow).easyEpi.doubleEntry.compare({
+        secondaryFilePath
+      }),
+      { secondaryFilePath: secondaryPath }
+    )
+    expect(comparison).toMatchObject({
+      ok: true,
+      comparison: expect.objectContaining({ matchedWithDiffs: 1 })
+    })
+    const recordId = comparison.comparison!.matched[0]!.primaryRecordId
+    await window.evaluate(
+      ({ id }) => (globalThis as unknown as RendererWindow).easyEpi.admin.updateRecord({
+        id,
+        data: { answers: { age: '31' } }
+      }),
+      { id: recordId }
+    )
+    await expect(
+      window.evaluate(() => (globalThis as unknown as RendererWindow).easyEpi.record.list())
+    ).resolves.toMatchObject({
+      total: 1,
+      records: [{ answers: expect.objectContaining({ 'm6-age': '31', double_age: '62' }) }]
+    })
+    await expect(
+      window.evaluate(
+        ({ secondaryFilePath }) => (globalThis as unknown as RendererWindow).easyEpi.doubleEntry.compare({
+          secondaryFilePath
+        }),
+        { secondaryFilePath: secondaryPath }
+      )
+    ).resolves.toMatchObject({
+      ok: true,
+      comparison: expect.objectContaining({ matchedIdentical: 1, matchedWithDiffs: 0 })
+    })
+  } finally {
+    await closePortable(session)
+  }
+})

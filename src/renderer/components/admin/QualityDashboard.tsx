@@ -98,6 +98,7 @@ export function QualityDashboard({ onMessage }: QualityDashboardProps) {
                   <th className="p-[var(--space-3)] text-left">题目</th>
                   <th className="p-[var(--space-3)] text-left">变量名</th>
                   <th className="p-[var(--space-3)] text-right">已回答</th>
+                  <th className="p-[var(--space-3)] text-right">应回答</th>
                   <th className="p-[var(--space-3)] text-right">完整率</th>
                 </tr>
               </thead>
@@ -109,6 +110,7 @@ export function QualityDashboard({ onMessage }: QualityDashboardProps) {
                       {item.variableName}
                     </td>
                     <td className="p-[var(--space-3)] text-right">{item.answered}</td>
+                    <td className="p-[var(--space-3)] text-right">{item.applicable}</td>
                     <td className="p-[var(--space-3)] text-right">{formatPercent(item.rate)}</td>
                   </tr>
                 ))}

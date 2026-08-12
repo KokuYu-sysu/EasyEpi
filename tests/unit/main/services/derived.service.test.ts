@@ -36,6 +36,44 @@ describe('DerivedService.validateFormula', () => {
     expect(result.ok).toBe(false)
   })
 
+  it('rejects statically detectable division by zero before saving', () => {
+    const result = new DerivedService().validateFormula('1 / 0', baseQnaire())
+    expect(result.ok).toBe(false)
+    if (!result.ok) expect(result.errors[0]!.code).toBe('DIVISION_BY_ZERO')
+  })
+
+  it('rejects arithmetic and function argument type mismatches', () => {
+    const arithmetic = new DerivedService().validateFormula('"abc" + 1', baseQnaire())
+    expect(arithmetic.ok).toBe(false)
+    if (!arithmetic.ok) expect(arithmetic.errors[0]!.code).toBe('TYPE_MISMATCH')
+
+    const call = new DerivedService().validateFormula('ROUND("abc", 1)', baseQnaire())
+    expect(call.ok).toBe(false)
+    if (!call.ok) expect(call.errors[0]!.code).toBe('TYPE_MISMATCH')
+  })
+
+  it('validates date, string, unary, comparison and conditional operand types', () => {
+    expect(new DerivedService().validateFormula(
+      'DATE_DIFF({birth}, TODAY(), "year")',
+      baseQnaire()
+    ).ok).toBe(true)
+    expect(new DerivedService().validateFormula('YEAR({birth})', baseQnaire()).ok).toBe(true)
+    expect(new DerivedService().validateFormula('CONCAT("A", {sex})', baseQnaire()).ok).toBe(true)
+    expect(new DerivedService().validateFormula('IF({age} >= 18, 1, 0)', baseQnaire()).ok).toBe(true)
+
+    for (const formula of [
+      'DATE_DIFF(1, 2, 3)',
+      'YEAR(2026)',
+      'SUBSTR(1, "x", "y")',
+      '-"text"',
+      '"text" > 1'
+    ]) {
+      const result = new DerivedService().validateFormula(formula, baseQnaire())
+      expect(result.ok, formula).toBe(false)
+      if (!result.ok) expect(result.errors.some((error) => error.code === 'TYPE_MISMATCH')).toBe(true)
+    }
+  })
+
   it('rejects unknown variables', () => {
     const result = new DerivedService().validateFormula('{nope} + 1', baseQnaire())
     expect(result.ok).toBe(false)
@@ -130,6 +168,29 @@ describe('DerivedService.computeForRecord', () => {
     expect(result['bmi_rounded']).toBe('24.2')
   })
 
+  it('orders derived dependencies independently of their display order', () => {
+    const qnaire = {
+      ...baseQnaire(),
+      derivedVariables: [
+        derived('d2', 'bmi_rounded', 'ROUND({bmi}, 1)', 0),
+        derived('d1', 'bmi', '{weight} / ({height} / 100) ^ 2', 1)
+      ]
+    }
+    const result = new DerivedService().computeForRecord(qnaire, { 'q-weight': '70', 'q-height': '170' })
+    expect(result['bmi']).toBe('24.221453287197235')
+    expect(result['bmi_rounded']).toBe('24.2')
+  })
+
+  it('materializes numeric values using the configured decimal precision', () => {
+    const bmi = {
+      ...derived('d1', 'bmi', '{weight} / ({height} / 100) ^ 2', 0),
+      displayDecimals: 1
+    }
+    const qnaire = { ...baseQnaire(), derivedVariables: [bmi] }
+    const result = new DerivedService().computeForRecord(qnaire, { 'q-weight': '70', 'q-height': '170' })
+    expect(result['bmi']).toBe('24.2')
+  })
+
   it('stores null for missing dependencies', () => {
     const qnaire = {
       ...baseQnaire(),
@@ -197,6 +258,17 @@ describe('DerivedService CRUD', () => {
     })
     expect(result.ok).toBe(false)
     if (!result.ok) expect(result.errors[0]!.code).toBe('DUPLICATE_VARIABLE')
+  })
+
+  it('rejects a declared result type that disagrees with the formula', () => {
+    const result = DerivedService.addDerivedVariable(baseQnaire(), {
+      variableName: 'bad_type',
+      label: '错误类型',
+      formula: '{weight} * 2',
+      resultType: 'categorical'
+    })
+    expect(result.ok).toBe(false)
+    if (!result.ok) expect(result.errors.some((error) => error.code === 'RESULT_TYPE_MISMATCH')).toBe(true)
   })
 
   it('rejects invalid variable name and reserved prefix', () => {
@@ -326,8 +398,36 @@ describe('DerivedService CRUD', () => {
     expect(reordered.derivedVariables![0]!.variableName).toBe('b')
 
     const deleted = DerivedService.deleteDerivedVariable(reordered, ids[0]!)
-    expect(deleted.derivedVariables).toHaveLength(1)
-    expect(deleted.derivedVariables![0]!.variableName).toBe('b')
+    expect(deleted.ok).toBe(true)
+    if (deleted.ok) {
+      expect(deleted.qnaire.derivedVariables).toHaveLength(1)
+      expect(deleted.qnaire.derivedVariables![0]!.variableName).toBe('b')
+    }
+  })
+
+  it('rejects deletion when another derived variable depends on it', () => {
+    const qnaire = {
+      ...baseQnaire(),
+      derivedVariables: [
+        derived('d1', 'bmi', '{weight} / 2', 0),
+        derived('d2', 'bmi_rounded', 'ROUND({bmi}, 1)', 1)
+      ]
+    }
+    const result = DerivedService.deleteDerivedVariable(qnaire, 'd1')
+    expect(result.ok).toBe(false)
+    if (!result.ok) expect(result.errors[0]!.code).toBe('DERIVED_VARIABLE_IN_USE')
+  })
+
+  it('rejects reorder payloads that omit or invent derived variables', () => {
+    const qnaire = {
+      ...baseQnaire(),
+      derivedVariables: [
+        derived('d1', 'a', '{weight}', 0),
+        derived('d2', 'b', '{height}', 1)
+      ]
+    }
+    expect(() => DerivedService.reorderDerivedVariables(qnaire, ['d1'])).toThrow('INVALID_DERIVED_REORDER')
+    expect(() => DerivedService.reorderDerivedVariables(qnaire, ['d1', 'missing'])).toThrow('INVALID_DERIVED_REORDER')
   })
 })
 

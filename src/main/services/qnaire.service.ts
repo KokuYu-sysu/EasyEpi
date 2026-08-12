@@ -9,6 +9,18 @@ import type {
   ConditionAction,
   QuestionType
 } from '@shared/types/qnaire'
+import { getDerivedVariables } from '@shared/types/qnaire'
+
+function formulaReferencesVariable(formula: string, variableName: string): boolean {
+  const escaped = variableName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  return new RegExp(`\\{\\s*${escaped}\\s*\\}`).test(formula)
+}
+
+function assertVariableNotUsedByDerived(qnaire: QuestionnaireDef, variableName: string): void {
+  if (getDerivedVariables(qnaire).some((item) => formulaReferencesVariable(item.formula, variableName))) {
+    throw new Error('QUESTION_USED_BY_DERIVED_VARIABLE')
+  }
+}
 
 export function createQuestionnaireDef(name: string): QuestionnaireDef {
   return {
@@ -43,7 +55,10 @@ export function addQuestion(
   qnaire: QuestionnaireDef,
   question: QuestionDef
 ): QuestionnaireDef {
-  if (qnaire.questions.some((q) => q.variableName === question.variableName)) {
+  if (
+    qnaire.questions.some((q) => q.variableName === question.variableName) ||
+    getDerivedVariables(qnaire).some((item) => item.variableName === question.variableName)
+  ) {
     throw new Error('DUPLICATE_VARIABLE_NAME')
   }
   return {
@@ -68,6 +83,12 @@ export function updateQuestion(
       (q) => q.id !== questionId && q.variableName === patch.variableName
     )
     if (duplicate) throw new Error('DUPLICATE_VARIABLE_NAME')
+    if (patch.variableName !== qnaire.questions[index]!.variableName) {
+      assertVariableNotUsedByDerived(qnaire, qnaire.questions[index]!.variableName)
+    }
+    if (getDerivedVariables(qnaire).some((item) => item.variableName === patch.variableName)) {
+      throw new Error('DUPLICATE_VARIABLE_NAME')
+    }
   }
 
   const questions = [...qnaire.questions]
@@ -85,6 +106,8 @@ export function deleteQuestion(
   qnaire: QuestionnaireDef,
   questionId: string
 ): QuestionnaireDef {
+  const existing = qnaire.questions.find((question) => question.id === questionId)
+  if (existing) assertVariableNotUsedByDerived(qnaire, existing.variableName)
   const questions = qnaire.questions.filter((q) => q.id !== questionId)
   const keyQuestionIds = qnaire.keyQuestionIds.filter((id) => id !== questionId)
   const conditionRules = qnaire.conditionRules

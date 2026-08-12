@@ -40,23 +40,33 @@ export class QualityService {
   analyze(qnaire: QuestionnaireDef, records: RecordData[]): QualitySummary {
     const questions = qnaire.questions
 
+    const visibleByRecord = new Map(
+      records.map((record) => [
+        record.id,
+        new Set(getVisibleQuestions(qnaire, record.answers).map((question) => question.id))
+      ])
+    )
     const perQuestion = questions.map((question) => {
-      const answered = records.reduce(
+      const applicableRecords = records.filter((record) => visibleByRecord.get(record.id)?.has(question.id))
+      const answered = applicableRecords.reduce(
         (count, record) => (isMissing(record.answers[question.id], question) ? count : count + 1),
         0
       )
+      const applicable = applicableRecords.length
       return {
         questionId: question.id,
         variableName: question.variableName,
         label: question.content,
         answered,
-        rate: records.length === 0 ? 0 : answered / records.length
+        applicable,
+        rate: applicable === 0 ? 1 : answered / applicable
       }
     })
-    const overall =
-      perQuestion.length === 0
-        ? 0
-        : perQuestion.reduce((sum, item) => sum + item.rate, 0) / perQuestion.length
+    const totalApplicable = perQuestion.reduce((sum, item) => sum + item.applicable, 0)
+    const totalAnswered = perQuestion.reduce((sum, item) => sum + item.answered, 0)
+    const overall = perQuestion.length === 0 || records.length === 0
+      ? 0
+      : totalApplicable === 0 ? 1 : totalAnswered / totalApplicable
 
     const outliers: QualityFinding[] = []
     const contradictions: QualityFinding[] = []

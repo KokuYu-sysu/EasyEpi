@@ -94,6 +94,24 @@ describe('readComparisonCsv', () => {
 })
 
 describe('DoubleEntryService.compare', () => {
+  it('requires at least one Key field instead of silently pairing rows by position', () => {
+    expect(() => new DoubleEntryService().compare(
+      [record('r1', { 'q-id': '001' })],
+      [{ pid: '001' }],
+      qnaire(),
+      []
+    )).toThrow('DOUBLE_ENTRY_KEY_REQUIRED')
+  })
+
+  it('requires every Key column in the secondary CSV', () => {
+    expect(() => new DoubleEntryService().compare(
+      [record('r1', { 'q-id': '001' })],
+      [{ age: '30' }],
+      qnaire(),
+      ['pid']
+    )).toThrow('DOUBLE_ENTRY_KEY_COLUMN_MISSING')
+  })
+
   it('matches by Key and reports identical records', () => {
     const result = new DoubleEntryService().compare(
       [record('r1', { 'q-id': '001', 'q-age': '30', 'q-sex': '1' })],
@@ -128,6 +146,29 @@ describe('DoubleEntryService.compare', () => {
       [record('r1', { 'q-id': '001', 'q-sex': '1' })],
       [{ pid: '001', sex: '男', age: '' }],
       qnaire(),
+      ['pid']
+    )
+    expect(result.matchedIdentical).toBe(1)
+    expect(result.matchedWithDiffs).toBe(0)
+  })
+
+  it('treats multi-choice values as an unordered set', () => {
+    const questionnaire = qnaire()
+    questionnaire.questions.push({
+      id: 'q-symptoms',
+      content: '症状',
+      variableName: 'symptoms',
+      type: 'multiple_choice',
+      options: [{ value: 'a', label: '咳嗽' }, { value: 'b', label: '发热' }],
+      constraint: { type: 'none' },
+      isKey: false,
+      allowSkip: true,
+      order: 3
+    })
+    const result = new DoubleEntryService().compare(
+      [record('r1', { 'q-id': '001', 'q-symptoms': ['a', 'b'] })],
+      [{ pid: '001', sex: '', age: '', symptoms: '发热,咳嗽' }],
+      questionnaire,
       ['pid']
     )
     expect(result.matchedIdentical).toBe(1)

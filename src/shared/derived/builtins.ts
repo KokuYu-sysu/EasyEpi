@@ -37,6 +37,12 @@ function parseDate(value: BuiltinArg): DateParts | null {
   const month = Number(match[2])
   const day = Number(match[3])
   if (!Number.isFinite(year) || month < 1 || month > 12 || day < 1 || day > 31) return null
+  const normalized = new Date(Date.UTC(year, month - 1, day))
+  if (
+    normalized.getUTCFullYear() !== year ||
+    normalized.getUTCMonth() !== month - 1 ||
+    normalized.getUTCDate() !== day
+  ) return null
   return { year, month, day }
 }
 
@@ -49,16 +55,17 @@ function todayString(): string {
 }
 
 function dateDiff(d1: DateParts, d2: DateParts, unit: 'year' | 'month' | 'day'): number {
+  const firstTime = Date.UTC(d1.year, d1.month - 1, d1.day)
+  const secondTime = Date.UTC(d2.year, d2.month - 1, d2.day)
+  const [earlier, later] = firstTime <= secondTime ? [d1, d2] : [d2, d1]
   if (unit === 'day') {
-    const a = Date.UTC(d1.year, d1.month - 1, d1.day)
-    const b = Date.UTC(d2.year, d2.month - 1, d2.day)
-    return Math.round((a - b) / 86_400_000)
+    return Math.round(Math.abs(firstTime - secondTime) / 86_400_000)
   }
   if (unit === 'month') {
-    return (d1.year - d2.year) * 12 + (d1.month - d2.month)
+    return (later.year - earlier.year) * 12 + (later.month - earlier.month)
   }
-  let years = d1.year - d2.year
-  if (d1.month < d2.month || (d1.month === d2.month && d1.day < d2.day)) {
+  let years = later.year - earlier.year
+  if (later.month < earlier.month || (later.month === earlier.month && later.day < earlier.day)) {
     years -= 1
   }
   return years

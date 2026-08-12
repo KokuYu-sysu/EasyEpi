@@ -167,17 +167,44 @@ test('computes derived variables on entry and exports them as columns', async ()
 
     await writeFile(
       secondaryPath,
-      'age,weight,height,sex\n70,70,170,男\n',
+      'age,weight,height,sex\n17,70,170,男\n',
       'utf8'
     )
-    await expect(
-      page.evaluate(
-        ({ filePath }) => (window as unknown as RendererWindow).easyEpi.doubleEntry.compare({
-          secondaryFilePath: filePath
-        }),
-        { filePath: secondaryPath }
-      )
-    ).resolves.toMatchObject({ ok: true, comparison: expect.objectContaining({ matchedIdentical: 1 }) })
+    const firstComparison = await page.evaluate(
+      (secondaryFilePath) => (window as unknown as RendererWindow).easyEpi.doubleEntry.compare({
+        secondaryFilePath
+      }),
+      secondaryPath
+    )
+    expect(firstComparison).toMatchObject({
+      ok: true,
+      comparison: expect.objectContaining({ matchedWithDiffs: 1 })
+    })
+    const recordId = firstComparison.comparison!.matched[0]!.primaryRecordId
+    await page.evaluate(
+      ({ id }) => (window as unknown as RendererWindow).easyEpi.admin.updateRecord({
+        id,
+        data: { answers: { age: '17' } }
+      }),
+      { id: recordId }
+    )
+    await expect(page.evaluate(
+      (secondaryFilePath) => (window as unknown as RendererWindow).easyEpi.doubleEntry.compare({
+        secondaryFilePath
+      }),
+      secondaryPath
+    )).resolves.toMatchObject({
+      ok: true,
+      comparison: expect.objectContaining({ matchedIdentical: 1, matchedWithDiffs: 0 })
+    })
+
+    const resolvedRecords = await page.evaluate(
+      () => (window as unknown as RendererWindow).easyEpi.record.list()
+    )
+    expect(resolvedRecords.records[0]!.answers).toMatchObject({
+      'q-age': '17',
+      age_group: '未成年'
+    })
   } finally {
     await app?.close()
     await rm(userDataDir, { recursive: true, force: true })

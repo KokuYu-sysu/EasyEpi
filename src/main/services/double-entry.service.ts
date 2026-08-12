@@ -166,6 +166,8 @@ function normalizePrimaryValue(type: string, value: string, options: OptionLike[
     return value
       .split(',')
       .map((item) => optionLabel(item.trim(), options) ?? item.trim())
+      .filter(Boolean)
+      .sort((a, b) => a.localeCompare(b, 'zh-CN'))
       .join(',')
   }
   return value.trim()
@@ -194,6 +196,10 @@ export class DoubleEntryService {
     qnaire: QuestionnaireDef,
     keyFieldNames: string[]
   ): DoubleEntryComparison {
+    if (keyFieldNames.length === 0) throw new Error('DOUBLE_ENTRY_KEY_REQUIRED')
+    if (secondary.some((row) => keyFieldNames.some((name) => !Object.hasOwn(row, name)))) {
+      throw new Error('DOUBLE_ENTRY_KEY_COLUMN_MISSING')
+    }
     const questionByVariableName = new Map(
       qnaire.questions.map((question) => [question.variableName, question])
     )
@@ -221,7 +227,11 @@ export class DoubleEntryService {
     const secondaryBySignature = new Map<string, Array<Record<string, string>>>()
     for (const row of secondary) {
       const signature = JSON.stringify(
-        buildKeyValues(keyFieldNames, (name) => row[name] ?? '')
+        buildKeyValues(keyFieldNames, (name) => {
+          const question = questionByVariableName.get(name)
+          const value = row[name] ?? ''
+          return question ? normalizePrimaryValue(question.type, value, question.options) : value.trim()
+        })
       )
       const bucket = secondaryBySignature.get(signature) ?? []
       bucket.push(row)
@@ -263,7 +273,11 @@ export class DoubleEntryService {
           const secondaryValue = secondaryRow[question.variableName] ?? ''
           if (isBlank(primaryValue) && isBlank(secondaryValue)) continue
           const primaryNormalized = normalizePrimaryValue(question.type, primaryValue, question.options)
-          const secondaryNormalized = secondaryValue.trim()
+          const secondaryNormalized = normalizePrimaryValue(
+            question.type,
+            secondaryValue,
+            question.options
+          )
           if (primaryNormalized !== secondaryNormalized) {
             diffs.push({
               variableName: question.variableName,

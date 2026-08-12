@@ -27,6 +27,7 @@ function stableDoubleEntryError(error: unknown): string {
   if (code === 'NO_PROJECT_OPEN' || code === 'PROJECT_NOT_UNLOCKED') return code
   if (code === 'ENOENT' || code.includes('ENOENT')) return 'DOUBLE_ENTRY_FILE_NOT_FOUND'
   if (code === 'DOUBLE_ENTRY_EMPTY') return code
+  if (code === 'DOUBLE_ENTRY_KEY_REQUIRED' || code === 'DOUBLE_ENTRY_KEY_COLUMN_MISSING') return code
   return 'DOUBLE_ENTRY_FAILED'
 }
 
@@ -74,6 +75,10 @@ export function registerDoubleEntryIpcHandlers(
         .map((id) => project.questionnaire.questions.find((question) => question.id === id))
         .filter((question): question is NonNullable<typeof question> => question !== undefined)
         .map((question) => question.variableName)
+      if (keyFieldNames.length === 0) throw new Error('DOUBLE_ENTRY_KEY_REQUIRED')
+      if (keyFieldNames.some((name) => !secondary.headers.includes(name))) {
+        throw new Error('DOUBLE_ENTRY_KEY_COLUMN_MISSING')
+      }
 
       const comparison = services.doubleEntryService.compare(
         primary,
