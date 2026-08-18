@@ -7,7 +7,7 @@ interface CardProps {
 
 export function Card({ children, className = '' }: CardProps) {
   return (
-    <div className={`rounded-lg border bg-card text-card-foreground shadow-sm ${className}`}>
+    <div className={`rounded-[var(--radius-2)] border border-[var(--color-border-default)] bg-[var(--color-surface-raised)] text-[var(--color-text-primary)] shadow-[var(--shadow-z1)] ${className}`}>
       {children}
     </div>
   )
@@ -20,7 +20,7 @@ interface CardHeaderProps {
 
 export function CardHeader({ children, className = '' }: CardHeaderProps) {
   return (
-    <div className={`flex flex-col space-y-1.5 p-6 ${className}`}>
+    <div className={`flex flex-col gap-[var(--space-1)] p-[var(--space-5)] ${className}`}>
       {children}
     </div>
   )
@@ -33,7 +33,7 @@ interface CardTitleProps {
 
 export function CardTitle({ children, className = '' }: CardTitleProps) {
   return (
-    <h3 className={`text-2xl font-semibold leading-none tracking-tight ${className}`}>
+    <h3 className={`m-0 text-[length:var(--font-size-xl)] font-[var(--font-weight-semibold)] leading-[var(--line-height-tight)] ${className}`}>
       {children}
     </h3>
   )
@@ -46,7 +46,7 @@ interface CardContentProps {
 
 export function CardContent({ children, className = '' }: CardContentProps) {
   return (
-    <div className={`p-6 pt-0 ${className}`}>
+    <div className={`px-[var(--space-5)] pb-[var(--space-5)] ${className}`}>
       {children}
     </div>
   )

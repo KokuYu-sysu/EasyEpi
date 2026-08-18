@@ -29,7 +29,10 @@ function createApi(): DesktopApi {
       create: vi.fn(),
       open: vi.fn(),
       save: vi.fn(),
-      close: vi.fn()
+      close: vi.fn(),
+      backup: vi.fn(),
+      listBackups: vi.fn(),
+      restore: vi.fn()
     },
     qnaire: {
       getData: vi.fn().mockResolvedValue({ questions: [], conditionRules: [], keyQuestionIds: [], name: '' }),

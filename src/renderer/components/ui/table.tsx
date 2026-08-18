@@ -8,7 +8,7 @@ interface TableProps {
 export function Table({ children, className = '' }: TableProps) {
   return (
     <div className="relative w-full overflow-auto">
-      <table className={`w-full caption-bottom text-sm ${className}`}>
+      <table className={`w-full caption-bottom text-[length:var(--font-size-sm)] ${className}`}>
         {children}
       </table>
     </div>
@@ -22,7 +22,7 @@ interface TableHeaderProps {
 
 export function TableHeader({ children, className = '' }: TableHeaderProps) {
   return (
-    <thead className={`[&_tr]:border-b ${className}`}>
+    <thead className={`[&_tr]:border-b [&_tr]:border-[var(--color-border-default)] ${className}`}>
       {children}
     </thead>
   )
@@ -48,7 +48,7 @@ interface TableRowProps {
 
 export function TableRow({ children, className = '' }: TableRowProps) {
   return (
-    <tr className={`border-b transition-colors hover:bg-muted/50 data-[state=selected]:bg-muted ${className}`}>
+    <tr className={`border-b border-[var(--color-border-default)] transition-colors hover:bg-[var(--color-surface-sunken)] data-[state=selected]:bg-[var(--color-brand-soft)] ${className}`}>
       {children}
     </tr>
   )
@@ -61,7 +61,7 @@ interface TableHeadProps {
 
 export function TableHead({ children, className = '' }: TableHeadProps) {
   return (
-    <th className={`h-12 px-4 text-left align-middle font-medium text-muted-foreground [&:has([role=checkbox])]:pr-0 ${className}`}>
+    <th className={`h-12 px-[var(--space-4)] text-left align-middle font-[var(--font-weight-medium)] text-[var(--color-text-muted)] [&:has([role=checkbox])]:pr-0 ${className}`}>
       {children}
     </th>
   )
@@ -74,7 +74,7 @@ interface TableCellProps {
 
 export function TableCell({ children, className = '' }: TableCellProps) {
   return (
-    <td className={`p-4 align-middle [&:has([role=checkbox])]:pr-0 ${className}`}>
+    <td className={`p-[var(--space-4)] align-middle [&:has([role=checkbox])]:pr-0 ${className}`}>
       {children}
     </td>
   )

@@ -155,6 +155,7 @@ export function EntryPage({ store: injectedStore }: EntryPageProps) {
       <EmptyState
         title="加载失败"
         description={error}
+        illustration="error"
         action={<Button onClick={() => store.getState().loadQuestionnaire()}>重试</Button>}
       />
     )
@@ -166,6 +167,7 @@ export function EntryPage({ store: injectedStore }: EntryPageProps) {
         <EmptyState
           title="请先打开项目"
           description="尚未打开任何问卷项目。请先在欢迎页新建或打开一个项目后再进行录入。"
+          illustration="empty"
           action={<Button onClick={() => navigate('/')}>前往欢迎页</Button>}
         />
       )
@@ -174,6 +176,7 @@ export function EntryPage({ store: injectedStore }: EntryPageProps) {
       <EmptyState
         title="准备录入"
         description={`已加载问卷「${questionnaire.name}」，共 ${visibleQuestions.length} 题。批次已录入: ${batchCount} 份`}
+        illustration="success"
         action={
           <div className="flex gap-[var(--space-3)]">
             <Button
@@ -242,6 +245,7 @@ export function EntryPage({ store: injectedStore }: EntryPageProps) {
       <EmptyState
         title="记录已保存"
         description={`本次已录入: ${batchCount} 份`}
+        illustration="success"
         action={
           <div className="flex gap-[var(--space-3)]">
             <Button onClick={handleStartNext}>开始下一份</Button>
@@ -257,7 +261,7 @@ export function EntryPage({ store: injectedStore }: EntryPageProps) {
   // Entering phase
   const currentQuestion = visibleQuestions[currentIndex]
   if (!currentQuestion) {
-    return renderPage(<EmptyState title="没有可见题目" description="所有题目均被条件规则跳过。" />)
+    return renderPage(<EmptyState title="没有可见题目" description="所有题目均被条件规则跳过。" illustration="no-data" />)
   }
 
   const progressValue = currentIndex + 1

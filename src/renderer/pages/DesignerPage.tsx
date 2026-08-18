@@ -316,6 +316,7 @@ export function DesignerPage({ store: injectedStore }: DesignerPageProps) {
         <EmptyState
           title="未打开项目"
           description="请先从欢迎页创建或打开一个项目，然后返回此页面设计问卷。"
+          illustration="empty"
         />
       ) : (
         <section aria-label="问卷题目" className="grid min-w-0 gap-[var(--space-3)]">
@@ -323,6 +324,7 @@ export function DesignerPage({ store: injectedStore }: DesignerPageProps) {
             <EmptyState
               title="暂无题目"
               description="点击「新增题目」开始设计问卷。"
+              illustration="no-data"
               action={
                 <QuestionEditDialog
                   mode="add"

@@ -57,7 +57,7 @@ export function QualityDashboard({ onMessage }: QualityDashboardProps) {
   }
 
   if (summary === null) {
-    return <EmptyState title="暂无数据" description="当前项目没有可分析的数据记录。" />
+    return <EmptyState title="暂无数据" description="当前项目没有可分析的数据记录。" illustration="no-data" />
   }
 
   const statCards = [

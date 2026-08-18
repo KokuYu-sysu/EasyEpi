@@ -2,6 +2,9 @@ export const PROJECT_CREATE_CHANNEL = 'project:create' as const
 export const PROJECT_OPEN_CHANNEL = 'project:open' as const
 export const PROJECT_SAVE_CHANNEL = 'project:save' as const
 export const PROJECT_CLOSE_CHANNEL = 'project:close' as const
+export const PROJECT_BACKUP_CHANNEL = 'project:backup' as const
+export const PROJECT_LIST_BACKUPS_CHANNEL = 'project:listBackups' as const
+export const PROJECT_RESTORE_CHANNEL = 'project:restore' as const
 
 export const QNAIRE_ADD_QUESTION_CHANNEL = 'qnaire:addQuestion' as const
 export const QNAIRE_UPDATE_QUESTION_CHANNEL = 'qnaire:updateQuestion' as const
@@ -119,4 +122,28 @@ export function parseProjectResult(value: unknown): ProjectResult {
     return { ok: true, meta: obj.meta as ProjectResult['meta'] }
   }
   return { ok: false, error: typeof obj.error === 'string' ? obj.error : undefined }
+}
+
+export interface ProjectRestoreRequest {
+  backupPath: string
+}
+
+export function parseProjectRestoreRequest(value: unknown): ProjectRestoreRequest {
+  if (!isPlainObject(value)) throw new Error('INVALID_PROJECT_RESTORE_REQUEST')
+  const { backupPath } = value
+  if (typeof backupPath !== 'string' || backupPath.trim().length === 0) {
+    throw new Error('INVALID_PROJECT_RESTORE_REQUEST')
+  }
+  return { backupPath: backupPath.trim() }
+}
+
+export interface BackupInfo {
+  filePath: string
+  timestamp: number
+  size: number
+}
+
+export interface BackupListResult {
+  ok: boolean
+  backups: BackupInfo[]
 }
