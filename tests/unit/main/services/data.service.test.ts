@@ -2,6 +2,7 @@ import { randomBytes } from 'node:crypto'
 import { existsSync, mkdirSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { performance } from 'node:perf_hooks'
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
@@ -122,6 +123,45 @@ describe('DataService', () => {
   afterEach(() => {
     if (existsSync(TEST_DIR)) rmSync(TEST_DIR, { recursive: true })
   })
+
+  it('keeps repeated pagination and search responsive with 10,000 records', async () => {
+    const largeRecords: RecordData[] = Array.from({ length: 10_000 }, (_, recordIndex) => ({
+      id: `record-${String(recordIndex).padStart(5, '0')}`,
+      answers: Object.fromEntries(
+        Array.from({ length: 100 }, (_, fieldIndex) => [
+          `field-${fieldIndex}`,
+          fieldIndex === 42 && recordIndex === 9_999
+            ? 'unique-search-target'
+            : `value-${recordIndex}-${fieldIndex}`
+        ])
+      ),
+      createdAt: '2026-01-01T00:00:00.000Z',
+      updatedAt: '2026-01-01T00:00:00.000Z'
+    }))
+    replaceRecords(filePath, key, largeRecords)
+
+    const initialLoadStarted = performance.now()
+    await service.getRecords({ page: 1, pageSize: 50 })
+    const initialLoadDuration = performance.now() - initialLoadStarted
+    expect(initialLoadDuration).toBeLessThan(1_000)
+
+    const pageStarted = performance.now()
+    const page = await service.getRecords({ page: 100, pageSize: 50 })
+    const pageDuration = performance.now() - pageStarted
+    expect(page.records).toHaveLength(50)
+    expect(page.total).toBe(10_000)
+    expect(pageDuration).toBeLessThan(300)
+
+    const searchStarted = performance.now()
+    const search = await service.getRecords({
+      page: 1,
+      pageSize: 50,
+      search: 'unique-search-target'
+    })
+    const searchDuration = performance.now() - searchStarted
+    expect(search.records.map(({ id }) => id)).toEqual(['record-09999'])
+    expect(searchDuration).toBeLessThan(1_000)
+  }, 30_000)
 
   it('reads a deterministic page from the encrypted data file', async () => {
     await expect(service.getRecords({ page: 2, pageSize: 1 })).resolves.toMatchObject({

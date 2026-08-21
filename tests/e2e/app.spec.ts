@@ -675,6 +675,48 @@ test.describe('built Electron application', () => {
     await expect(page.getByText('设计系统组件展厅')).toHaveCount(0)
   })
 
+  test('keeps UI animation frame pacing stable and releases route allocations', async () => {
+    running = await launchBuiltApp(userDataDir)
+    const { app, page } = running
+    const cdp = await page.context().newCDPSession(page)
+    await cdp.send('HeapProfiler.enable')
+    await cdp.send('HeapProfiler.collectGarbage')
+    const baseline = await cdp.send('Runtime.getHeapUsage')
+
+    const frameSample = page.evaluate(
+      () =>
+        new Promise<number[]>((resolve) => {
+          const intervals: number[] = []
+          let previous = performance.now()
+          const sample = (current: number) => {
+            intervals.push(current - previous)
+            previous = current
+            if (intervals.length >= 120) resolve(intervals.slice(1))
+            else requestAnimationFrame(sample)
+          }
+          requestAnimationFrame(sample)
+        })
+    )
+    for (let index = 0; index < 12; index += 1) {
+      await page.getByRole('button', { name: /切换主题/ }).click()
+    }
+    const intervals = (await frameSample).sort((left, right) => left - right)
+    const p95 = intervals[Math.floor(intervals.length * 0.95)]!
+    expect(p95).toBeLessThanOrEqual(20)
+
+    for (let cycle = 0; cycle < 5; cycle += 1) {
+      for (const path of ['/designer', '/entry', '/admin/data', '/derived', '/']) {
+        await navigateHash(page, path)
+        await expect(page.getByRole('heading', { level: 1 })).toBeVisible()
+      }
+    }
+    await cdp.send('HeapProfiler.collectGarbage')
+    const afterCycles = await cdp.send('Runtime.getHeapUsage')
+    expect(afterCycles.usedSize - baseline.usedSize).toBeLessThan(8 * 1024 * 1024)
+    await cdp.detach()
+    expect(app.windows()).toHaveLength(1)
+  })
+
   test('has no automated WCAG A/AA violations in key pages and settings', async () => {
     running = await launchBuiltApp(userDataDir)
     const { page } = running

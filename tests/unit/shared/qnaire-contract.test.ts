@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest'
 import {
   parseProjectCreateRequest,
   parseProjectOpenRequest,
+  parseProjectRestoreRequest,
   parseProjectResult,
   parseProjectSaveRequest
 } from '@shared/qnaire-contract'
@@ -78,5 +79,14 @@ describe('project create contract', () => {
       error: undefined
     })
     expect(() => parseProjectResult({ ok: 'yes' })).toThrow('INVALID_PROJECT_RESULT')
+  })
+
+  it('requires a non-empty backup path for restore requests', () => {
+    expect(parseProjectRestoreRequest({ backupPath: ' D:\\backups\\study.easyepi.1.bak ' }))
+      .toEqual({ backupPath: 'D:\\backups\\study.easyepi.1.bak' })
+    expect(() => parseProjectRestoreRequest({ backupPath: '' })).toThrow(
+      'INVALID_PROJECT_RESTORE_REQUEST'
+    )
+    expect(() => parseProjectRestoreRequest(null)).toThrow('INVALID_PROJECT_RESTORE_REQUEST')
   })
 })

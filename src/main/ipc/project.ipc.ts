@@ -24,12 +24,14 @@ import {
   getProjectFilePath
 } from '../services/project.service'
 import { recoverProjectRekeyTransaction } from '../services/project-rekey.service'
+import { loadRecords, resolveProjectDataFilePath } from '../services/record.service'
 import {
   createBackup,
   restoreFromBackup,
   getBackups,
   shouldCreateBackup,
-  resetBackupTimer
+  resetBackupTimer,
+  startBackupTimer
 } from '../services/backup.service'
 
 import { type IpcMainLike, type IpcInvokeEventLike, assertTrustedSender } from './types'
@@ -79,6 +81,21 @@ export function registerProjectIpc(
   packagedRendererUrl: string,
   developmentOrigin?: string
 ): () => void {
+  let stopPeriodicBackups: () => void = () => undefined
+
+  const startPeriodicBackups = () => {
+    stopPeriodicBackups()
+    stopPeriodicBackups = startBackupTimer(() => {
+      if (!state.currentFilePath || !state.currentProject || !state.auth.encryptionKey) return
+      const dataFilePath = resolveProjectDataFilePath(
+        state.currentFilePath,
+        state.currentProject.meta.name
+      )
+      if (createBackup(state.currentFilePath, dataFilePath)) {
+        resetBackupTimer(state.currentFilePath)
+      }
+    })
+  }
 
   ipcMain.handle(PROJECT_CREATE_CHANNEL, async (event: IpcInvokeEventLike, rawRequest: unknown) => {
     assertTrustedSender(event, packagedRendererUrl, developmentOrigin)
@@ -101,6 +118,7 @@ export function registerProjectIpc(
       state.currentHashHex = result.passwordHash
       state.auth.encryptionKey = result.encryptionKey
       state.auth.passwordData = { hash: result.passwordHash, salt: result.salt }
+      startPeriodicBackups()
 
       return { ok: true, meta: result.meta } satisfies ProjectResult
     } catch (error) {
@@ -118,24 +136,27 @@ export function registerProjectIpc(
       // Read header to get salt and password hash (unencrypted)
       const header = readProjectHeader(request.filePath)
 
+      let key: Buffer
       if (header.hashHex && header.saltHex) {
         // Verify password and derive key
-        const key = verifyAndDeriveKey(request.password, header.saltHex, header.hashHex)
-        if (!key) {
+        const derivedKey = verifyAndDeriveKey(request.password, header.saltHex, header.hashHex)
+        if (!derivedKey) {
           return { ok: false, error: '密码错误' } satisfies ProjectResult
         }
-        state.auth.encryptionKey = key
-        state.auth.passwordData = { hash: header.hashHex, salt: header.saltHex }
+        key = derivedKey
       } else {
         return { ok: false, error: '项目文件格式错误：缺少密码数据' } satisfies ProjectResult
       }
 
       // Decrypt the payload with the derived key
-      const data = decryptProjectData(request.filePath, state.auth.encryptionKey)
+      const data = decryptProjectData(request.filePath, key)
       state.currentProject = data
       state.currentFilePath = request.filePath
       state.currentSaltHex = header.saltHex
       state.currentHashHex = header.hashHex
+      state.auth.encryptionKey = key
+      state.auth.passwordData = { hash: header.hashHex, salt: header.saltHex }
+      startPeriodicBackups()
       return { ok: true, meta: data.meta } satisfies ProjectResult
     } catch (error) {
       return { ok: false, error: getProjectErrorMessage(error) } satisfies ProjectResult
@@ -156,8 +177,13 @@ export function registerProjectIpc(
 
     try {
       // Create automatic backup if interval has elapsed
-      if (state.currentFilePath && shouldCreateBackup()) {
-        createBackup(state.currentFilePath)
+      if (state.currentFilePath && shouldCreateBackup(state.currentFilePath)) {
+        const dataFilePath = resolveProjectDataFilePath(
+          state.currentFilePath,
+          state.currentProject.meta.name
+        )
+        const backupPath = createBackup(state.currentFilePath, dataFilePath)
+        if (backupPath) resetBackupTimer(state.currentFilePath)
       }
 
       saveProject(
@@ -182,9 +208,13 @@ export function registerProjectIpc(
     }
 
     try {
-      const backupPath = createBackup(state.currentFilePath)
+      const dataFilePath = state.currentProject
+        ? resolveProjectDataFilePath(state.currentFilePath, state.currentProject.meta.name)
+        : undefined
+      const backupPath = createBackup(state.currentFilePath, dataFilePath)
       if (backupPath) {
-        resetBackupTimer()
+        resetBackupTimer(state.currentFilePath)
+        startPeriodicBackups()
         return { ok: true, meta: state.currentProject?.meta } satisfies ProjectResult
       }
       return { ok: false, error: '创建备份失败' } satisfies ProjectResult
@@ -201,7 +231,10 @@ export function registerProjectIpc(
     }
 
     try {
-      const backups = getBackups(state.currentFilePath)
+      const dataFilePath = state.currentProject
+        ? resolveProjectDataFilePath(state.currentFilePath, state.currentProject.meta.name)
+        : undefined
+      const backups = getBackups(state.currentFilePath, dataFilePath)
       return { ok: true, backups } satisfies BackupListResult
     } catch {
       return { ok: true, backups: [] } satisfies BackupListResult
@@ -217,14 +250,26 @@ export function registerProjectIpc(
     }
 
     try {
-      const success = restoreFromBackup(request.backupPath, state.currentFilePath)
+      const key = state.auth.encryptionKey
+      if (!key || !state.currentProject) {
+        return { ok: false, error: '未解锁项目' } satisfies ProjectResult
+      }
+      const dataFilePath = resolveProjectDataFilePath(
+        state.currentFilePath,
+        state.currentProject.meta.name
+      )
+      const success = restoreFromBackup(request.backupPath, state.currentFilePath, {
+        dataFilePath,
+        validateProject: (path) => {
+          decryptProjectData(path, key)
+        },
+        validateData: (path) => {
+          loadRecords(path, key)
+        }
+      })
       if (success) {
         // Reload the project after restore
-        const key = state.auth.encryptionKey
-        if (key) {
-          const data = decryptProjectData(state.currentFilePath, key)
-          state.currentProject = data
-        }
+        state.currentProject = decryptProjectData(state.currentFilePath, key)
         return { ok: true, meta: state.currentProject?.meta } satisfies ProjectResult
       }
       return { ok: false, error: '恢复备份失败' } satisfies ProjectResult
@@ -240,10 +285,13 @@ export function registerProjectIpc(
     state.currentSaltHex = ''
     state.currentHashHex = ''
     lock(state.auth)
+    stopPeriodicBackups()
+    stopPeriodicBackups = () => undefined
     return { ok: true }
   })
 
   return () => {
+    stopPeriodicBackups()
     ipcMain.removeHandler(PROJECT_CREATE_CHANNEL)
     ipcMain.removeHandler(PROJECT_OPEN_CHANNEL)
     ipcMain.removeHandler(PROJECT_SAVE_CHANNEL)

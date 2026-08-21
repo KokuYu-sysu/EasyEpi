@@ -141,6 +141,7 @@ export interface BackupInfo {
   filePath: string
   timestamp: number
   size: number
+  hasData: boolean
 }
 
 export interface BackupListResult {

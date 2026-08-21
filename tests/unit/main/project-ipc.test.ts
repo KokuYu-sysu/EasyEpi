@@ -1,0 +1,132 @@
+import { mkdtempSync, readFileSync, rmSync, truncateSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+
+import { afterEach, describe, expect, it, vi } from 'vitest'
+
+import {
+  PROJECT_OPEN_CHANNEL,
+  PROJECT_CREATE_CHANNEL,
+  PROJECT_RESTORE_CHANNEL
+} from '@shared/qnaire-contract'
+import {
+  createProjectIpcState,
+  registerProjectIpc
+} from '../../../src/main/ipc/project.ipc'
+import type { IpcInvokeEventLike, IpcMainLike } from '../../../src/main/ipc/types'
+import { createBackup, getBackups } from '../../../src/main/services/backup.service'
+import {
+  createProject,
+  decryptProjectData,
+  getProjectFilePath
+} from '../../../src/main/services/project.service'
+
+type Handler = (event: IpcInvokeEventLike, ...args: unknown[]) => Promise<unknown>
+
+function createHarness() {
+  const handlers = new Map<string, Handler>()
+  const ipcMain: IpcMainLike = {
+    handle(channel, handler) {
+      handlers.set(channel, handler)
+    },
+    removeHandler(channel) {
+      handlers.delete(channel)
+    }
+  }
+  return { handlers, ipcMain }
+}
+
+const packagedUrl = 'file:///easyepi/index.html'
+const trustedEvent: IpcInvokeEventLike = { senderFrame: { url: packagedUrl } }
+
+describe('Project IPC recovery safety', () => {
+  const folders: string[] = []
+
+  afterEach(() => {
+    vi.useRealTimers()
+    for (const folder of folders.splice(0)) {
+      rmSync(folder, { recursive: true, force: true })
+    }
+  })
+
+  it('creates a periodic snapshot while a project remains open without manual saves', async () => {
+    vi.useFakeTimers()
+    const folder = mkdtempSync(join(tmpdir(), 'easyepi-project-timer-'))
+    folders.push(folder)
+    const state = createProjectIpcState()
+    const { handlers, ipcMain } = createHarness()
+    const dispose = registerProjectIpc(ipcMain, state, packagedUrl)
+
+    await handlers.get(PROJECT_CREATE_CHANNEL)!(trustedEvent, {
+      folderPath: folder,
+      name: 'timed',
+      password: 'timed-password'
+    })
+    const projectPath = getProjectFilePath(folder, 'timed')
+    expect(getBackups(projectPath)).toHaveLength(0)
+
+    vi.advanceTimersByTime(5 * 60 * 1_000)
+
+    expect(getBackups(projectPath)).toHaveLength(1)
+    dispose()
+  })
+
+  it('keeps the active project and key when opening a damaged project fails', async () => {
+    const folder = mkdtempSync(join(tmpdir(), 'easyepi-project-open-'))
+    folders.push(folder)
+    const active = createProject(folder, 'active', 'active-password')
+    const damaged = createProject(folder, 'damaged', 'damaged-password')
+    const activePath = getProjectFilePath(folder, 'active')
+    const damagedPath = getProjectFilePath(folder, 'damaged')
+    truncateSync(damagedPath, 160)
+
+    const state = createProjectIpcState()
+    state.currentProject = decryptProjectData(activePath, active.encryptionKey)
+    state.currentFilePath = activePath
+    state.currentSaltHex = active.salt
+    state.currentHashHex = active.passwordHash
+    state.auth.encryptionKey = Buffer.from(active.encryptionKey)
+    state.auth.passwordData = { hash: active.passwordHash, salt: active.salt }
+    const originalKey = Buffer.from(state.auth.encryptionKey)
+    const { handlers, ipcMain } = createHarness()
+    registerProjectIpc(ipcMain, state, packagedUrl)
+
+    await expect(
+      handlers.get(PROJECT_OPEN_CHANNEL)!(trustedEvent, {
+        filePath: damagedPath,
+        password: 'damaged-password'
+      })
+    ).resolves.toMatchObject({ ok: false })
+    expect(state.currentFilePath).toBe(activePath)
+    expect(state.currentProject?.meta.name).toBe('active')
+    expect(state.auth.encryptionKey).toEqual(originalKey)
+    expect(state.auth.passwordData).toEqual({ hash: active.passwordHash, salt: active.salt })
+    expect(damaged.encryptionKey).not.toEqual(originalKey)
+  })
+
+  it('validates a damaged backup before replacing the active project file', async () => {
+    const folder = mkdtempSync(join(tmpdir(), 'easyepi-project-restore-'))
+    folders.push(folder)
+    const created = createProject(folder, 'active', 'active-password')
+    const projectPath = getProjectFilePath(folder, 'active')
+    const backupPath = createBackup(projectPath)!
+    writeFileSync(backupPath, 'corrupt backup')
+    const original = readFileSync(projectPath)
+
+    const state = createProjectIpcState()
+    state.currentProject = decryptProjectData(projectPath, created.encryptionKey)
+    state.currentFilePath = projectPath
+    state.currentSaltHex = created.salt
+    state.currentHashHex = created.passwordHash
+    state.auth.encryptionKey = Buffer.from(created.encryptionKey)
+    state.auth.passwordData = { hash: created.passwordHash, salt: created.salt }
+    const { handlers, ipcMain } = createHarness()
+    registerProjectIpc(ipcMain, state, packagedUrl)
+
+    await expect(
+      handlers.get(PROJECT_RESTORE_CHANNEL)!(trustedEvent, { backupPath })
+    ).resolves.toMatchObject({ ok: false })
+    expect(readFileSync(projectPath)).toEqual(original)
+    expect(state.currentProject?.meta.name).toBe('active')
+  })
+})

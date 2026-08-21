@@ -68,11 +68,15 @@ describe('AppShell', () => {
     const skip = screen.getByRole('link', { name: '跳到主内容' })
     const firstNavigation = screen.getByRole('link', { name: '欢迎页' })
     const theme = screen.getByRole('button', { name: /切换主题/ })
+    const backup = screen.getByRole('button', { name: '项目备份与恢复' })
     expect(
       skip.compareDocumentPosition(firstNavigation) & Node.DOCUMENT_POSITION_FOLLOWING
     ).toBeTruthy()
     expect(
       firstNavigation.compareDocumentPosition(theme) & Node.DOCUMENT_POSITION_FOLLOWING
+    ).toBeTruthy()
+    expect(
+      theme.compareDocumentPosition(backup) & Node.DOCUMENT_POSITION_FOLLOWING
     ).toBeTruthy()
   })
 
