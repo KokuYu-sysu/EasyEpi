@@ -57,6 +57,34 @@ a {
   outline-offset: 3px;
 }
 
+/* Micro-interactions */
+button:not(:disabled),
+[role="button"]:not(:disabled),
+[role="radio"]:not(:disabled),
+[role="checkbox"]:not(:disabled) {
+  transition: transform var(--motion-fast) var(--motion-ease), box-shadow var(--motion-fast) var(--motion-ease);
+}
+
+button:not(:disabled):hover,
+[role="button"]:not(:disabled):hover {
+  transform: translateY(-1px);
+  box-shadow: var(--shadow-z2);
+}
+
+button:not(:disabled):active,
+[role="button"]:not(:disabled):active,
+[role="radio"]:not(:disabled):active,
+[role="checkbox"]:not(:disabled):active {
+  transform: scale(0.97);
+}
+
+input:focus-visible,
+textarea:focus-visible,
+select:focus-visible {
+  box-shadow: 0 0 0 3px var(--color-brand-soft);
+  border-color: var(--color-border-focus);
+}
+
 [data-motion='reduced'] *,
 [data-motion='reduced'] *::before,
 [data-motion='reduced'] *::after {
@@ -64,4 +92,5 @@ a {
   animation-duration: 0.01ms !important;
   animation-iteration-count: 1 !important;
   transition-duration: 0.01ms !important;
+  transform: none !important;
 }

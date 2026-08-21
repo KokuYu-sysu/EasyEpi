@@ -81,6 +81,7 @@ export function QuestionnairePreview({ questionnaire, onClose }: QuestionnairePr
           aria-live="polite"
           title="预览完成"
           description="所有可见题目已回答完毕。以下是回答摘要。"
+          illustration="success"
           action={
             <div className="flex flex-wrap justify-center gap-[var(--space-3)]">
               <Button variant="secondary" onClick={restart}>
@@ -111,6 +112,7 @@ export function QuestionnairePreview({ questionnaire, onClose }: QuestionnairePr
       <EmptyState
         title="没有可见题目"
         description="问卷中没有可显示的题目。请检查条件规则设置。"
+        illustration="no-data"
         action={<Button onClick={onClose}>返回设计</Button>}
       />
     )

@@ -2,10 +2,13 @@ import { forwardRef, useId } from 'react'
 
 import type { HTMLAttributes, ReactNode } from 'react'
 
+import { Illustration, type IllustrationVariant } from './Illustration'
+
 export interface EmptyStateProps extends Omit<HTMLAttributes<HTMLElement>, 'title'> {
   action?: ReactNode
   description: ReactNode
   headingLevel?: 1 | 2 | 3 | 4
+  illustration?: IllustrationVariant
   title: ReactNode
 }
 
@@ -18,6 +21,7 @@ export const EmptyState = forwardRef<HTMLElement, EmptyStateProps>(function Empt
     className,
     description,
     headingLevel = 2,
+    illustration,
     title,
     ...props
   },
@@ -39,6 +43,12 @@ export const EmptyState = forwardRef<HTMLElement, EmptyStateProps>(function Empt
         .filter(Boolean)
         .join(' ')}
     >
+      {illustration && (
+        <Illustration
+          variant={illustration}
+          className="w-32 h-32 mb-[var(--space-2)]"
+        />
+      )}
       <Heading
         id={titleId}
         className="m-0 text-[length:var(--font-size-lg)] font-[var(--font-weight-semibold)] text-[var(--color-text-primary)]"

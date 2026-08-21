@@ -19,6 +19,7 @@ import { Link, NavLink, Outlet } from 'react-router-dom'
 
 import { Button, Tooltip } from '@renderer/components/ui'
 import { SettingsDialog } from '@renderer/components/common/SettingsDialog'
+import { BackupDialog } from '@renderer/components/common/BackupDialog'
 import { usePreferencesStore } from '@renderer/stores/preferences-store'
 import { useCurrentRouteHandle } from './route-metadata'
 
@@ -171,6 +172,7 @@ export function AppShell({ children }: PropsWithChildren) {
               <CaseUpper aria-hidden="true" size={20} />
               <span className="hidden xl:inline">大字</span>
             </Button>
+            <BackupDialog />
             <SettingsDialog />
           </header>
           <main ref={mainContentRef} id="main-content" tabIndex={-1} className="mx-auto w-full max-w-[1500px] p-[var(--space-5)] max-sm:p-[var(--space-3)]">

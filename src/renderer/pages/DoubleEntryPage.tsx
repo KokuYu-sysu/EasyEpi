@@ -248,7 +248,7 @@ export function DoubleEntryPage() {
               ) : null}
             </>
           ) : questionnaire?.questions.length === 0 ? (
-            <EmptyState title="问卷无题目" description="请先在问卷设计中添加题目，再执行双录入比对。" />
+            <EmptyState title="问卷无题目" description="请先在问卷设计中添加题目，再执行双录入比对。" illustration="no-data" />
           ) : null}
         </div>
       )}

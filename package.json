@@ -1,7 +1,7 @@
 {
   "name": "easyepi",
   "productName": "EasyEpi",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "Offline questionnaire design and field data collection for epidemiological research",
   "author": "KokuYu-EasyEpi Team",
   "license": "UNLICENSED",
@@ -43,7 +43,7 @@
     "lucide-react": "1.24.0",
     "react": "18.3.1",
     "react-dom": "18.3.1",
-    "react-router-dom": "7.18.0",
+    "react-router-dom": "7.18.2",
     "tailwindcss": "4.3.2",
     "zustand": "5.0.14"
   },

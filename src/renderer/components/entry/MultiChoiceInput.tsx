@@ -20,7 +20,7 @@ export function MultiChoiceInput({ question, value, onChange, error }: MultiChoi
 
   return (
     <div className="grid gap-[var(--space-2)]">
-      <p className="m-0 text-[length:var(--font-size-base)] font-[var(--font-weight-medium)]">
+      <p className="m-0 text-[length:var(--font-size-md)] font-[var(--font-weight-medium)]">
         {question.content}
       </p>
       {question.options.map((opt) => (

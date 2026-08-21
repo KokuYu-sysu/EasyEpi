@@ -15,6 +15,9 @@ import {
   PROJECT_OPEN_CHANNEL,
   PROJECT_SAVE_CHANNEL,
   PROJECT_CLOSE_CHANNEL,
+  PROJECT_BACKUP_CHANNEL,
+  PROJECT_LIST_BACKUPS_CHANNEL,
+  PROJECT_RESTORE_CHANNEL,
   QNAIRE_ADD_QUESTION_CHANNEL,
   QNAIRE_UPDATE_QUESTION_CHANNEL,
   QNAIRE_DELETE_QUESTION_CHANNEL,
@@ -28,7 +31,9 @@ import {
   type ProjectCreateRequest,
   type ProjectOpenRequest,
   type ProjectSaveRequest,
-  type ProjectResult
+  type ProjectRestoreRequest,
+  type ProjectResult,
+  type BackupListResult
 } from '@shared/qnaire-contract'
 import type { QuestionDef, ConditionRule, QuestionnaireDef } from '@shared/types/qnaire'
 import {
@@ -117,6 +122,9 @@ export interface DesktopInvoke {
   (channel: typeof PROJECT_OPEN_CHANNEL, request: ProjectOpenRequest): Promise<unknown>
   (channel: typeof PROJECT_SAVE_CHANNEL, request: ProjectSaveRequest): Promise<unknown>
   (channel: typeof PROJECT_CLOSE_CHANNEL): Promise<unknown>
+  (channel: typeof PROJECT_BACKUP_CHANNEL): Promise<unknown>
+  (channel: typeof PROJECT_LIST_BACKUPS_CHANNEL): Promise<unknown>
+  (channel: typeof PROJECT_RESTORE_CHANNEL, request: ProjectRestoreRequest): Promise<unknown>
   (channel: typeof QNAIRE_GET_DATA_CHANNEL): Promise<unknown>
   (channel: typeof QNAIRE_ADD_QUESTION_CHANNEL, question: QuestionDef): Promise<unknown>
   (
@@ -227,7 +235,11 @@ export function createDesktopApi(invoke: DesktopInvoke): DesktopApi {
       parseProjectResultSafe(await invoke(PROJECT_OPEN_CHANNEL, request)),
     save: async (request: ProjectSaveRequest) =>
       parseProjectResultSafe(await invoke(PROJECT_SAVE_CHANNEL, request)),
-    close: async () => (await invoke(PROJECT_CLOSE_CHANNEL)) as { ok: boolean }
+    close: async () => (await invoke(PROJECT_CLOSE_CHANNEL)) as { ok: boolean },
+    backup: async () => parseProjectResultSafe(await invoke(PROJECT_BACKUP_CHANNEL)),
+    listBackups: async () => (await invoke(PROJECT_LIST_BACKUPS_CHANNEL)) as BackupListResult,
+    restore: async (request: ProjectRestoreRequest) =>
+      parseProjectResultSafe(await invoke(PROJECT_RESTORE_CHANNEL, request))
   })
 
   const qnaire = Object.freeze({

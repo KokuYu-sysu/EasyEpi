@@ -666,3 +666,119 @@ test('runs the M6 derived, quality, export and double-entry workflow in the pack
     await closePortable(session)
   }
 })
+
+test('creates and restores a complete questionnaire and record snapshot in the packaged executable', async () => {
+  const paths = readPackagedPaths()
+  test.skip(!basename(paths.executablePath).toLowerCase().includes('-portable-'))
+  await access(paths.executablePath)
+  const projectFolder = join(paths.userDataDir, 'm7-packaged-backup')
+  await mkdir(projectFolder, { recursive: true })
+
+  let session: PortableSession | undefined
+  try {
+    session = await launchPortable(paths)
+    const { window } = session
+    await window.evaluate(
+      async ({ folderPath }) => {
+        const api = (globalThis as unknown as RendererWindow).easyEpi
+        const created = await api.project.create({
+          name: 'M7 backup EXE',
+          folderPath,
+          password: 'm7-backup-password'
+        })
+        if (!created.ok) throw new Error(created.error ?? 'M7_CREATE_FAILED')
+        await api.qnaire.addQuestion({
+          id: 'm7-key',
+          content: 'Participant ID',
+          variableName: 'participant_id',
+          type: 'fixed_length',
+          options: [],
+          constraint: { type: 'alphanumeric', fixedLength: 3 },
+          isKey: true,
+          allowSkip: false,
+          order: 0
+        })
+        await api.project.save({ folderPath })
+        const first = await api.record.submit({ 'm7-key': 'P01' })
+        if (!first.ok) throw new Error(first.error ?? 'M7_FIRST_SUBMIT_FAILED')
+      },
+      { folderPath: projectFolder }
+    )
+
+    await expect(window.getByRole('button', { name: '项目备份与恢复' })).toBeVisible()
+    const initialBackups = await window.evaluate(() =>
+      (globalThis as unknown as RendererWindow).easyEpi.project.listBackups()
+    )
+    const noDataBackupPath = initialBackups.backups.find((entry) => !entry.hasData)?.filePath
+    if (noDataBackupPath === undefined) throw new Error('M7_NO_DATA_BACKUP_MISSING')
+    await expect(
+      window.evaluate(
+        ({ backupPath }) =>
+          (globalThis as unknown as RendererWindow).easyEpi.project.restore({ backupPath }),
+        { backupPath: noDataBackupPath }
+      )
+    ).resolves.toMatchObject({ ok: true })
+    await expect(
+      window.evaluate(() => (globalThis as unknown as RendererWindow).easyEpi.record.list())
+    ).resolves.toMatchObject({ total: 0 })
+    await window.evaluate(async ({ folderPath }) => {
+      const api = (globalThis as unknown as RendererWindow).easyEpi
+      await api.qnaire.addQuestion({
+        id: 'm7-key',
+        content: 'Participant ID',
+        variableName: 'participant_id',
+        type: 'fixed_length',
+        options: [],
+        constraint: { type: 'alphanumeric', fixedLength: 3 },
+        isKey: true,
+        allowSkip: false,
+        order: 0
+      })
+      await api.project.save({ folderPath })
+    }, { folderPath: projectFolder })
+    await expect(
+      window.evaluate(() =>
+        (globalThis as unknown as RendererWindow).easyEpi.record.submit({ 'm7-key': 'P01' })
+      )
+    ).resolves.toMatchObject({ ok: true })
+
+    const backup = await window.evaluate(() =>
+      (globalThis as unknown as RendererWindow).easyEpi.project.backup()
+    )
+    expect(backup).toMatchObject({ ok: true })
+    const backups = await window.evaluate(() =>
+      (globalThis as unknown as RendererWindow).easyEpi.project.listBackups()
+    )
+    expect(backups).toMatchObject({
+      ok: true,
+      backups: expect.arrayContaining([expect.objectContaining({ hasData: true })])
+    })
+    const backupPath = backups.backups.find((entry) => entry.hasData)?.filePath
+    if (backupPath === undefined) throw new Error('M7_BACKUP_LIST_EMPTY')
+
+    await expect(
+      window.evaluate(() =>
+        (globalThis as unknown as RendererWindow).easyEpi.record.submit({ 'm7-key': 'P02' })
+      )
+    ).resolves.toMatchObject({ ok: true })
+    await expect(
+      window.evaluate(() => (globalThis as unknown as RendererWindow).easyEpi.record.list())
+    ).resolves.toMatchObject({ total: 2 })
+
+    await expect(
+      window.evaluate(
+        ({ backupPath }) =>
+          (globalThis as unknown as RendererWindow).easyEpi.project.restore({ backupPath }),
+        { backupPath }
+      )
+    ).resolves.toMatchObject({ ok: true })
+    await expect(
+      window.evaluate(() => (globalThis as unknown as RendererWindow).easyEpi.record.list())
+    ).resolves.toMatchObject({
+      total: 1,
+      records: [{ answers: { 'm7-key': 'P01' } }]
+    })
+  } finally {
+    await closePortable(session)
+  }
+})

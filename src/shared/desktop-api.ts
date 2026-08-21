@@ -4,7 +4,9 @@ import type {
   ProjectCreateRequest,
   ProjectOpenRequest,
   ProjectSaveRequest,
-  ProjectResult
+  ProjectRestoreRequest,
+  ProjectResult,
+  BackupListResult
 } from './qnaire-contract'
 import type { QuestionDef, ConditionRule, QuestionnaireDef } from './types/qnaire'
 import type {
@@ -76,6 +78,9 @@ export interface DesktopApi {
     open(request: ProjectOpenRequest): Promise<ProjectResult>
     save(request: ProjectSaveRequest): Promise<ProjectResult>
     close(): Promise<{ ok: boolean }>
+    backup(): Promise<ProjectResult>
+    listBackups(): Promise<BackupListResult>
+    restore(request: ProjectRestoreRequest): Promise<ProjectResult>
   }
   qnaire: {
     getData(): Promise<QuestionnaireDef>

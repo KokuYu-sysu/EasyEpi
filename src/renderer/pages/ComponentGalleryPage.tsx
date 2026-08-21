@@ -81,7 +81,7 @@ export function ComponentGalleryPage() {
       </GallerySection>
       <GallerySection title="Progress 进度"><Progress label="问卷完成进度" value={42} max={100} /><Progress label="已完成" value={10} max={10} valueLabel="全部完成" /></GallerySection>
       <GallerySection title="EmptyState 空状态与 Skeleton 骨架">
-        <div className="grid gap-[var(--space-4)] lg:grid-cols-2"><EmptyState title="暂时没有问卷" description={longText} action={<Button>创建演示问卷</Button>} /><Skeleton className="h-28" statusText="正在加载演示问卷列表" /></div>
+        <div className="grid gap-[var(--space-4)] lg:grid-cols-2"><EmptyState title="暂时没有问卷" description={longText} illustration="empty" action={<Button>创建演示问卷</Button>} /><Skeleton className="h-28" statusText="正在加载演示问卷列表" /></div>
       </GallerySection>
       <GallerySection title="Badge 徽标与 Tooltip 提示">
         <div className="flex flex-wrap items-center gap-[var(--space-3)]">{(['neutral', 'success', 'warning', 'danger', 'info'] as const).map((variant) => <Badge key={variant} variant={variant}>{variant} 状态</Badge>)}<Tooltip content="键盘聚焦和鼠标悬停均可查看此非必要补充说明"><Button variant="ghost">聚焦查看提示</Button></Tooltip></div>

@@ -211,6 +211,7 @@ export function DerivedPage() {
         <EmptyState
           title="尚未创建题目"
           description="请先返回问卷设计页添加题目，再定义衍生变量。"
+          illustration="empty"
           action={<Button onClick={() => navigate('/designer')}>返回问卷设计</Button>}
         />
       ) : (
@@ -237,6 +238,7 @@ export function DerivedPage() {
               <EmptyState
                 title="暂无衍生变量"
                 description="点击下方按钮添加，例如 BMI = {weight} / ({height}/100)^2。"
+                illustration="no-data"
                 action={<Button onClick={handleAdd}>添加衍生变量</Button>}
               />
             ) : (

@@ -1,5 +1,6 @@
 .worktrees/
 node_modules/
+.pnpm-store/
 out/
 release/
 coverage/
@@ -8,3 +9,7 @@ playwright-report/
 .tmp/
 *.log
 
+# TypeScript emit accidentally written beside source files
+/*.config.js
+/src/**/*.js
+/tests/**/*.js

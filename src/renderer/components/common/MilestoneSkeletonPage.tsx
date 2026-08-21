@@ -39,6 +39,7 @@ export function MilestoneSkeletonPage({
       <EmptyState
         title={skeletonTitle}
         description={`${capability} ${detail}`}
+        illustration="empty"
         action={
           <div className="flex flex-wrap justify-center gap-[var(--space-3)]">
             <Modal

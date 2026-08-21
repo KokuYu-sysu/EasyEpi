@@ -71,10 +71,12 @@
   --color-surface-sunken: #e5eeeb;
   --color-surface-overlay: rgb(15 35 31 / 56%);
   --color-surface-disabled: #edf1f0;
+  --color-surface-muted: #dce8e4;
 
   --color-text-primary: #18212f;
   --color-text-secondary: #3f5f59;
   --color-text-muted: #526a65;
+  --color-text-tertiary: #6b8580;
   --color-text-inverse: #ffffff;
   --color-text-link: #0d6755;
   --color-text-disabled: #8a9b98;
@@ -84,6 +86,7 @@
   --color-border-focus: #146b5a;
   --color-border-danger: #b42318;
   --color-selection: #bee7dc;
+  --color-key: #e8a838;
 
   --shadow-z1: 0 1px 2px rgb(18 55 48 / 8%);
   --shadow-z2: 0 6px 18px rgb(18 55 48 / 10%);
@@ -115,10 +118,12 @@
   --color-surface-sunken: #0a1210;
   --color-surface-overlay: rgb(0 0 0 / 70%);
   --color-surface-disabled: #26332f;
+  --color-surface-muted: #1e2e2a;
 
   --color-text-primary: #edf7f4;
   --color-text-secondary: #bed1cc;
   --color-text-muted: #93aaa4;
+  --color-text-tertiary: #708a84;
   --color-text-inverse: #0d1715;
   --color-text-link: #79d7c0;
   --color-text-disabled: #70847f;
@@ -128,6 +133,7 @@
   --color-border-focus: #79d7c0;
   --color-border-danger: #ff8a80;
   --color-selection: #285f51;
+  --color-key: #e8a838;
 
   --shadow-z1: 0 1px 2px rgb(0 0 0 / 30%);
   --shadow-z2: 0 6px 18px rgb(0 0 0 / 34%);
