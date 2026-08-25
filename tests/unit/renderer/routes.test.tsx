@@ -56,13 +56,14 @@ function flattenPaths(routes: ReturnType<typeof createAppRoutes>): string[] {
 }
 
 describe('application routes', () => {
-  it('registers exactly the ten production destinations', () => {
+  it('registers exactly the eleven production destinations', () => {
     expect(PRODUCTION_ROUTES.map(({ path }) => path)).toEqual([
       '/',
       '/designer',
       '/import',
       '/entry',
       '/work-session',
+      '/ai-assistant',
       '/admin/login',
       '/admin/data',
       '/admin/baseline',

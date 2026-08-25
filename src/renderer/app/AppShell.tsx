@@ -10,6 +10,7 @@ import {
   PanelLeftClose,
   PanelLeftOpen,
   RefreshCw,
+  Sparkles,
   SunMoon,
   TableProperties,
   Upload
@@ -42,6 +43,7 @@ export const NAVIGATION_ITEMS: NavigationItem[] = [
   { path: '/import', title: 'EpiData 导入', description: '导入问卷结构', icon: <Upload /> },
   { path: '/entry', title: '单题录入', description: '现场逐题录入', icon: <ListChecks /> },
   { path: '/work-session', title: '工作循环', description: '调查工作流程', icon: <RefreshCw /> },
+  { path: '/ai-assistant', title: 'AI 问卷助手', description: '对话生成问卷', icon: <Sparkles /> },
   { path: '/admin/login', title: '管理员验证', description: '管理入口演示', icon: <LockKeyhole /> },
   { path: '/admin/data', title: '数据管理', description: '查看合成记录', icon: <Database />, requiresAdmin: true },
   { path: '/admin/baseline', title: '基线表', description: '基线结构管理', icon: <TableProperties />, requiresAdmin: true },
@@ -192,7 +194,7 @@ export function AppShell({ children }: PropsWithChildren) {
           <header className="flex min-h-16 flex-wrap items-center gap-[var(--space-2)] border-b border-[var(--color-border-default)] bg-[var(--color-surface-base)] px-[var(--space-4)] py-[var(--space-2)]">
             <div className="relative min-[1050px]:hidden">
               <Tooltip
-                content={`打开导航菜单，显示全部${authenticated ? '九' : '六'}个页面入口`}
+                content={`打开导航菜单，显示全部${authenticated ? '十' : '七'}个页面入口`}
               >
                 <Button
                   variant="ghost"

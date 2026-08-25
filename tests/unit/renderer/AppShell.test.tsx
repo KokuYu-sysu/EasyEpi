@@ -24,6 +24,17 @@ function renderShell(path = '/entry', currentTitle = '录入页元数据标题')
       },
       project: {
         onClosed: vi.fn(() => () => undefined)
+      },
+      ai: {
+        config: {
+          get: vi.fn().mockResolvedValue({
+            ok: true,
+            config: { baseUrl: '', model: '', hasApiKey: false, maskedApiKey: null }
+          }),
+          update: vi.fn(),
+          clear: vi.fn(),
+          testConnection: vi.fn()
+        }
       }
     }
   })
@@ -120,7 +131,7 @@ describe('AppShell', () => {
     )
 
     await user.click(screen.getByRole('button', { name: '打开设置' }))
-    expect(screen.getByRole('dialog', { name: '界面设置' })).toBeVisible()
+    expect(screen.getByRole('dialog', { name: '设置' })).toBeVisible()
     await user.click(screen.getByRole('radio', { name: '深色' }))
     expect(screen.getByRole('radio', { name: '深色' })).toBeChecked()
     await waitFor(() =>
@@ -134,7 +145,7 @@ describe('AppShell', () => {
     await user.click(screen.getByRole('button', { name: '打开导航菜单' }))
     const menu = screen.getByRole('navigation', { name: '紧凑导航' })
     expect(menu).toBeVisible()
-    expect(menu.querySelectorAll('a')).toHaveLength(9)
+    expect(menu.querySelectorAll('a')).toHaveLength(10)
   })
 
   it('shows supplemental compact-navigation help on keyboard focus', async () => {
@@ -144,7 +155,7 @@ describe('AppShell', () => {
     trigger.focus()
 
     expect(await screen.findByRole('tooltip')).toHaveTextContent(
-      '打开导航菜单，显示全部九个页面入口'
+      '打开导航菜单，显示全部十个页面入口'
     )
   })
 

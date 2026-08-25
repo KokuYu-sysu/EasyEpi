@@ -16,6 +16,7 @@ import { NotFoundPage } from '@renderer/pages/NotFoundPage'
 import { RouteErrorPage } from '@renderer/pages/RouteErrorPage'
 import { WelcomePage } from '@renderer/pages/WelcomePage'
 import { WorkSessionPage } from '@renderer/pages/WorkSessionPage'
+import { AIQuestionnairePage } from '@renderer/pages/AIQuestionnairePage'
 
 export interface ProductionRouteDefinition {
   path: string
@@ -31,6 +32,7 @@ export const PRODUCTION_ROUTES: ProductionRouteDefinition[] = [
   },
   { path: '/entry', handle: { title: '单题录入', description: '以一题一屏方式完成现场录入。' } },
   { path: '/work-session', handle: { title: '工作循环', description: '查看调查工作的标准循环。' } },
+  { path: '/ai-assistant', handle: { title: 'AI 问卷助手', description: '通过多轮对话生成、校验并应用问卷草稿。' } },
   { path: '/admin/login', handle: { title: '管理员验证', description: '使用当前项目密码进入数据管理后台。' } },
   { path: '/admin/data', handle: { title: '数据管理', description: '查看、编辑、删除和导出当前项目的加密记录。', requiresAdmin: true } },
   { path: '/admin/baseline', handle: { title: '基线表', description: '生成分组描述统计与统计检验。', requiresAdmin: true } },
@@ -44,6 +46,7 @@ const implementedRouteElements: Record<string, React.ReactElement> = {
   '/entry': <EntryPage />,
   '/import': <ImportPage />,
   '/work-session': <WorkSessionPage />,
+  '/ai-assistant': <AIQuestionnairePage />,
   '/admin/login': <AdminLoginPage />,
   '/admin/data': <AdminDashboard />,
   '/admin/baseline': <BaselinePage />,
