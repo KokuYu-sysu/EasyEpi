@@ -21,6 +21,7 @@ import {
   type QuestionnaireArtifactValue
 } from './ai-questionnaire.harness'
 import { AISessionRepository } from './ai-session.repository'
+import { refreshQuestionnaireRevision } from './project.service'
 import { DerivedService } from './derived/derived.service'
 import {
   AIClientError,
@@ -85,17 +86,17 @@ function parseArtifactValue(
   artifact: AIArtifact | undefined,
   checkStale = true
 ): QuestionnaireArtifactValue {
-  const value = validateQuestionnaireArtifact(
-    artifact,
-    session.manifest.versionStamp,
-    checkStale
-      ? (project.questionnaire.derivedVariables ?? []).map((item) => item.variableName)
-      : []
-  )
-  if (checkStale && value.baseQuestionnaireHash !== hashAIQuestionnaire(project.questionnaire)) {
+  const value = validateQuestionnaireArtifact(artifact, session.manifest.versionStamp)
+  if (checkStale && value.baseQuestionnaireRevision !== project.questionnaireRevision) {
     throw new Error('AI_ARTIFACT_STALE')
   }
-  return value
+  return checkStale
+    ? validateQuestionnaireArtifact(
+        artifact,
+        session.manifest.versionStamp,
+        (project.questionnaire.derivedVariables ?? []).map((item) => item.variableName)
+      )
+    : value
 }
 
 function restoreAssistant(project: ProjectData, snapshot: ProjectData['aiAssistant']): void {
@@ -230,6 +231,7 @@ export function createAIQuestionnaireOrchestrator(
       const versionStamp = session.manifest.versionStamp
       let registryEntry: Extract<ReturnType<typeof resolveAIRegistryEntry>, { compatibility: 'supported' }>
       let baseQuestionnaire: QuestionnaireDef
+      let baseQuestionnaireRevision: string
       let baseQuestionnaireHash: string
       let explicitAttachment: QuestionnaireDef | undefined
       let activeDraft: QuestionnaireDef | undefined
@@ -241,6 +243,10 @@ export function createAIQuestionnaireOrchestrator(
         const resolvedEntry = resolveAIRegistryEntry(versionStamp)
         if (resolvedEntry.compatibility !== 'supported') throw new Error('AI_VERSION_MIGRATION_REQUIRED')
         registryEntry = resolvedEntry
+        if (request.project.questionnaireRevision === undefined) {
+          throw new Error('AI_ARTIFACT_STALE')
+        }
+        baseQuestionnaireRevision = request.project.questionnaireRevision
         baseQuestionnaire = request.explicitAttachment === undefined
           ? { name: '未命名问卷', questions: [], conditionRules: [], keyQuestionIds: [] }
           : validateStrictQuestionnaireDto(stripDerivedVariables(request.explicitAttachment))
@@ -261,9 +267,13 @@ export function createAIQuestionnaireOrchestrator(
             protectedDerivedNames
           )
           const activeDraftHash = hashAIQuestionnaire(activeValue.draft)
+          if (activeValue.baseQuestionnaireRevision !== baseQuestionnaireRevision) {
+            throw new Error('AI_ARTIFACT_STALE')
+          }
           if (explicitAttachment === undefined) {
             baseQuestionnaire = activeValue.draft
             baseQuestionnaireHash = activeDraftHash
+            baseQuestionnaireRevision = activeValue.baseQuestionnaireRevision
           } else if (baseQuestionnaireHash !== activeValue.baseQuestionnaireHash &&
             baseQuestionnaireHash !== activeDraftHash) {
             throw new Error('AI_ARTIFACT_STALE')
@@ -293,6 +303,7 @@ export function createAIQuestionnaireOrchestrator(
           ? lockedSession.state.values.activeArtifactId
           : undefined
         if (lockedActiveArtifactId !== activeArtifactId) return false
+        if (request.project.questionnaireRevision !== baseQuestionnaireRevision) return false
         if (explicitAttachment !== undefined) {
           return hashAIQuestionnaire(request.project.questionnaire) === baseQuestionnaireHash
         }
@@ -302,7 +313,8 @@ export function createAIQuestionnaireOrchestrator(
           versionStamp,
           []
         )
-        return hashAIQuestionnaire(lockedArtifact.draft) === baseQuestionnaireHash
+        return lockedArtifact.baseQuestionnaireRevision === baseQuestionnaireRevision &&
+          hashAIQuestionnaire(lockedArtifact.draft) === baseQuestionnaireHash
       }
       try {
         await mutateAndPersist(request.project, dependencies.persistProject, 'run-started', () => {
@@ -383,6 +395,7 @@ export function createAIQuestionnaireOrchestrator(
             resultValue = {
               ...harness.value,
               diff: diffQuestionnaires(baseQuestionnaire, harness.value.draft),
+              baseQuestionnaireRevision,
               baseQuestionnaireHash,
               baseQuestionnaire
             }
@@ -555,6 +568,7 @@ export async function applyArtifact(
     const value = previewQuestionnaireArtifact(request.project, request.sessionId, request.artifactId)
     if (value === undefined) throw new Error('AI_ARTIFACT_NOT_APPLICABLE')
     const questionnaireSnapshot = structuredClone(request.project.questionnaire)
+    const questionnaireRevisionSnapshot = request.project.questionnaireRevision
     const metaSnapshot = structuredClone(request.project.meta)
     const assistantSnapshot = request.project.aiAssistant === undefined
       ? undefined
@@ -570,6 +584,7 @@ export async function applyArtifact(
     await request.backup(questionnaireSnapshot, request.currentProjectPath, request.artifactId)
     try {
       request.project.questionnaire = nextQuestionnaire
+      refreshQuestionnaireRevision(request.project)
       repository.updateState(request.sessionId, {
         values: {
           ...session.state.values,
@@ -581,6 +596,7 @@ export async function applyArtifact(
       return { applied: true, questionnaire: structuredClone(nextQuestionnaire) }
     } catch (error) {
       request.project.questionnaire = questionnaireSnapshot
+      request.project.questionnaireRevision = questionnaireRevisionSnapshot
       request.project.meta = metaSnapshot
       restoreAssistant(request.project, assistantSnapshot)
       if (error instanceof Error && error.message === 'PROJECT_CHANGED') throw error

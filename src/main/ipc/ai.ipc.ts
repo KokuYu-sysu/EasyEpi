@@ -1,6 +1,7 @@
 import path from 'node:path'
 
 import type {
+  AIArtifact,
   AIArtifactApplyResult,
   AIArtifactPreview,
   AIArtifactPreviewResult,
@@ -9,10 +10,13 @@ import type {
   AIConnectionTestResult,
   AIErrorResult,
   AIPrivacyStatusResult,
+  AIQuestionnaireArtifactPreviewDto,
   AISendResult,
+  AISessionData,
   AISessionDeleteResult,
   AISessionListResult,
   AISessionMigrateResult,
+  AISessionPublic,
   AISessionResult
 } from '@shared/ai-assistant-contract'
 import {
@@ -46,7 +50,7 @@ import type { ProjectData } from '@shared/types/project'
 
 import { createBackup } from '../services/backup.service'
 import type { AIConfigService } from '../services/ai-config.service'
-import { getAiVersionStamp } from '../services/ai-questionnaire.harness'
+import { getAiVersionStamp, validateStrictQuestionnaireDto } from '../services/ai-questionnaire.harness'
 import {
   applyArtifact,
   createAIQuestionnaireOrchestrator,
@@ -171,6 +175,57 @@ function callerOwner(event: IpcInvokeEventLike): unknown {
   return event.sender?.id ?? event.sender ?? event.senderFrame?.url
 }
 
+function toPublicSession(session: AISessionData): AISessionPublic {
+  const messages = session.conversation.messages
+    .filter((message) => message.role === 'user' || message.role === 'assistant')
+    .map(({ id, role, content, createdAt }) => ({ id, role: role as 'user' | 'assistant', content, createdAt }))
+  const userMessageIds = new Set(messages.filter((message) => message.role === 'user').map((message) => message.id))
+  const attachments = Object.values(session.conversation.attachments)
+    .filter((attachment) => attachment.kind === 'questionnaire' && userMessageIds.has(attachment.messageId))
+    .map((attachment) => ({
+      attachmentId: attachment.attachmentId,
+      messageId: attachment.messageId,
+      kind: 'questionnaire' as const,
+      createdAt: attachment.createdAt,
+      questionnaire: validateStrictQuestionnaireDto(attachment.value)
+    }))
+  const artifacts = Object.values(session.artifacts.byId)
+    .map(({ artifactId, operationId, kind, status, createdAt, updatedAt }) => ({
+      artifactId, operationId, kind, status, createdAt, updatedAt
+    }))
+    .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
+  const activeArtifactId = typeof session.state.values.activeArtifactId === 'string' &&
+    session.artifacts.byId[session.state.values.activeArtifactId] !== undefined
+    ? session.state.values.activeArtifactId
+    : null
+  return {
+    manifest: session.manifest,
+    messages,
+    attachments,
+    status: session.state.status,
+    activeArtifactId,
+    artifacts
+  }
+}
+
+function toPublicQuestionnaireArtifact(
+  artifact: AIArtifact,
+  value: AIArtifactPreview
+): AIQuestionnaireArtifactPreviewDto {
+  if (artifact.kind !== 'questionnaire-draft' || artifact.status !== 'completed') {
+    throw new Error('AI_ARTIFACT_NOT_APPLICABLE')
+  }
+  return {
+    artifactId: artifact.artifactId,
+    operationId: artifact.operationId,
+    kind: 'questionnaire-draft',
+    status: 'completed',
+    createdAt: artifact.createdAt,
+    updatedAt: artifact.updatedAt,
+    value
+  }
+}
+
 export function registerAIIpcHandlers(
   ipcMain: IpcMainLike,
   state: ProjectIpcState,
@@ -284,7 +339,7 @@ export function registerAIIpcHandlers(
     try {
       const request = parseAISessionCreateRequest(rawRequest)
       const session = mutateSession((repository) => repository.create(getAiVersionStamp(), request.title))
-      return { ok: true, session } satisfies AISessionResult
+      return { ok: true, session: toPublicSession(session) } satisfies AISessionResult
     } catch (error) {
       return publicError(error)
     }
@@ -293,7 +348,8 @@ export function registerAIIpcHandlers(
   ipcMain.handle(AI_SESSION_LIST_CHANNEL, async (event) => {
     trusted(event)
     try {
-      const sessions = new AISessionRepository(captureProject(state).project).list()
+      const repository = new AISessionRepository(captureProject(state).project)
+      const sessions = repository.list().map(({ sessionId }) => toPublicSession(repository.get(sessionId)!))
       return { ok: true, sessions } satisfies AISessionListResult
     } catch (error) {
       return publicError(error)
@@ -306,7 +362,7 @@ export function registerAIIpcHandlers(
       const request = parseAISessionIdRequest(rawRequest)
       const session = new AISessionRepository(captureProject(state).project).get(request.sessionId)
       if (session === undefined) throw new Error('AI_SESSION_NOT_FOUND')
-      return { ok: true, session } satisfies AISessionResult
+      return { ok: true, session: toPublicSession(session) } satisfies AISessionResult
     } catch (error) {
       return publicError(error)
     }
@@ -317,7 +373,7 @@ export function registerAIIpcHandlers(
     try {
       const request = parseAISessionUpdateRequest(rawRequest)
       const session = mutateSession((repository) => repository.update(request.sessionId, { title: request.title }))
-      return { ok: true, session } satisfies AISessionResult
+      return { ok: true, session: toPublicSession(session) } satisfies AISessionResult
     } catch (error) {
       return publicError(error)
     }
@@ -350,7 +406,11 @@ export function registerAIIpcHandlers(
       })
       const session = new AISessionRepository(captured.project).get(request.sessionId)
       if (session === undefined) throw new Error('AI_SESSION_NOT_FOUND')
-      return { ok: true, migrated: result.migrated, session } satisfies AISessionMigrateResult
+      return {
+        ok: true,
+        migrated: result.migrated,
+        session: toPublicSession(session)
+      } satisfies AISessionMigrateResult
     } catch (error) {
       return publicError(error)
     }
@@ -405,9 +465,20 @@ export function registerAIIpcHandlers(
         signal: controller.signal,
         operationId: request.requestId
       })
-      return result.ok
-        ? { ok: true, requestId: request.requestId, artifact: result.artifact, attempts: result.attempts } satisfies AISendResult
-        : publicError(result.errorCode)
+      if (!result.ok) return publicError(result.errorCode)
+      const preview = previewQuestionnaireArtifact(
+        captured.project,
+        request.sessionId,
+        result.artifact.artifactId,
+        false
+      )
+      if (preview === undefined) throw new Error('AI_ARTIFACT_NOT_APPLICABLE')
+      return {
+        ok: true,
+        requestId: request.requestId,
+        artifact: toPublicQuestionnaireArtifact(result.artifact, preview),
+        attempts: result.attempts
+      } satisfies AISendResult
     } catch (error) {
       return publicError(error)
     } finally {

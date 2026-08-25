@@ -28,6 +28,8 @@ export interface AIProviderConfigView {
   maskedApiKey: string | null
 }
 
+export const AI_MASKED_API_KEY = '••••••••'
+
 export type AIProviderConfigErrorCode =
   | 'INVALID_AI_CONFIG'
   | 'AI_CONFIG_READ_FAILED'
@@ -151,6 +153,39 @@ export interface AISessionManifest {
   updatedAt: string
 }
 
+export interface AIPublicMessage {
+  id: string
+  role: 'user' | 'assistant'
+  content: string
+  createdAt: string
+}
+
+export interface AIPublicQuestionnaireAttachment {
+  attachmentId: string
+  messageId: string
+  kind: 'questionnaire'
+  createdAt: string
+  questionnaire: QuestionnaireDef
+}
+
+export interface AIArtifactSummary {
+  artifactId: string
+  operationId: string
+  kind: string
+  status: AIArtifactStatus
+  createdAt: string
+  updatedAt: string
+}
+
+export interface AISessionPublic {
+  manifest: AISessionManifest
+  messages: AIPublicMessage[]
+  attachments: AIPublicQuestionnaireAttachment[]
+  status: AISessionStatus
+  activeArtifactId: string | null
+  artifacts: AIArtifactSummary[]
+}
+
 export type AISessionListItem = AISessionManifest
 
 export interface AISessionData {
@@ -246,8 +281,19 @@ export interface AIArtifactPreview {
   assistantMessage: string
   rollingSummary: string
   validation: { success: true; errors: [] }
+  baseQuestionnaireRevision: string
   baseQuestionnaireHash: string
   baseQuestionnaire: QuestionnaireDef
+}
+
+export interface AIQuestionnaireArtifactPreviewDto {
+  artifactId: string
+  operationId: string
+  kind: 'questionnaire-draft'
+  status: 'completed'
+  createdAt: string
+  updatedAt: string
+  value: AIArtifactPreview
 }
 
 export interface AIErrorResult {
@@ -261,14 +307,14 @@ export type AIConnectionTestResult = { ok: true } | AIErrorResult
 export type AIPrivacyStatusResult =
   | { ok: true; accepted: boolean; acceptedAt: string | null; notice: typeof AI_PRIVACY_NOTICE }
   | AIErrorResult
-export type AISessionResult = { ok: true; session: AISessionData } | AIErrorResult
-export type AISessionListResult = { ok: true; sessions: AISessionListItem[] } | AIErrorResult
+export type AISessionResult = { ok: true; session: AISessionPublic } | AIErrorResult
+export type AISessionListResult = { ok: true; sessions: AISessionPublic[] } | AIErrorResult
 export type AISessionDeleteResult = { ok: true; deleted: boolean } | AIErrorResult
 export type AISessionMigrateResult =
-  | { ok: true; migrated: boolean; session: AISessionData }
+  | { ok: true; migrated: boolean; session: AISessionPublic }
   | AIErrorResult
 export type AISendResult =
-  | { ok: true; requestId: string; artifact: AIArtifact; attempts: number }
+  | { ok: true; requestId: string; artifact: AIQuestionnaireArtifactPreviewDto; attempts: number }
   | AIErrorResult
 export type AICancelResult = { ok: true; cancelled: boolean } | AIErrorResult
 export type AIArtifactPreviewResult = { ok: true; preview: AIArtifactPreview } | AIErrorResult
@@ -640,42 +686,28 @@ function assertArtifactPreview(value: unknown): void {
     value,
     [
       'draft', 'diff', 'assistantMessage', 'rollingSummary', 'validation',
-      'baseQuestionnaireHash', 'baseQuestionnaire'
+      'baseQuestionnaireRevision', 'baseQuestionnaireHash', 'baseQuestionnaire'
     ]
   )
   assertQuestionnaire(input.draft, false)
   assertDiff(input.diff)
-  responseString(input.assistantMessage, 100_000, true)
-  responseString(input.rollingSummary, 100_000, true)
+  responseString(input.assistantMessage, 20_000)
+  responseString(input.rollingSummary, 20_000, true)
   const validation = responseKeys(input.validation, ['success', 'errors'])
   if (validation.success !== true || !Array.isArray(validation.errors) || validation.errors.length !== 0) {
     invalidResponse()
   }
-  responseString(input.baseQuestionnaireHash, 256)
+  responseId(input.baseQuestionnaireRevision, SESSION_ID_PATTERN)
+  if (!/^sha256:[a-f0-9]{64}$/.test(responseString(input.baseQuestionnaireHash, 71))) {
+    invalidResponse()
+  }
   assertQuestionnaire(input.baseQuestionnaire, false)
 }
 
-function assertRun(value: unknown): void {
+function assertArtifactSummary(value: unknown): void {
   const input = responseKeys(
     value,
-    ['runId', 'status', 'startedAt', 'versionStamp'],
-    ['completedAt', 'errorCode']
-  )
-  responseId(input.runId)
-  if (!['running', 'completed', 'failed', 'cancelled'].includes(String(input.status))) invalidResponse()
-  responseTimestamp(input.startedAt)
-  if (input.completedAt !== undefined) responseTimestamp(input.completedAt)
-  assertVersionStamp(input.versionStamp)
-  if (input.errorCode !== undefined) responseString(input.errorCode, 128)
-}
-
-function assertArtifact(value: unknown): void {
-  const input = responseKeys(
-    value,
-    [
-      'artifactId', 'operationId', 'kind', 'status', 'versionStamp', 'createdAt', 'updatedAt'
-    ],
-    ['value', 'errorCode']
+    ['artifactId', 'operationId', 'kind', 'status', 'createdAt', 'updatedAt']
   )
   responseId(input.artifactId)
   responseId(input.operationId)
@@ -683,18 +715,8 @@ function assertArtifact(value: unknown): void {
   if (input.status !== 'pending' && input.status !== 'completed' && input.status !== 'failed') {
     invalidResponse()
   }
-  assertVersionStamp(input.versionStamp)
   responseTimestamp(input.createdAt)
   responseTimestamp(input.updatedAt)
-  if (input.errorCode !== undefined) responseString(input.errorCode, 128)
-  if (input.kind === 'questionnaire-draft' && input.value !== undefined) {
-    assertArtifactPreview(input.value)
-  }
-}
-
-function responseRecord(value: unknown, limit = 5_000): Record<string, unknown> {
-  if (!isPlainObject(value) || Object.keys(value).length > limit) invalidResponse()
-  return value
 }
 
 function assertManifest(value: unknown): void {
@@ -712,54 +734,56 @@ function assertManifest(value: unknown): void {
 function assertSession(value: unknown): void {
   const input = responseKeys(
     value,
-    ['manifest', 'conversation', 'state', 'cache', 'artifacts', 'temp']
+    ['manifest', 'messages', 'attachments', 'status', 'activeArtifactId', 'artifacts']
   )
   assertManifest(input.manifest)
-  const conversation = responseKeys(input.conversation, ['messages', 'attachments'])
-  if (!Array.isArray(conversation.messages) || conversation.messages.length > 5_000) invalidResponse()
-  for (const message of conversation.messages) {
-    const item = responseKeys(message, ['id', 'role', 'content', 'createdAt'], ['runId'])
+  if (!Array.isArray(input.messages) || input.messages.length > 5_000) invalidResponse()
+  const userMessageIds = new Set<string>()
+  for (const message of input.messages) {
+    const item = responseKeys(message, ['id', 'role', 'content', 'createdAt'])
     responseId(item.id)
-    if (!['system', 'user', 'assistant', 'tool'].includes(String(item.role))) invalidResponse()
+    if (item.role !== 'user' && item.role !== 'assistant') invalidResponse()
     responseString(item.content, MAX_RESPONSE_STRING, true)
     responseTimestamp(item.createdAt)
-    if (item.runId !== undefined) responseId(item.runId)
+    if (item.role === 'user') userMessageIds.add(String(item.id))
   }
-  for (const [id, attachment] of Object.entries(responseRecord(conversation.attachments))) {
+  if (!Array.isArray(input.attachments) || input.attachments.length > 5_000) invalidResponse()
+  for (const attachment of input.attachments) {
     const item = responseKeys(
       attachment,
-      ['attachmentId', 'messageId', 'kind', 'createdAt', 'value']
+      ['attachmentId', 'messageId', 'kind', 'createdAt', 'questionnaire']
     )
-    if (responseId(item.attachmentId) !== id) invalidResponse()
-    responseId(item.messageId)
-    responseString(item.kind, 128)
+    responseId(item.attachmentId)
+    if (!userMessageIds.has(responseId(item.messageId))) invalidResponse()
+    if (item.kind !== 'questionnaire') invalidResponse()
     responseTimestamp(item.createdAt)
+    assertQuestionnaire(item.questionnaire, false)
   }
-  const state = responseKeys(input.state, ['status', 'runs', 'values'], ['activeRunId'])
-  if (!['idle', 'running', 'completed', 'failed', 'cancelled'].includes(String(state.status))) {
+  if (!['idle', 'running', 'completed', 'failed', 'cancelled'].includes(String(input.status))) {
     invalidResponse()
   }
-  for (const [id, run] of Object.entries(responseRecord(state.runs))) {
-    assertRun(run)
-    if ((run as { runId: unknown }).runId !== id) invalidResponse()
+  if (!Array.isArray(input.artifacts) || input.artifacts.length > 5_000) invalidResponse()
+  const artifactIds = new Set<string>()
+  for (const artifact of input.artifacts) {
+    assertArtifactSummary(artifact)
+    artifactIds.add(String((artifact as { artifactId: unknown }).artifactId))
   }
-  responseRecord(state.values)
-  if (state.activeRunId !== undefined) responseId(state.activeRunId)
-  const cache = responseKeys(input.cache, ['values'])
-  responseRecord(cache.values)
-  const artifacts = responseKeys(input.artifacts, ['byId'])
-  for (const [id, artifact] of Object.entries(responseRecord(artifacts.byId))) {
-    assertArtifact(artifact)
-    if ((artifact as { artifactId: unknown }).artifactId !== id) invalidResponse()
+  if (input.activeArtifactId !== null && !artifactIds.has(responseId(input.activeArtifactId))) {
+    invalidResponse()
   }
-  const temp = responseKeys(input.temp, ['runs'])
-  for (const [id, runTemp] of Object.entries(responseRecord(temp.runs))) {
-    const item = responseKeys(runTemp, ['runId', 'versionStamp', 'createdAt', 'values'])
-    if (responseId(item.runId) !== id) invalidResponse()
-    assertVersionStamp(item.versionStamp)
-    responseTimestamp(item.createdAt)
-    responseRecord(item.values)
-  }
+}
+
+function assertQuestionnaireArtifactPreview(value: unknown): void {
+  const input = responseKeys(
+    value,
+    ['artifactId', 'operationId', 'kind', 'status', 'createdAt', 'updatedAt', 'value']
+  )
+  responseId(input.artifactId)
+  responseId(input.operationId)
+  if (input.kind !== 'questionnaire-draft' || input.status !== 'completed') invalidResponse()
+  responseTimestamp(input.createdAt)
+  responseTimestamp(input.updatedAt)
+  assertArtifactPreview(input.value)
 }
 
 export function parseAIResponse<T>(value: unknown, successKeys: readonly string[]): T {
@@ -772,8 +796,9 @@ export function parseAIConfigResponse(value: unknown): AIConfigIpcResult {
     responseString(config.baseUrl, 2_048)
     responseString(config.model, 200, true)
     if (typeof config.hasApiKey !== 'boolean') invalidResponse()
-    if (config.hasApiKey) responseString(config.maskedApiKey, 64)
-    else if (config.maskedApiKey !== null) invalidResponse()
+    if (config.hasApiKey) {
+      if (config.maskedApiKey !== AI_MASKED_API_KEY) invalidResponse()
+    } else if (config.maskedApiKey !== null) invalidResponse()
   })
 }
 
@@ -800,7 +825,7 @@ export function parseAISessionResponse(value: unknown): AISessionResult {
 export function parseAISessionListResponse(value: unknown): AISessionListResult {
   return parseKnownResponse<AISessionListResult>(value, ['sessions'], (result) => {
     if (!Array.isArray(result.sessions) || result.sessions.length > 1_000) invalidResponse()
-    for (const manifest of result.sessions) assertManifest(manifest)
+    for (const session of result.sessions) assertSession(session)
   })
 }
 
@@ -823,7 +848,7 @@ export function parseAISendResponse(value: unknown): AISendResult {
     ['requestId', 'artifact', 'attempts'],
     (result) => {
       responseId(result.requestId)
-      assertArtifact(result.artifact)
+      assertQuestionnaireArtifactPreview(result.artifact)
       const attempts = responseNumber(result.attempts, true)
       if (attempts < 0 || attempts > 3) invalidResponse()
     }

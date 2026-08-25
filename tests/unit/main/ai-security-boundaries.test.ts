@@ -15,7 +15,11 @@ import {
 } from '@main/services/ai-session.repository'
 import { parseAISendRequest, type AiVersionStamp } from '@shared/ai-assistant-contract'
 import type { ProjectData } from '@shared/types/project'
-import { AI_CANCEL_CHANNEL, AI_SEND_CHANNEL } from '@shared/ai-assistant-contract'
+import {
+  AI_CANCEL_CHANNEL,
+  AI_SEND_CHANNEL,
+  AI_SESSION_CREATE_CHANNEL
+} from '@shared/ai-assistant-contract'
 import { registerAIIpcHandlers } from '@main/ipc/ai.ipc'
 import { createProjectIpcState } from '@main/ipc/project.ipc'
 import type { IpcInvokeEventLike, IpcMainLike } from '@main/ipc/types'
@@ -38,6 +42,7 @@ function createProjectData(): ProjectData {
       createdAt: '2026-08-25T00:00:00.000Z',
       lastModifiedAt: '2026-08-25T00:00:00.000Z'
     },
+    questionnaireRevision: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
     questionnaire: {
       name: 'security-test',
       questions: [],
@@ -139,14 +144,23 @@ describe('AI IPC privacy boundary', () => {
     const registration = registerAIIpcHandlers(
       ipcMain,
       state,
-      { configService },
+      { configService, saveProject: vi.fn() },
       'file:///app/index.html'
     )
-
-    const result = await handlers.get(AI_SEND_CHANNEL)!({
+    const event = {
       senderFrame: { url: 'file:///app/index.html' },
       sender: { id: 1, send: () => undefined }
-    }, {
+    }
+    const created = await handlers.get(AI_SESSION_CREATE_CHANNEL)!(event, { title: 'Public' })
+    expect(created).toMatchObject({
+      ok: true,
+      session: { messages: [], attachments: [], status: 'idle', activeArtifactId: null, artifacts: [] }
+    })
+    expect((created as { session: object }).session).not.toHaveProperty('cache')
+    expect((created as { session: object }).session).not.toHaveProperty('temp')
+    expect((created as { session: object }).session).not.toHaveProperty('state')
+
+    const result = await handlers.get(AI_SEND_CHANNEL)!(event, {
       requestId: 'request-1',
       sessionId,
       content: 'Create a short questionnaire',

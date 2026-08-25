@@ -126,6 +126,7 @@ export class ImportService {
       createdProjectFile = getProjectFilePath(options.targetProjectPath, options.projectName)
       const projectData = {
         meta: created.meta,
+        questionnaireRevision: created.questionnaireRevision,
         questionnaire
       }
       saveProject(

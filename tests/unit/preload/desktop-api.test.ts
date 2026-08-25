@@ -145,15 +145,25 @@ describe('createDesktopApi', () => {
   })
 
   it('never returns the submitted AI API key through the bridge', async () => {
-    const invoke = vi.fn().mockResolvedValue({
-      ok: true,
-      config: {
-        baseUrl: 'https://api.openai.com/v1',
-        model: 'gpt-4.1-mini',
-        hasApiKey: true,
-        maskedApiKey: '••••••••'
-      }
-    })
+    const invoke = vi.fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        config: {
+          baseUrl: 'https://api.openai.com/v1',
+          model: 'gpt-4.1-mini',
+          hasApiKey: true,
+          maskedApiKey: '••••••••'
+        }
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        config: {
+          baseUrl: 'https://api.openai.com/v1',
+          model: 'gpt-4.1-mini',
+          hasApiKey: true,
+          maskedApiKey: '********'
+        }
+      })
     const api = createDesktopApi(invoke)
 
     const result = await api.ai.config.update({
@@ -168,6 +178,7 @@ describe('createDesktopApi', () => {
       apiKey: 'sk-secret'
     })
     expect(JSON.stringify(result)).not.toContain('sk-secret')
+    await expect(api.ai.config.get()).rejects.toThrow('INVALID_AI_RESPONSE')
   })
 
   it('recursively rejects malformed or sensitive AI responses', async () => {
@@ -193,12 +204,48 @@ describe('createDesktopApi', () => {
           temp: { runs: {} }
         }
       })
+      .mockResolvedValueOnce({
+        ok: true,
+        requestId: 'request-1',
+        attempts: 1,
+        artifact: {
+          artifactId: 'artifact-1', operationId: 'operation-1', kind: 'other',
+          status: 'completed', createdAt: '2026-08-25T00:00:00.000Z',
+          updatedAt: '2026-08-25T00:00:00.000Z', value: {}
+        }
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        sessions: [{
+          manifest: {
+            sessionId: '123e4567-e89b-42d3-a456-426614174000',
+            title: 'AI',
+            versionStamp: {
+              promptId: 'assistant', promptVersion: '1', promptHash: 'hash',
+              harnessVersion: '1', schemaVersion: 1
+            },
+            createdAt: '2026-08-25T00:00:00.000Z',
+            updatedAt: '2026-08-25T00:00:00.000Z'
+          },
+          messages: [], attachments: [], status: 'running', activeArtifactId: null, artifacts: []
+        }]
+      })
     const api = createDesktopApi(invoke)
 
     await expect(api.ai.privacy.status()).rejects.toThrow('INVALID_AI_RESPONSE')
     await expect(api.ai.session.get({
       sessionId: '123e4567-e89b-42d3-a456-426614174000'
     })).rejects.toThrow('INVALID_AI_RESPONSE')
+    await expect(api.ai.send({
+      requestId: 'request-1',
+      sessionId: '123e4567-e89b-42d3-a456-426614174000',
+      content: 'Create',
+      includeCurrentQuestionnaire: false
+    })).rejects.toThrow('INVALID_AI_RESPONSE')
+    await expect(api.ai.session.list()).resolves.toMatchObject({
+      ok: true,
+      sessions: [{ status: 'running', messages: [], attachments: [], artifacts: [] }]
+    })
   })
 
   it('exposes fixed export and baseline channels with renderer-side request validation', async () => {

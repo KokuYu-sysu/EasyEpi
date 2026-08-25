@@ -24,7 +24,8 @@ import {
   verifyAndDeriveKey,
   getProjectFilePath,
   saveProjectToPath,
-  ensureProjectId
+  ensureProjectId,
+  ensureQuestionnaireRevision
 } from '../services/project.service'
 import { recoverProjectRekeyTransaction } from '../services/project-rekey.service'
 import { loadRecords, resolveProjectDataFilePath } from '../services/record.service'
@@ -69,8 +70,9 @@ function clearRecoveredAITemp(
     project,
     preferredProjectId === undefined ? undefined : () => preferredProjectId
   )
+  const migratedRevision = ensureQuestionnaireRevision(project)
   const recoveredAI = new AISessionRepository(project).recoverInterruptedRuns().mutated
-  if (!migratedId && !recoveredAI) return
+  if (!migratedId && !migratedRevision && !recoveredAI) return
   saveProjectToPath(
     projectFilePath,
     project,
@@ -135,6 +137,7 @@ export function registerProjectIpc(
       const result = createProject(request.folderPath, request.name, request.password)
       state.currentProject = {
         meta: result.meta,
+        questionnaireRevision: result.questionnaireRevision,
         questionnaire: {
           name: request.name,
           questions: [],

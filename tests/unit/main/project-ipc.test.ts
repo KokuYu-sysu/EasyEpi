@@ -207,6 +207,7 @@ describe('Project IPC recovery safety', () => {
     const created = createProject(folder, 'study', 'study-password')
     const originalPath = getProjectFilePath(folder, 'study')
     const project = decryptProjectData(originalPath, created.encryptionKey)
+    delete (project as unknown as { questionnaireRevision?: string }).questionnaireRevision
     const repository = new AISessionRepository(
       project,
       () => '123e4567-e89b-42d3-a456-426614174000'
@@ -263,6 +264,8 @@ describe('Project IPC recovery safety', () => {
       decryptProjectData(movedPath, created.encryptionKey)
         .aiAssistant!.sessions[session.manifest.sessionId]!.temp.runs
     ).toEqual({})
+    expect(decryptProjectData(movedPath, created.encryptionKey).questionnaireRevision)
+      .toMatch(/^[0-9a-f-]{36}$/)
     expect(existsSync(originalPath)).toBe(false)
   })
 })

@@ -46,6 +46,28 @@ export function ensureProjectId(
   return true
 }
 
+export function ensureQuestionnaireRevision(
+  project: ProjectData,
+  createId: () => string = randomUUID
+): boolean {
+  if (project.questionnaireRevision !== undefined) {
+    if (!UUID_PATTERN.test(project.questionnaireRevision)) throw new Error('INVALID_QUESTIONNAIRE_REVISION')
+    return false
+  }
+  refreshQuestionnaireRevision(project, createId)
+  return true
+}
+
+export function refreshQuestionnaireRevision(
+  project: ProjectData,
+  createId: () => string = randomUUID
+): string {
+  const revision = createId()
+  if (!UUID_PATTERN.test(revision)) throw new Error('INVALID_QUESTIONNAIRE_REVISION')
+  project.questionnaireRevision = revision
+  return revision
+}
+
 function writeHeader(opts: {
   payloadLength: number
   createdAt: number
@@ -114,7 +136,13 @@ export function createProject(
   folderPath: string,
   name: string,
   password: string
-): { meta: ProjectMeta; encryptionKey: Buffer; passwordHash: string; salt: string } {
+): {
+  meta: ProjectMeta
+  encryptionKey: Buffer
+  passwordHash: string
+  salt: string
+  questionnaireRevision: string
+} {
   if (!existsSync(folderPath)) {
     mkdirSync(folderPath, { recursive: true })
   }
@@ -127,16 +155,18 @@ export function createProject(
   const encryptionKey = deriveKey(password, saltBuf)
 
   const now = new Date().toISOString()
+  const questionnaireRevision = randomUUID()
   const meta: ProjectMeta = {
     projectId: randomUUID(), name, folderPath, createdAt: now, lastModifiedAt: now
   }
   const data: ProjectData = {
     meta,
+    questionnaireRevision,
     questionnaire: { name, questions: [], conditionRules: [], keyQuestionIds: [] }
   }
 
   saveProject(folderPath, name, data, encryptionKey, salt, hash)
-  return { meta, encryptionKey, passwordHash: hash, salt }
+  return { meta, encryptionKey, passwordHash: hash, salt, questionnaireRevision }
 }
 
 export function saveProject(

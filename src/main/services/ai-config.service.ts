@@ -8,10 +8,10 @@ import type {
   AIProviderConfigUpdate,
   AIProviderConfigView
 } from '@shared/ai-assistant-contract'
+import { AI_MASKED_API_KEY } from '@shared/ai-assistant-contract'
 
 const CONFIG_FILE_NAME = 'ai-provider-config.json'
 const DEFAULT_BASE_URL = 'https://api.openai.com/v1'
-const MASKED_API_KEY = '••••••••'
 const MAX_BASE_URL_LENGTH = 2_048
 const MAX_MODEL_LENGTH = 200
 const MAX_API_KEY_LENGTH = 8_192
@@ -167,7 +167,7 @@ function configView(config: StoredAIConfig): AIProviderConfigView {
     baseUrl: config.baseUrl,
     model: config.model,
     hasApiKey,
-    maskedApiKey: hasApiKey ? MASKED_API_KEY : null
+    maskedApiKey: hasApiKey ? AI_MASKED_API_KEY : null
   }
 }
 

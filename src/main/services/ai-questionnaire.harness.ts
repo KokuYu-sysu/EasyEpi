@@ -70,6 +70,7 @@ export interface QuestionnaireHarnessValue {
 }
 
 export interface QuestionnaireArtifactValue extends QuestionnaireHarnessValue {
+  baseQuestionnaireRevision: string
   baseQuestionnaireHash: string
   baseQuestionnaire: QuestionnaireDef
 }
@@ -115,6 +116,7 @@ const RULE_FIELDS = new Set([
 ])
 const CONDITION_FIELDS = new Set(['questionId', 'operator', 'value'])
 const ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/
+const REVISION_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
 const MAX_MODEL_TEXT_LENGTH = 2_000_000
 const MAX_SINGLE_STRING_LENGTH = 20_000
 const MAX_QUESTIONS = 500
@@ -1122,12 +1124,14 @@ export function validateQuestionnaireArtifact(
   }
   resolveAIRegistryEntry(artifact.versionStamp)
   if (!isObject(artifact.value) || !hasExactKeys(artifact.value, [
-    'draft', 'diff', 'assistantMessage', 'rollingSummary', 'baseQuestionnaireHash',
+    'draft', 'diff', 'assistantMessage', 'rollingSummary', 'baseQuestionnaireRevision', 'baseQuestionnaireHash',
     'baseQuestionnaire', 'validation'
   ]) || typeof artifact.value.assistantMessage !== 'string' ||
     artifact.value.assistantMessage.trim().length === 0 ||
     artifact.value.assistantMessage.length > 20_000 ||
     typeof artifact.value.rollingSummary !== 'string' || artifact.value.rollingSummary.length > 20_000 ||
+    typeof artifact.value.baseQuestionnaireRevision !== 'string' ||
+    !REVISION_PATTERN.test(artifact.value.baseQuestionnaireRevision) ||
     typeof artifact.value.baseQuestionnaireHash !== 'string' ||
     !/^sha256:[a-f0-9]{64}$/.test(artifact.value.baseQuestionnaireHash) ||
     !isObject(artifact.value.validation) ||
@@ -1153,6 +1157,7 @@ export function validateQuestionnaireArtifact(
     diff: expectedDiff,
     assistantMessage: artifact.value.assistantMessage,
     rollingSummary: artifact.value.rollingSummary,
+    baseQuestionnaireRevision: artifact.value.baseQuestionnaireRevision,
     baseQuestionnaireHash: artifact.value.baseQuestionnaireHash,
     baseQuestionnaire,
     validation: { success: true, errors: [] }

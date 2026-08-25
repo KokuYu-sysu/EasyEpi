@@ -23,6 +23,7 @@ import {
   updateConditionRule,
   deleteConditionRule
 } from '../services/qnaire.service'
+import { refreshQuestionnaireRevision } from '../services/project.service'
 
 export function registerQnaireIpc(
   ipcMain: IpcMainLike,
@@ -38,6 +39,7 @@ export function registerQnaireIpc(
   function setQnaire(qnaire: QuestionnaireDef): void {
     if (!state.currentProject) throw new Error('NO_PROJECT_OPEN')
     state.currentProject.questionnaire = qnaire
+    refreshQuestionnaireRevision(state.currentProject)
   }
 
   ipcMain.handle(QNAIRE_GET_DATA_CHANNEL, async (event: IpcInvokeEventLike) => {
@@ -120,8 +122,13 @@ export function registerQnaireIpc(
     assertTrustedSender(event, packagedRendererUrl, developmentOrigin)
     const { name, description } = rawArgs as { name?: string; description?: string }
     const qnaire = getQnaire()
-    if (name !== undefined) qnaire.name = name
-    if (description !== undefined) qnaire.description = description
+    if (name !== undefined || description !== undefined) {
+      setQnaire({
+        ...qnaire,
+        ...(name === undefined ? {} : { name }),
+        ...(description === undefined ? {} : { description })
+      })
+    }
     return { ok: true }
   })
 

@@ -12,6 +12,8 @@ export interface ProjectMeta {
 
 export interface ProjectData {
   meta: ProjectMeta
+  /** Stable until content changes; optional only while loading legacy projects. */
+  questionnaireRevision?: string
   questionnaire: QuestionnaireDef
   passwordHash?: string
   recoveryKeyHash?: string

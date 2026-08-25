@@ -22,6 +22,7 @@ import {
 import type { FormulaError } from '@shared/derived'
 
 import { DerivedService } from '../services/derived/derived.service'
+import { refreshQuestionnaireRevision } from '../services/project.service'
 import type { ProjectIpcState } from './project.ipc'
 import { type IpcMainLike, type IpcInvokeEventLike, assertTrustedSender } from './types'
 
@@ -43,6 +44,7 @@ export function registerDerivedIpc(
   function setQnaire(qnaire: QuestionnaireDef): void {
     if (!state.currentProject) throw new Error('NO_PROJECT_OPEN')
     state.currentProject.questionnaire = qnaire
+    refreshQuestionnaireRevision(state.currentProject)
   }
 
   function list(): DerivedListResult {

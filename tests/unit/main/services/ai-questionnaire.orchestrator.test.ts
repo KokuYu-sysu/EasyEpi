@@ -12,7 +12,7 @@ import {
 } from '@main/services/ai-questionnaire.harness'
 import { AISessionRepository } from '@main/services/ai-session.repository'
 import { AIClientError, createOpenAICompatibleClient } from '@main/services/openai-compatible.client'
-import { ensureProjectId } from '@main/services/project.service'
+import { ensureProjectId, refreshQuestionnaireRevision } from '@main/services/project.service'
 import type { ProjectData } from '@shared/types/project'
 
 const sessionId = '123e4567-e89b-42d3-a456-426614174000'
@@ -27,6 +27,7 @@ function project(versionStamp = getAiVersionStamp()): ProjectData {
   }
   const value: ProjectData = {
     meta,
+    questionnaireRevision: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
     questionnaire: { name: 'Existing', questions: [], conditionRules: [], keyQuestionIds: [] }
   }
   new AISessionRepository(value, () => sessionId).create(versionStamp, 'AI')
@@ -92,12 +93,17 @@ describe('AI questionnaire orchestrator', () => {
     if (refined.ok) {
       expect((refined.artifact.value as { baseQuestionnaire: { name: string } })
         .baseQuestionnaire.name).toBe('Study')
+      expect((refined.artifact.value as { baseQuestionnaireRevision: string })
+        .baseQuestionnaireRevision).toBe('cccccccc-cccc-4ccc-8ccc-cccccccccccc')
     }
     expect(readFormalQuestionnaire).not.toHaveBeenCalled()
     Object.defineProperty(value, 'questionnaire', { value: formalQuestionnaire, writable: true })
-    expect(() => previewQuestionnaireArtifact(
-      value, sessionId, first.artifact.artifactId
-    )).toThrow('AI_ARTIFACT_STALE')
+    expect(previewQuestionnaireArtifact(value, sessionId, first.artifact.artifactId))
+      .toMatchObject({ baseQuestionnaireRevision: value.questionnaireRevision })
+    await expect(applyArtifact({
+      project: value, sessionId, artifactId: first.artifact.artifactId,
+      currentProjectPath: 'D:\\study.easyepi', backup: vi.fn(), saveAtomic: vi.fn()
+    })).resolves.toMatchObject({ applied: true })
   })
 
   it('uses one call normally and no more than two validation-repair calls', async () => {
@@ -207,6 +213,7 @@ describe('AI questionnaire orchestrator', () => {
       }),
       saveAtomic: vi.fn(() => { calls.push('save') })
     }
+    const revisionBeforeApply = value.questionnaireRevision
     const firstApply = applyArtifact(request)
     await started
     const secondApply = applyArtifact(request)
@@ -219,6 +226,7 @@ describe('AI questionnaire orchestrator', () => {
     expect(value.questionnaire.derivedVariables).toEqual([
       expect.objectContaining({ variableName: 'bmi' })
     ])
+    expect(value.questionnaireRevision).not.toBe(revisionBeforeApply)
   })
 
   it('serializes failed run persistence with a later artifact apply', async () => {
@@ -277,6 +285,7 @@ describe('AI questionnaire orchestrator', () => {
     expect(generated.ok).toBe(true)
     if (!generated.ok) return
     value.questionnaire.name = 'Changed concurrently'
+    refreshQuestionnaireRevision(value)
     expect(() => previewQuestionnaireArtifact(value, sessionId, generated.artifact.artifactId)).toThrow('AI_ARTIFACT_STALE')
     const backup = vi.fn()
     await expect(applyArtifact({
@@ -303,7 +312,7 @@ describe('AI questionnaire orchestrator', () => {
     expect(() => previewQuestionnaireArtifact(value, sessionId, generated.artifact.artifactId)).toThrow('AI_ARTIFACT_INVALID')
   })
 
-  it('rejects stale refinement but allows refining an applied active artifact', async () => {
+  it('rejects refinement after the active artifact has changed the formal questionnaire', async () => {
     const value = project()
     const complete = vi.fn().mockResolvedValue({ content: validCompletion(), responseFormatSupported: true })
     const orchestrator = createAIQuestionnaireOrchestrator({ persistProject: vi.fn(), client: { complete } })
@@ -322,9 +331,10 @@ describe('AI questionnaire orchestrator', () => {
       project: value, sessionId, userText: 'Refine',
       config: { baseUrl: 'https://example.test/v1', model: 'model' }
     })
-    expect(refined.ok).toBe(true)
+    expect(refined).toMatchObject({ ok: false, errorCode: 'AI_ARTIFACT_STALE' })
 
     value.questionnaire.name = 'Concurrent edit'
+    refreshQuestionnaireRevision(value)
     const callsBefore = complete.mock.calls.length
     const stale = await orchestrator.sendTurn({
       project: value, sessionId, userText: 'Refine again',
