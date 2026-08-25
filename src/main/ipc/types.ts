@@ -5,6 +5,7 @@ export interface IpcInvokeEventLike {
     url: string
   } | null
   sender?: {
+    id?: number
     send(channel: string, payload: unknown): void
   }
 }

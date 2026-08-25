@@ -21,6 +21,7 @@ interface StoredAIConfig {
   baseUrl: string
   model: string
   encryptedApiKey?: string
+  privacyAcceptedAt?: string
 }
 
 export interface AISecureStorage {
@@ -41,6 +42,8 @@ export interface AIConfigService {
   clear(): Promise<AIProviderConfigResult>
   /** Main-process only. Never expose this method through a shared bridge. */
   getPlaintextForMain(): Promise<AIMainConfig>
+  getPrivacyStatus(): Promise<{ accepted: boolean; acceptedAt: string | null }>
+  acceptPrivacy(): Promise<{ accepted: true; acceptedAt: string }>
 }
 
 function isMissingFile(error: unknown): boolean {
@@ -133,21 +136,29 @@ export function validateAIConfigUpdate(request: unknown): AIProviderConfigUpdate
 
 function parseStoredAIConfig(value: unknown): StoredAIConfig {
   if (!isPlainObject(value)) throw new Error('INVALID_AI_CONFIG_FILE')
-  const { schemaVersion, baseUrl, model, encryptedApiKey } = value
+  const { schemaVersion, baseUrl, model, encryptedApiKey, privacyAcceptedAt } = value
   if (
     schemaVersion !== 1 ||
     typeof baseUrl !== 'string' ||
     typeof model !== 'string' ||
     (encryptedApiKey !== undefined &&
-      (typeof encryptedApiKey !== 'string' || !isStrictBase64(encryptedApiKey)))
+      (typeof encryptedApiKey !== 'string' || !isStrictBase64(encryptedApiKey))) ||
+    (privacyAcceptedAt !== undefined &&
+      (typeof privacyAcceptedAt !== 'string' || !Number.isFinite(Date.parse(privacyAcceptedAt))))
   ) {
     throw new Error('INVALID_AI_CONFIG_FILE')
   }
 
-  const validated = validateAIConfigUpdate({ baseUrl, model })
-  return encryptedApiKey === undefined
-    ? { schemaVersion, baseUrl: validated.baseUrl, model: validated.model }
-    : { schemaVersion, baseUrl: validated.baseUrl, model: validated.model, encryptedApiKey }
+  const validated = model.length === 0
+    ? { baseUrl: normalizeAIBaseUrl(baseUrl), model }
+    : validateAIConfigUpdate({ baseUrl, model })
+  return {
+    schemaVersion,
+    baseUrl: validated.baseUrl,
+    model: validated.model,
+    ...(encryptedApiKey === undefined ? {} : { encryptedApiKey }),
+    ...(privacyAcceptedAt === undefined ? {} : { privacyAcceptedAt })
+  }
 }
 
 function configView(config: StoredAIConfig): AIProviderConfigView {
@@ -245,8 +256,11 @@ export function createAIConfigService(
       }
 
       let encryptedApiKey: string | undefined
+      let privacyAcceptedAt: string | undefined
       try {
-        encryptedApiKey = (await readStored()).encryptedApiKey
+        const current = await readStored()
+        encryptedApiKey = current.encryptedApiKey
+        privacyAcceptedAt = current.privacyAcceptedAt
       } catch {
         return { ok: false, code: 'AI_CONFIG_READ_FAILED' }
       }
@@ -273,7 +287,8 @@ export function createAIConfigService(
         schemaVersion: 1,
         baseUrl: validated.baseUrl,
         model: validated.model,
-        ...(encryptedApiKey === undefined ? {} : { encryptedApiKey })
+        ...(encryptedApiKey === undefined ? {} : { encryptedApiKey }),
+        ...(privacyAcceptedAt === undefined ? {} : { privacyAcceptedAt })
       }
       try {
         await writeStored(stored)
@@ -286,10 +301,24 @@ export function createAIConfigService(
 
   function clear(): Promise<AIProviderConfigResult> {
     return serialize(async () => {
+      let privacyAcceptedAt: string | undefined
       try {
-        await unlink(configPath)
-      } catch (error) {
-        if (!isMissingFile(error)) return { ok: false, code: 'AI_CONFIG_SAVE_FAILED' }
+        privacyAcceptedAt = (await readStored()).privacyAcceptedAt
+      } catch {
+        return { ok: false, code: 'AI_CONFIG_READ_FAILED' }
+      }
+      if (privacyAcceptedAt !== undefined) {
+        try {
+          await writeStored({ ...emptyConfig(), privacyAcceptedAt })
+        } catch {
+          return { ok: false, code: 'AI_CONFIG_SAVE_FAILED' }
+        }
+      } else {
+        try {
+          await unlink(configPath)
+        } catch (error) {
+          if (!isMissingFile(error)) return { ok: false, code: 'AI_CONFIG_SAVE_FAILED' }
+        }
       }
       return { ok: true, config: configView(emptyConfig()) }
     })
@@ -313,5 +342,22 @@ export function createAIConfigService(
     }
   }
 
-  return { get, update, clear, getPlaintextForMain }
+  async function getPrivacyStatus(): Promise<{ accepted: boolean; acceptedAt: string | null }> {
+    const acceptedAt = (await readStored()).privacyAcceptedAt ?? null
+    return { accepted: acceptedAt !== null, acceptedAt }
+  }
+
+  function acceptPrivacy(): Promise<{ accepted: true; acceptedAt: string }> {
+    return serialize(async () => {
+      const stored = await readStored()
+      if (stored.privacyAcceptedAt !== undefined) {
+        return { accepted: true, acceptedAt: stored.privacyAcceptedAt }
+      }
+      const acceptedAt = new Date().toISOString()
+      await writeStored({ ...stored, privacyAcceptedAt: acceptedAt })
+      return { accepted: true, acceptedAt }
+    })
+  }
+
+  return { get, update, clear, getPlaintextForMain, getPrivacyStatus, acceptPrivacy }
 }

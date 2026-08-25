@@ -106,7 +106,8 @@ export function registerProjectIpc(
   state: ProjectIpcState,
   packagedRendererUrl: string,
   developmentOrigin?: string,
-  invalidateAdminSession: () => void = () => undefined
+  invalidateAdminSession: () => void = () => undefined,
+  cancelAIRequests: () => void = () => undefined
 ): () => void {
   let stopPeriodicBackups: () => void = () => undefined
 
@@ -127,6 +128,7 @@ export function registerProjectIpc(
   ipcMain.handle(PROJECT_CREATE_CHANNEL, async (event: IpcInvokeEventLike, rawRequest: unknown) => {
     assertTrustedSender(event, packagedRendererUrl, developmentOrigin)
     const request = parseProjectCreateRequest(rawRequest)
+    cancelAIRequests()
     invalidateAdminSession()
 
     try {
@@ -157,6 +159,7 @@ export function registerProjectIpc(
   ipcMain.handle(PROJECT_OPEN_CHANNEL, async (event: IpcInvokeEventLike, rawRequest: unknown) => {
     assertTrustedSender(event, packagedRendererUrl, developmentOrigin)
     const request = parseProjectOpenRequest(rawRequest)
+    cancelAIRequests()
     invalidateAdminSession()
 
     try {
@@ -330,6 +333,7 @@ export function registerProjectIpc(
 
   ipcMain.handle(PROJECT_CLOSE_CHANNEL, async (event: IpcInvokeEventLike) => {
     assertTrustedSender(event, packagedRendererUrl, developmentOrigin)
+    cancelAIRequests()
     invalidateAdminSession()
     state.currentProject = null
     state.currentFilePath = null

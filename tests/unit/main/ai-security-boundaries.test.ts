@@ -1,12 +1,25 @@
-import { describe, expect, it } from 'vitest'
+import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 
-import { normalizeAIBaseUrl, validateAIConfigUpdate } from '@main/services/ai-config.service'
+import { describe, expect, it, vi } from 'vitest'
+
+import {
+  createAIConfigService,
+  normalizeAIBaseUrl,
+  validateAIConfigUpdate
+} from '@main/services/ai-config.service'
 import {
   AISessionRepository,
   parseAISessionVirtualPath
 } from '@main/services/ai-session.repository'
-import type { AiVersionStamp } from '@shared/ai-assistant-contract'
+import { parseAISendRequest, type AiVersionStamp } from '@shared/ai-assistant-contract'
 import type { ProjectData } from '@shared/types/project'
+import { AI_SEND_CHANNEL } from '@shared/ai-assistant-contract'
+import { registerAIIpcHandlers } from '@main/ipc/ai.ipc'
+import { createProjectIpcState } from '@main/ipc/project.ipc'
+import type { IpcInvokeEventLike, IpcMainLike } from '@main/ipc/types'
+import type { AIConfigService } from '@main/services/ai-config.service'
 
 const sessionId = '123e4567-e89b-42d3-a456-426614174000'
 const versionStamp: AiVersionStamp = {
@@ -66,6 +79,81 @@ describe('AI configuration security boundary', () => {
 
     expect(message).toBe('INVALID_AI_BASE_URL')
     expect(message).not.toContain(apiKey)
+  })
+
+  it('preserves application privacy consent when provider config is cleared', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'easyepi-ai-config-'))
+    try {
+      const service = createAIConfigService(directory, {
+        isEncryptionAvailable: () => true,
+        encryptString: (value) => Buffer.from(value),
+        decryptString: (value) => value.toString()
+      })
+      await service.acceptPrivacy()
+      await service.update({ baseUrl: 'https://api.openai.com/v1', model: 'test', apiKey: 'secret' })
+      await service.clear()
+
+      await expect(service.getPrivacyStatus()).resolves.toMatchObject({ accepted: true })
+      await expect(service.get()).resolves.toMatchObject({
+        ok: true,
+        config: { model: '', hasApiKey: false, maskedApiKey: null }
+      })
+    } finally {
+      rmSync(directory, { recursive: true, force: true })
+    }
+  })
+})
+
+describe('AI IPC privacy boundary', () => {
+  it('rejects renderer attempts to smuggle sensitive fields into send', () => {
+    expect(() => parseAISendRequest({
+      requestId: 'request-1',
+      sessionId,
+      content: 'Draft a questionnaire',
+      includeCurrentQuestionnaire: false,
+      apiKey: 'sk-must-not-cross-ipc'
+    })).toThrow('INVALID_AI_REQUEST')
+  })
+
+  it('rejects send in main before reading config when privacy is unconfirmed', async () => {
+    const handlers = new Map<string, (event: IpcInvokeEventLike, ...args: unknown[]) => Promise<unknown>>()
+    const ipcMain: IpcMainLike = {
+      handle: (channel, handler) => handlers.set(channel, handler),
+      removeHandler: (channel) => { handlers.delete(channel) }
+    }
+    const getPlaintextForMain = vi.fn()
+    const configService = {
+      get: async () => ({ ok: true, config: { baseUrl: '', model: '', hasApiKey: false, maskedApiKey: null } } as const),
+      update: async () => ({ ok: false, code: 'INVALID_AI_CONFIG' } as const),
+      clear: async () => ({ ok: false, code: 'AI_CONFIG_SAVE_FAILED' } as const),
+      getPlaintextForMain,
+      getPrivacyStatus: async () => ({ accepted: false, acceptedAt: null }),
+      acceptPrivacy: async () => ({ accepted: true, acceptedAt: '2026-08-25T00:00:00.000Z' } as const)
+    } satisfies AIConfigService
+    const registration = registerAIIpcHandlers(
+      ipcMain,
+      createProjectIpcState(),
+      { configService },
+      'file:///app/index.html'
+    )
+
+    const result = await handlers.get(AI_SEND_CHANNEL)!({
+      senderFrame: { url: 'file:///app/index.html' },
+      sender: { id: 1, send: () => undefined }
+    }, {
+      requestId: 'request-1',
+      sessionId,
+      content: 'Create a short questionnaire',
+      includeCurrentQuestionnaire: false
+    })
+
+    expect(result).toEqual({
+      ok: false,
+      errorCode: 'AI_PRIVACY_NOTICE_REQUIRED',
+      message: '请先确认 AI 隐私说明。'
+    })
+    expect(getPlaintextForMain).not.toHaveBeenCalled()
+    registration.dispose()
   })
 })
 

@@ -55,6 +55,27 @@ import type {
   DoubleEntryCompareRequest,
   DoubleEntryCompareResult
 } from './double-entry-contract'
+import type {
+  AIArtifactApplyRequest,
+  AIArtifactApplyResult,
+  AIArtifactPreviewResult,
+  AICancelRequest,
+  AICancelResult,
+  AIConfigIpcResult,
+  AIConfigUpdateRequest,
+  AIConnectionTestResult,
+  AIPrivacyStatusResult,
+  AISendRequest,
+  AISendResult,
+  AISessionCreateRequest,
+  AISessionDeleteResult,
+  AISessionIdRequest,
+  AISessionListResult,
+  AISessionMigrateResult,
+  AISessionResult,
+  AISessionUpdateRequest,
+  AIArtifactRequest
+} from './ai-assistant-contract'
 
 export interface DialogResult {
   canceled: boolean
@@ -68,6 +89,32 @@ export interface DesktopApi {
   preferences: {
     get(): Promise<PreferencesResult>
     update(preferences: PreferencesV1): Promise<PreferencesResult>
+  }
+  ai: {
+    config: {
+      get(): Promise<AIConfigIpcResult>
+      update(request: AIConfigUpdateRequest): Promise<AIConfigIpcResult>
+      clear(): Promise<AIConfigIpcResult>
+      testConnection(): Promise<AIConnectionTestResult>
+    }
+    privacy: {
+      status(): Promise<AIPrivacyStatusResult>
+      accept(): Promise<AIPrivacyStatusResult>
+    }
+    session: {
+      create(request?: AISessionCreateRequest): Promise<AISessionResult>
+      list(): Promise<AISessionListResult>
+      get(request: AISessionIdRequest): Promise<AISessionResult>
+      update(request: AISessionUpdateRequest): Promise<AISessionResult>
+      delete(request: AISessionIdRequest): Promise<AISessionDeleteResult>
+      migrate(request: AISessionIdRequest): Promise<AISessionMigrateResult>
+    }
+    send(request: AISendRequest): Promise<AISendResult>
+    cancel(request: AICancelRequest): Promise<AICancelResult>
+    artifact: {
+      preview(request: AIArtifactRequest): Promise<AIArtifactPreviewResult>
+      apply(request: AIArtifactApplyRequest): Promise<AIArtifactApplyResult>
+    }
   }
   dialog: {
     selectFolder(): Promise<DialogResult>

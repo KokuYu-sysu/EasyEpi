@@ -13,6 +13,7 @@ import {
 import { EXPORT_CSV_CHANNEL } from '@shared/export-contract'
 import type { DesktopInvoke } from '../../../src/preload/desktop-api'
 import { createDesktopApi } from '../../../src/preload/desktop-api'
+import { AI_CONFIG_UPDATE_CHANNEL } from '@shared/ai-assistant-contract'
 
 function assertDesktopInvokeShape(invoke: DesktopInvoke, checkCalls: boolean): void {
   if (checkCalls) {
@@ -53,6 +54,8 @@ describe('createDesktopApi', () => {
     expect(Object.isFrozen(api)).toBe(true)
     expect(Object.isFrozen(api.system)).toBe(true)
     expect(Object.isFrozen(api.preferences)).toBe(true)
+    expect(Object.isFrozen(api.ai)).toBe(true)
+    expect(Object.isFrozen(api.ai.config)).toBe(true)
   })
 
   it('gets preferences through only the fixed get channel and normalizes the response', async () => {
@@ -114,6 +117,7 @@ describe('createDesktopApi', () => {
     expect(Object.keys(api)).toEqual([
       'system',
       'preferences',
+      'ai',
       'dialog',
       'project',
       'qnaire',
@@ -138,6 +142,32 @@ describe('createDesktopApi', () => {
       expect(api).not.toHaveProperty(forbidden)
       expect(api.preferences).not.toHaveProperty(forbidden)
     }
+  })
+
+  it('never returns the submitted AI API key through the bridge', async () => {
+    const invoke = vi.fn().mockResolvedValue({
+      ok: true,
+      config: {
+        baseUrl: 'https://api.openai.com/v1',
+        model: 'gpt-4.1-mini',
+        hasApiKey: true,
+        maskedApiKey: '••••••••'
+      }
+    })
+    const api = createDesktopApi(invoke)
+
+    const result = await api.ai.config.update({
+      baseUrl: 'https://api.openai.com/v1',
+      model: 'gpt-4.1-mini',
+      apiKey: 'sk-secret'
+    })
+
+    expect(invoke).toHaveBeenCalledWith(AI_CONFIG_UPDATE_CHANNEL, {
+      baseUrl: 'https://api.openai.com/v1',
+      model: 'gpt-4.1-mini',
+      apiKey: 'sk-secret'
+    })
+    expect(JSON.stringify(result)).not.toContain('sk-secret')
   })
 
   it('exposes fixed export and baseline channels with renderer-side request validation', async () => {

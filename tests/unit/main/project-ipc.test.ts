@@ -101,7 +101,15 @@ describe('Project IPC recovery safety', () => {
     state.auth.passwordData = { hash: active.passwordHash, salt: active.salt }
     const originalKey = Buffer.from(state.auth.encryptionKey)
     const { handlers, ipcMain } = createHarness()
-    registerProjectIpc(ipcMain, state, packagedUrl)
+    const cancelAIRequests = vi.fn()
+    registerProjectIpc(
+      ipcMain,
+      state,
+      packagedUrl,
+      undefined,
+      () => undefined,
+      cancelAIRequests
+    )
 
     await expect(
       handlers.get(PROJECT_OPEN_CHANNEL)!(trustedEvent, {
@@ -114,6 +122,7 @@ describe('Project IPC recovery safety', () => {
     expect(state.auth.encryptionKey).toEqual(originalKey)
     expect(state.auth.passwordData).toEqual({ hash: active.passwordHash, salt: active.salt })
     expect(damaged.encryptionKey).not.toEqual(originalKey)
+    expect(cancelAIRequests).toHaveBeenCalledOnce()
   })
 
   it('rejects a backup whose unauthenticated header differs from current state', async () => {

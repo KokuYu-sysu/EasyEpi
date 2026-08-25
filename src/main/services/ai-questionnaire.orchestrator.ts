@@ -117,9 +117,10 @@ async function mutateAndPersist(
     }
     try {
       await persistProject(project, reason)
-    } catch {
+    } catch (error) {
       restoreAssistant(project, snapshot)
-      throw new Error('AI_PERSIST_FAILED')
+      if (error instanceof Error && error.message === 'PROJECT_CHANGED') throw error
+      throw new Error('AI_PERSIST_FAILED', { cause: error })
     }
   })
 }
@@ -464,8 +465,11 @@ export function createAIQuestionnaireOrchestrator(
           })
           repository.cleanupRunTemp(request.sessionId, runId)
         })
-      } catch {
+      } catch (error) {
         await withProjectAIQueue(request.project, () => repository.recoverInterruptedRuns())
+        if (error instanceof Error && error.message === 'PROJECT_CHANGED') {
+          return { ok: false, errorCode: 'PROJECT_CHANGED' }
+        }
         return { ok: false, errorCode: 'AI_PERSIST_FAILED', ...(lastErrors === undefined ? {} : { validationErrors: lastErrors }) }
       }
       return { ok: false, errorCode: finalCode, ...(lastErrors === undefined ? {} : { validationErrors: lastErrors }) }
@@ -489,12 +493,13 @@ export function getQuestionnaireArtifact(
 export function previewQuestionnaireArtifact(
   project: ProjectData,
   sessionId: string,
-  artifactId: string
+  artifactId: string,
+  checkStale = true
 ): QuestionnaireArtifactValue | undefined {
   const session = new AISessionRepository(project).get(sessionId)
   if (session === undefined) return undefined
   const artifact = session.artifacts.byId[artifactId]
-  return artifact === undefined ? undefined : parseArtifactValue(project, session, artifact)
+  return artifact === undefined ? undefined : parseArtifactValue(project, session, artifact, checkStale)
 }
 
 export interface ApplyQuestionnaireArtifactRequest {
@@ -560,11 +565,12 @@ export async function applyArtifact(
       })
       await request.saveAtomic(request.project, request.currentProjectPath)
       return { applied: true, questionnaire: structuredClone(nextQuestionnaire) }
-    } catch {
+    } catch (error) {
       request.project.questionnaire = questionnaireSnapshot
       request.project.meta = metaSnapshot
       restoreAssistant(request.project, assistantSnapshot)
-      throw new Error('AI_ARTIFACT_APPLY_FAILED')
+      if (error instanceof Error && error.message === 'PROJECT_CHANGED') throw error
+      throw new Error('AI_ARTIFACT_APPLY_FAILED', { cause: error })
     }
   })
 }

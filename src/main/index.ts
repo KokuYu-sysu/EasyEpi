@@ -1,7 +1,7 @@
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
-import { app, BrowserWindow, ipcMain, session } from 'electron'
+import { app, BrowserWindow, ipcMain, safeStorage, session } from 'electron'
 
 import { registerPreferencesIpc } from './preferences-ipc'
 import { createPreferencesStore } from './preferences-store'
@@ -12,6 +12,7 @@ import {
   resolveDevelopmentRendererUrl
 } from './window-policy'
 import { createProjectIpcState, registerProjectIpc } from './ipc/project.ipc'
+import { registerAIIpcHandlers } from './ipc/ai.ipc'
 import { registerQnaireIpc } from './ipc/qnaire.ipc'
 import { registerDerivedIpc } from './ipc/derived.ipc'
 import { registerQualityIpcHandlers } from './ipc/quality.ipc'
@@ -29,6 +30,7 @@ import { BaselineService } from './services/baseline.service'
 import { QualityService } from './services/quality.service'
 import { DoubleEntryService } from './services/double-entry.service'
 import { changeProjectPassword } from './services/project-rekey.service'
+import { createAIConfigService } from './services/ai-config.service'
 
 const APP_ID = 'com.kokuyu.easyepi'
 const developmentUrl = resolveDevelopmentRendererUrl(
@@ -43,6 +45,7 @@ let mainWindow: BrowserWindow | null = null
 let disposePreferencesIpc: (() => void) | undefined
 let disposeSystemIpc: (() => void) | undefined
 let disposeProjectIpc: (() => void) | undefined
+let disposeAIIpc: (() => void) | undefined
 let disposeQnaireIpc: (() => void) | undefined
 let disposeDerivedIpc: (() => void) | undefined
 let disposeQualityIpc: (() => void) | undefined
@@ -106,12 +109,21 @@ void app.whenReady().then(() => {
   )
   const projectState = createProjectIpcState()
   const adminSessionService = new AdminSessionService(projectState)
+  const aiRegistration = registerAIIpcHandlers(
+    ipcMain,
+    projectState,
+    { configService: createAIConfigService(app.getPath('userData'), safeStorage) },
+    packagedRendererUrl,
+    developmentUrl
+  )
+  disposeAIIpc = aiRegistration.dispose
   disposeProjectIpc = registerProjectIpc(
     ipcMain,
     projectState,
     packagedRendererUrl,
     developmentUrl,
-    () => adminSessionService.invalidate()
+    () => adminSessionService.invalidate(),
+    aiRegistration.cancelAll
   )
   disposeQnaireIpc = registerQnaireIpc(
     ipcMain,
@@ -217,6 +229,8 @@ app.on('will-quit', () => {
   disposePreferencesIpc = undefined
   disposeSystemIpc?.()
   disposeSystemIpc = undefined
+  disposeAIIpc?.()
+  disposeAIIpc = undefined
   disposeProjectIpc?.()
   disposeProjectIpc = undefined
   disposeQnaireIpc?.()

@@ -114,6 +114,53 @@ import {
   type DoubleEntryImportRequest,
   type DoubleEntryCompareRequest
 } from '@shared/double-entry-contract'
+import {
+  AI_ARTIFACT_APPLY_CHANNEL,
+  AI_ARTIFACT_PREVIEW_CHANNEL,
+  AI_CANCEL_CHANNEL,
+  AI_CONFIG_CLEAR_CHANNEL,
+  AI_CONFIG_GET_CHANNEL,
+  AI_CONFIG_TEST_CONNECTION_CHANNEL,
+  AI_CONFIG_UPDATE_CHANNEL,
+  AI_PRIVACY_ACCEPT_CHANNEL,
+  AI_PRIVACY_STATUS_CHANNEL,
+  AI_SEND_CHANNEL,
+  AI_SESSION_CREATE_CHANNEL,
+  AI_SESSION_DELETE_CHANNEL,
+  AI_SESSION_GET_CHANNEL,
+  AI_SESSION_LIST_CHANNEL,
+  AI_SESSION_MIGRATE_CHANNEL,
+  AI_SESSION_UPDATE_CHANNEL,
+  parseAIArtifactApplyRequest,
+  parseAIArtifactRequest,
+  parseAICancelRequest,
+  parseAIConfigResponse,
+  parseAIConfigUpdateRequest,
+  parseAIResponse,
+  parseAISendRequest,
+  parseAISessionCreateRequest,
+  parseAISessionIdRequest,
+  parseAISessionUpdateRequest,
+  type AIArtifactApplyRequest,
+  type AIArtifactApplyResult,
+  type AIArtifactPreviewResult,
+  type AICancelRequest,
+  type AICancelResult,
+  type AIConfigIpcResult,
+  type AIConfigUpdateRequest,
+  type AIConnectionTestResult,
+  type AIPrivacyStatusResult,
+  type AISendRequest,
+  type AISendResult,
+  type AISessionCreateRequest,
+  type AISessionDeleteResult,
+  type AISessionIdRequest,
+  type AISessionListResult,
+  type AISessionMigrateResult,
+  type AISessionResult,
+  type AISessionUpdateRequest,
+  type AIArtifactRequest
+} from '@shared/ai-assistant-contract'
 
 export interface DesktopInvoke {
   (channel: typeof SYSTEM_PING_CHANNEL, request: PingRequest): Promise<PingResponse>
@@ -191,6 +238,22 @@ export interface DesktopInvoke {
   (channel: typeof QUALITY_GET_SUMMARY_CHANNEL): Promise<unknown>
   (channel: typeof DOUBLE_ENTRY_IMPORT_CHANNEL, request: DoubleEntryImportRequest): Promise<unknown>
   (channel: typeof DOUBLE_ENTRY_COMPARE_CHANNEL, request: DoubleEntryCompareRequest): Promise<unknown>
+  (channel: typeof AI_CONFIG_GET_CHANNEL): Promise<unknown>
+  (channel: typeof AI_CONFIG_UPDATE_CHANNEL, request: AIConfigUpdateRequest): Promise<unknown>
+  (channel: typeof AI_CONFIG_CLEAR_CHANNEL): Promise<unknown>
+  (channel: typeof AI_CONFIG_TEST_CONNECTION_CHANNEL): Promise<unknown>
+  (channel: typeof AI_PRIVACY_STATUS_CHANNEL): Promise<unknown>
+  (channel: typeof AI_PRIVACY_ACCEPT_CHANNEL): Promise<unknown>
+  (channel: typeof AI_SESSION_CREATE_CHANNEL, request: AISessionCreateRequest): Promise<unknown>
+  (channel: typeof AI_SESSION_LIST_CHANNEL): Promise<unknown>
+  (channel: typeof AI_SESSION_GET_CHANNEL, request: AISessionIdRequest): Promise<unknown>
+  (channel: typeof AI_SESSION_UPDATE_CHANNEL, request: AISessionUpdateRequest): Promise<unknown>
+  (channel: typeof AI_SESSION_DELETE_CHANNEL, request: AISessionIdRequest): Promise<unknown>
+  (channel: typeof AI_SESSION_MIGRATE_CHANNEL, request: AISessionIdRequest): Promise<unknown>
+  (channel: typeof AI_SEND_CHANNEL, request: AISendRequest): Promise<unknown>
+  (channel: typeof AI_CANCEL_CHANNEL, request: AICancelRequest): Promise<unknown>
+  (channel: typeof AI_ARTIFACT_PREVIEW_CHANNEL, request: AIArtifactRequest): Promise<unknown>
+  (channel: typeof AI_ARTIFACT_APPLY_CHANNEL, request: AIArtifactApplyRequest): Promise<unknown>
 }
 
 function parsePublicPreferencesResult(value: unknown): PreferencesResult {
@@ -214,6 +277,22 @@ function parseQuestionnaireDef(value: unknown): QuestionnaireDef {
     throw new Error('INVALID_QUESTIONNAIRE_RESPONSE')
   }
   return value as QuestionnaireDef
+}
+
+function parsePublicAIResult<T>(value: unknown, successKeys: readonly string[]): T {
+  try {
+    return parseAIResponse<T>(value, successKeys)
+  } catch {
+    throw new Error('INVALID_AI_RESPONSE')
+  }
+}
+
+function parsePublicAIConfigResult(value: unknown): AIConfigIpcResult {
+  try {
+    return parseAIConfigResponse(value)
+  } catch {
+    throw new Error('INVALID_AI_RESPONSE')
+  }
 }
 
 export function createDesktopApi(invoke: DesktopInvoke): DesktopApi {
@@ -390,9 +469,79 @@ export function createDesktopApi(invoke: DesktopInvoke): DesktopApi {
       >
   })
 
+  const ai = Object.freeze({
+    config: Object.freeze({
+      get: async () => parsePublicAIConfigResult(await invoke(AI_CONFIG_GET_CHANNEL)),
+      update: async (request: AIConfigUpdateRequest) =>
+        parsePublicAIConfigResult(
+          await invoke(AI_CONFIG_UPDATE_CHANNEL, parseAIConfigUpdateRequest(request))
+        ),
+      clear: async () => parsePublicAIConfigResult(await invoke(AI_CONFIG_CLEAR_CHANNEL)),
+      testConnection: async () => parsePublicAIResult<AIConnectionTestResult>(
+        await invoke(AI_CONFIG_TEST_CONNECTION_CHANNEL),
+        []
+      )
+    }),
+    privacy: Object.freeze({
+      status: async () => parsePublicAIResult<AIPrivacyStatusResult>(
+        await invoke(AI_PRIVACY_STATUS_CHANNEL),
+        ['accepted', 'acceptedAt', 'notice']
+      ),
+      accept: async () => parsePublicAIResult<AIPrivacyStatusResult>(
+        await invoke(AI_PRIVACY_ACCEPT_CHANNEL),
+        ['accepted', 'acceptedAt', 'notice']
+      )
+    }),
+    session: Object.freeze({
+      create: async (request: AISessionCreateRequest = {}) => parsePublicAIResult<AISessionResult>(
+        await invoke(AI_SESSION_CREATE_CHANNEL, parseAISessionCreateRequest(request)),
+        ['session']
+      ),
+      list: async () => parsePublicAIResult<AISessionListResult>(
+        await invoke(AI_SESSION_LIST_CHANNEL),
+        ['sessions']
+      ),
+      get: async (request: AISessionIdRequest) => parsePublicAIResult<AISessionResult>(
+        await invoke(AI_SESSION_GET_CHANNEL, parseAISessionIdRequest(request)),
+        ['session']
+      ),
+      update: async (request: AISessionUpdateRequest) => parsePublicAIResult<AISessionResult>(
+        await invoke(AI_SESSION_UPDATE_CHANNEL, parseAISessionUpdateRequest(request)),
+        ['session']
+      ),
+      delete: async (request: AISessionIdRequest) => parsePublicAIResult<AISessionDeleteResult>(
+        await invoke(AI_SESSION_DELETE_CHANNEL, parseAISessionIdRequest(request)),
+        ['deleted']
+      ),
+      migrate: async (request: AISessionIdRequest) => parsePublicAIResult<AISessionMigrateResult>(
+        await invoke(AI_SESSION_MIGRATE_CHANNEL, parseAISessionIdRequest(request)),
+        ['migrated', 'session']
+      )
+    }),
+    send: async (request: AISendRequest) => parsePublicAIResult<AISendResult>(
+      await invoke(AI_SEND_CHANNEL, parseAISendRequest(request)),
+      ['requestId', 'artifact', 'attempts']
+    ),
+    cancel: async (request: AICancelRequest) => parsePublicAIResult<AICancelResult>(
+      await invoke(AI_CANCEL_CHANNEL, parseAICancelRequest(request)),
+      ['cancelled']
+    ),
+    artifact: Object.freeze({
+      preview: async (request: AIArtifactRequest) => parsePublicAIResult<AIArtifactPreviewResult>(
+        await invoke(AI_ARTIFACT_PREVIEW_CHANNEL, parseAIArtifactRequest(request)),
+        ['preview']
+      ),
+      apply: async (request: AIArtifactApplyRequest) => parsePublicAIResult<AIArtifactApplyResult>(
+        await invoke(AI_ARTIFACT_APPLY_CHANNEL, parseAIArtifactApplyRequest(request)),
+        ['applied', 'questionnaire', 'preview']
+      )
+    })
+  })
+
   const desktopApi = {
     system,
     preferences,
+    ai,
     dialog,
     project,
     qnaire,

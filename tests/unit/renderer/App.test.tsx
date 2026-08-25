@@ -21,6 +21,16 @@ function createApi(): DesktopApi {
       get: vi.fn().mockResolvedValue({ ok: true, preferences: DEFAULT_PREFERENCES }),
       update: vi.fn(async (preferences: PreferencesV1) => ({ ok: true as const, preferences }))
     },
+    ai: {
+      config: { get: vi.fn(), update: vi.fn(), clear: vi.fn(), testConnection: vi.fn() },
+      privacy: { status: vi.fn(), accept: vi.fn() },
+      session: {
+        create: vi.fn(), list: vi.fn(), get: vi.fn(), update: vi.fn(), delete: vi.fn(), migrate: vi.fn()
+      },
+      send: vi.fn(),
+      cancel: vi.fn(),
+      artifact: { preview: vi.fn(), apply: vi.fn() }
+    },
     dialog: {
       selectFolder: vi.fn().mockResolvedValue({ canceled: true, filePaths: [] }),
       selectFile: vi.fn().mockResolvedValue({ canceled: true, filePaths: [] })
