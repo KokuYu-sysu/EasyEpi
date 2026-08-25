@@ -20,8 +20,6 @@ import {
   type QuestionnaireDef
 } from '@shared/types/qnaire'
 
-import { detectConflicts } from './qnaire.service'
-
 export const AI_PROMPT_ID = 'easyepi-questionnaire-assistant'
 export const AI_PROMPT_VERSION = '1.1.0'
 export const HARNESS_VERSION = '1.1.0'
@@ -422,7 +420,6 @@ function normalizeQuestionnaire(value: JsonObject, base?: QuestionnaireDef): Que
     const raw = stringValue(value)
     return referenceMap.get(raw) ?? raw
   }
-  const usedBaseRuleIds = new Set<string>()
   const semanticKey = (rule: Omit<ConditionRule, 'id'> | ConditionRule): string => JSON.stringify({
     sourceQuestionId: rule.sourceQuestionId,
     conditions: [...rule.conditions].sort((left, right) =>
@@ -432,6 +429,15 @@ function normalizeQuestionnaire(value: JsonObject, base?: QuestionnaireDef): Que
     action: rule.action,
     targetQuestionIds: [...rule.targetQuestionIds].sort()
   })
+  const baseRulesBySemantic = new Map<string, ConditionRule[]>()
+  const baseRules = base?.conditionRules ?? []
+  for (let index = baseRules.length - 1; index >= 0; index -= 1) {
+    const rule = baseRules[index]!
+    const key = semanticKey(rule)
+    const bucket = baseRulesBySemantic.get(key) ?? []
+    bucket.push(rule)
+    baseRulesBySemantic.set(key, bucket)
+  }
   const conditionRules: ConditionRule[] = (Array.isArray(value.conditionRules)
     ? value.conditionRules
     : []).map((raw) => {
@@ -456,10 +462,7 @@ function normalizeQuestionnaire(value: JsonObject, base?: QuestionnaireDef): Que
           ? input.targetQuestionIds.map(mapReference)
           : []
       }
-      const matched = base?.conditionRules.find((rule) =>
-        !usedBaseRuleIds.has(rule.id) && semanticKey(rule) === semanticKey(normalized)
-      )
-      if (matched !== undefined) usedBaseRuleIds.add(matched.id)
+      const matched = baseRulesBySemantic.get(semanticKey(normalized))?.pop()
       return { id: matched?.id ?? randomUUID(), ...normalized }
     })
   const explicitKeys = Array.isArray(value.keyQuestionIds)
@@ -619,9 +622,6 @@ function validateQuestionnaire(
     addError(errors, 'KEY_QUESTION_MISMATCH', '$.questionnaire.keyQuestionIds', 'keyQuestionIds must exactly match isKey flags')
   }
   validateRules(draft, ids, errors)
-  for (const conflict of detectConflicts(draft)) {
-    addError(errors, 'CONDITION_RULE_CONFLICT', '$.questionnaire.conditionRules', conflict)
-  }
   validateRuleGraph(draft, errors)
   return errors
 }

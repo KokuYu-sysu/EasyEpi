@@ -273,5 +273,26 @@ describe('questionnaire harness trust boundary', () => {
       ok: false,
       errors: [{ code: 'AI_CANDIDATE_LIMIT_EXCEEDED' }]
     })
+
+    const performanceBase: QuestionnaireDef = {
+      name: 'Performance',
+      questions: Array.from({ length: 61 }, (_, order) => ({
+        id: `q${order}`, content: `Question ${order}`, variableName: `perf_${order}`,
+        type: 'free_text', options: [], constraint: { type: 'none' },
+        isKey: false, allowSkip: false, order
+      })),
+      conditionRules: Array.from({ length: 200 }, (_, index) => ({
+        id: `rule${index}`, sourceQuestionId: 'q0',
+        conditions: [{ questionId: 'q0', operator: 'contains', value: `value${index}` }],
+        logic: 'AND', action: 'show',
+        targetQuestionIds: Array.from({ length: 60 }, (_, target) => `q${target + 1}`)
+      })),
+      keyQuestionIds: []
+    }
+    const performanceCandidate = structuredClone(performanceBase)
+    performanceCandidate.conditionRules.reverse()
+    const startedAt = performance.now()
+    const performanceResult = runQuestionnaireHarness(envelope(performanceCandidate), performanceBase)
+    expect([performanceResult.ok, performance.now() - startedAt < 100]).toEqual([true, true])
   })
 })
