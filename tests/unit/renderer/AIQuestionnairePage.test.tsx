@@ -20,6 +20,12 @@ const session = {
   updatedAt: '2026-08-25T01:00:00.000Z'
 }
 
+const secondSession = {
+  ...session,
+  sessionId: '00000000-0000-4000-8000-000000000002',
+  title: '第二段对话'
+}
+
 const page: AISessionPage = {
   manifest: session,
   messages: [],
@@ -94,12 +100,73 @@ function renderPage() {
   )
 }
 
-describe('AIQuestionnairePage privacy boundary', () => {
-  it('does not read the current questionnaire while mounting', async () => {
+describe('AIQuestionnairePage boundaries', () => {
+  it('clears switched session state and ignores its late response', async () => {
+    let resolveSecond!: (value: { ok: true; session: AISessionPage }) => void
+    let resolveConfig!: (value: {
+      ok: true
+      config: { baseUrl: string; model: string; hasApiKey: boolean; maskedApiKey: string }
+    }) => void
+    const delayedSecond = new Promise<{ ok: true; session: AISessionPage }>((resolve) => {
+      resolveSecond = resolve
+    })
+    const delayedConfig = new Promise<{
+      ok: true
+      config: { baseUrl: string; model: string; hasApiKey: boolean; maskedApiKey: string }
+    }>((resolve) => {
+      resolveConfig = resolve
+    })
     const api = installApi(true)
+    api.ai.config.get.mockReturnValue(delayedConfig)
+    api.ai.session.list.mockResolvedValue({ ok: true, sessions: [session, secondSession] })
+    api.ai.session.get.mockImplementation(({ sessionId }: { sessionId: string }) => {
+      if (sessionId === secondSession.sessionId) return delayedSecond
+      return Promise.resolve({
+        ok: true,
+        session: {
+          ...page,
+          status: 'running' as const,
+          total: 1,
+          messages: [{
+            id: 'message-a',
+            role: 'assistant' as const,
+            content: '第一段对话的消息',
+            createdAt: '2026-08-25T01:00:00.000Z'
+          }]
+        }
+      })
+    })
     renderPage()
 
-    expect(await screen.findByRole('heading', { name: '调查问卷讨论', level: 3 })).toBeVisible()
+    expect(await screen.findByText('第一段对话的消息')).toBeVisible()
+    const editor = screen.getByRole('textbox', { name: '给 AI 的消息' })
+    await userEvent.type(editor, '配置未完成')
+    expect(screen.getByRole('button', { name: '发送消息' })).toBeDisabled()
+    await userEvent.click(screen.getByRole('button', { name: '第二段对话' }))
+    expect(screen.queryByText('第一段对话的消息')).not.toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: '调查问卷讨论' }))
+    expect(await screen.findByText('第一段对话的消息')).toBeVisible()
+    resolveSecond({
+      ok: true,
+      session: { ...page, manifest: secondSession, messages: [], total: 0 }
+    })
+    await Promise.resolve()
+    expect(screen.getByText('第一段对话的消息')).toBeVisible()
+
+    resolveConfig({
+      ok: true,
+      config: {
+        baseUrl: 'https://example.test/v1',
+        model: 'model-a',
+        hasApiKey: true,
+        maskedApiKey: '••••••••'
+      }
+    })
+    await waitFor(() => expect(screen.queryByText('尚未完成 AI 服务配置。')).not.toBeInTheDocument())
+    await userEvent.type(screen.getByRole('textbox', { name: '给 AI 的消息' }), '正在运行')
+    expect(screen.getByRole('button', { name: '发送消息' })).toBeDisabled()
+    expect(screen.getByText(/此对话仍在处理中/)).toBeVisible()
+    expect(screen.getByRole('button', { name: '刷新当前对话' })).toBeEnabled()
     expect(api.qnaire.getData).not.toHaveBeenCalled()
   })
 

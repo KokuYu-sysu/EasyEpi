@@ -164,7 +164,7 @@ export function AIQuestionnairePage() {
   const [requestId, setRequestId] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [projectBlocked, setProjectBlocked] = useState(false)
-  const [configMissing, setConfigMissing] = useState(false)
+  const [configMissing, setConfigMissing] = useState(true)
   const [privacyAccepted, setPrivacyAccepted] = useState<boolean | null>(null)
   const [privacyOpen, setPrivacyOpen] = useState(false)
   const [attachmentOpen, setAttachmentOpen] = useState(false)
@@ -175,23 +175,55 @@ export function AIQuestionnairePage() {
   const [renameOpen, setRenameOpen] = useState(false)
   const [renameTitle, setRenameTitle] = useState('')
   const [announcement, setAnnouncement] = useState('')
-  const loadSequence = useRef(0)
+  const generationRef = useRef(0)
+  const activeSessionIdRef = useRef<string | null>(null)
+  const mountedRef = useRef(true)
   const toast = useToast()
 
-  const clearProjectContent = useCallback((message?: string) => {
-    loadSequence.current += 1
-    setSessions([])
-    setActiveSessionId(null)
+  const isCurrent = useCallback((generation: number, sessionId?: string) =>
+    mountedRef.current && generationRef.current === generation &&
+    (sessionId === undefined || activeSessionIdRef.current === sessionId), [])
+
+  const clearSessionContent = useCallback(() => {
     setSessionPage(null)
     setMessages([])
     setMessageOffset(0)
     setActiveArtifact(null)
     setIncludeCurrentQuestionnaire(false)
     setAttachmentPreview(null)
+    setAttachmentOpen(false)
+    setAttachmentLoading(false)
+    setDraft('')
+    setError(null)
+    setRequestId(null)
+    setSending(false)
+    setApplying(false)
+    setLoadingEarlier(false)
+    setPrivacyOpen(false)
+    setRenameOpen(false)
+    setRenameTitle('')
+  }, [])
+
+  const activateSession = useCallback((sessionId: string | null) => {
+    if (activeSessionIdRef.current === sessionId) return
+    generationRef.current += 1
+    activeSessionIdRef.current = sessionId
+    clearSessionContent()
+    setActiveSessionId(sessionId)
+    setLoading(sessionId !== null)
+  }, [clearSessionContent])
+
+  const clearProjectContent = useCallback((message?: string) => {
+    generationRef.current += 1
+    activeSessionIdRef.current = null
+    setSessions([])
+    setActiveSessionId(null)
+    clearSessionContent()
     setProjectBlocked(true)
     setLoading(false)
+    setAnnouncement('')
     setError(message ?? '请先从欢迎页创建或打开项目，并使用项目密码完成解锁。')
-  }, [])
+  }, [clearSessionContent])
 
   const handleFailure = useCallback((code: string | undefined, fallback: string) => {
     const message = friendlyAIError(code, fallback)
@@ -199,30 +231,39 @@ export function AIQuestionnairePage() {
     else setError(message)
   }, [clearProjectContent])
 
-  const loadArtifact = useCallback(async (sessionId: string, artifactId: string, operationId: string) => {
+  const loadArtifact = useCallback(async (
+    sessionId: string,
+    artifactId: string,
+    operationId: string,
+    generation = generationRef.current
+  ) => {
     try {
       const result = await window.easyEpi.ai.artifact.preview({ sessionId, artifactId })
+      if (!isCurrent(generation, sessionId)) return
       if (result.ok) setActiveArtifact({ sessionId, artifactId, operationId, preview: result.preview })
       else handleFailure(result.errorCode, '无法读取 AI 草稿。')
     } catch {
-      setError('无法读取 AI 草稿。')
+      if (isCurrent(generation, sessionId)) setError('无法读取 AI 草稿。')
     }
-  }, [handleFailure])
+  }, [handleFailure, isCurrent])
 
-  const loadLatestSession = useCallback(async (sessionId: string) => {
-    const sequence = ++loadSequence.current
+  const loadLatestSession = useCallback(async (
+    sessionId: string,
+    generation = generationRef.current
+  ) => {
+    if (!isCurrent(generation, sessionId)) return
     setLoading(true)
     setError(null)
     try {
       const probe = await window.easyEpi.ai.session.get({ sessionId, offset: 0, limit: 1 })
-      if (sequence !== loadSequence.current) return
+      if (!isCurrent(generation, sessionId)) return
       if (!probe.ok) {
         handleFailure(probe.errorCode, '无法读取 AI 对话。')
         return
       }
       const offset = Math.max(0, probe.session.total - PAGE_SIZE)
       const result = await window.easyEpi.ai.session.get({ sessionId, offset, limit: PAGE_SIZE })
-      if (sequence !== loadSequence.current) return
+      if (!isCurrent(generation, sessionId)) return
       if (!result.ok) {
         handleFailure(result.errorCode, '无法读取 AI 对话。')
         return
@@ -236,127 +277,157 @@ export function AIQuestionnairePage() {
       } else {
         const summary = result.session.artifacts.find(({ artifactId }) => artifactId === result.session.activeArtifactId)
         if (summary !== undefined && summary.status === 'completed') {
-          void loadArtifact(sessionId, summary.artifactId, summary.operationId)
+          void loadArtifact(sessionId, summary.artifactId, summary.operationId, generation)
         }
       }
     } catch {
-      if (sequence === loadSequence.current) setError('无法读取 AI 对话。')
+      if (isCurrent(generation, sessionId)) setError('无法读取 AI 对话。')
     } finally {
-      if (sequence === loadSequence.current) setLoading(false)
+      if (isCurrent(generation, sessionId)) setLoading(false)
     }
-  }, [handleFailure, loadArtifact])
+  }, [handleFailure, isCurrent, loadArtifact])
 
-  const loadSessions = useCallback(async (preferredSessionId?: string) => {
+  const loadSessions = useCallback(async (
+    preferredSessionId?: string,
+    generation = generationRef.current
+  ) => {
     try {
       const result = await window.easyEpi.ai.session.list()
+      if (!isCurrent(generation)) return
       if (!result.ok) {
         handleFailure(result.errorCode, '无法读取 AI 对话列表。')
         return
       }
       setProjectBlocked(false)
       setSessions(result.sessions)
-      setActiveSessionId((current) => {
-        const preferred = preferredSessionId ?? current
-        return preferred !== null && preferred !== undefined &&
-          result.sessions.some(({ sessionId }) => sessionId === preferred)
-          ? preferred
-          : (result.sessions[0]?.sessionId ?? null)
-      })
-      if (result.sessions.length === 0) {
-        setSessionPage(null)
-        setMessages([])
-        setActiveArtifact(null)
+      const preferred = preferredSessionId ?? activeSessionIdRef.current
+      const nextSessionId = preferred !== null && preferred !== undefined &&
+        result.sessions.some(({ sessionId }) => sessionId === preferred)
+        ? preferred
+        : (result.sessions[0]?.sessionId ?? null)
+      if (activeSessionIdRef.current !== nextSessionId) {
+        activateSession(nextSessionId)
+      } else if (nextSessionId === null) {
+        clearSessionContent()
       }
     } catch {
-      setError('无法读取 AI 对话列表。')
+      if (isCurrent(generation)) setError('无法读取 AI 对话列表。')
     } finally {
-      setLoading(false)
+      if (isCurrent(generation)) setLoading(false)
     }
-  }, [handleFailure])
+  }, [activateSession, clearSessionContent, handleFailure, isCurrent])
 
   useEffect(() => {
-    void Promise.resolve().then(() => loadSessions())
+    mountedRef.current = true
+    const generation = generationRef.current
+    void Promise.resolve().then(() => loadSessions(undefined, generation))
     void window.easyEpi.ai.config.get().then((result) => {
-      setConfigMissing(!result.ok || !result.config.baseUrl || !result.config.model || !result.config.hasApiKey)
-    }).catch(() => setConfigMissing(true))
-    return window.easyEpi.project.onClosed?.(() => clearProjectContent())
-  }, [clearProjectContent, loadSessions])
+      if (mountedRef.current) {
+        setConfigMissing(!result.ok || !result.config.baseUrl || !result.config.model || !result.config.hasApiKey)
+      }
+    }).catch(() => {
+      if (mountedRef.current) setConfigMissing(true)
+    })
+    const unsubscribe = window.easyEpi.project.onClosed?.(() => clearProjectContent())
+    return () => {
+      mountedRef.current = false
+      generationRef.current += 1
+      activeSessionIdRef.current = null
+      unsubscribe?.()
+    }
+  }, [clearProjectContent, isCurrent, loadSessions])
 
   useEffect(() => {
     if (activeSessionId === null) return
-    void Promise.resolve().then(() => loadLatestSession(activeSessionId))
+    const generation = generationRef.current
+    void Promise.resolve().then(() => loadLatestSession(activeSessionId, generation))
   }, [activeSessionId, loadLatestSession])
 
   const createSession = async () => {
+    const generation = generationRef.current
     setError(null)
     try {
       const result = await window.easyEpi.ai.session.create()
+      if (!isCurrent(generation)) return
       if (!result.ok) return handleFailure(result.errorCode, '无法创建 AI 对话。')
       setAnnouncement('新对话已创建。')
-      await loadSessions(result.session.sessionId)
+      await loadSessions(result.session.sessionId, generation)
     } catch {
-      setError('无法创建 AI 对话。')
+      if (isCurrent(generation)) setError('无法创建 AI 对话。')
     }
   }
 
   const saveRename = async () => {
-    if (activeSessionId === null || renameTitle.trim().length === 0) {
+    const sessionId = activeSessionIdRef.current
+    const generation = generationRef.current
+    if (sessionId === null || renameTitle.trim().length === 0) {
       setError('请输入对话名称。')
       return
     }
     try {
       const result = await window.easyEpi.ai.session.update({
-        sessionId: activeSessionId,
+        sessionId,
         title: renameTitle.trim()
       })
+      if (!isCurrent(generation, sessionId)) return
       if (!result.ok) return handleFailure(result.errorCode, '无法重命名 AI 对话。')
       setRenameOpen(false)
       setAnnouncement('对话已重命名。')
-      await loadSessions(activeSessionId)
+      await loadSessions(sessionId, generation)
     } catch {
-      setError('无法重命名 AI 对话。')
+      if (isCurrent(generation, sessionId)) setError('无法重命名 AI 对话。')
     }
   }
 
   const deleteSession = async () => {
-    if (activeSessionId === null) return
+    const sessionId = activeSessionIdRef.current
+    const generation = generationRef.current
+    if (sessionId === null) return
     try {
-      const result = await window.easyEpi.ai.session.delete({ sessionId: activeSessionId })
+      const result = await window.easyEpi.ai.session.delete({ sessionId })
+      if (!isCurrent(generation, sessionId)) return
       if (!result.ok) return handleFailure(result.errorCode, '无法删除 AI 对话。')
       setAnnouncement(result.deleted ? '对话已删除。' : '对话已不存在。')
-      setActiveSessionId(null)
-      await loadSessions()
+      activateSession(null)
+      await loadSessions(undefined, generationRef.current)
     } catch {
-      setError('无法删除 AI 对话。')
+      if (isCurrent(generation, sessionId)) setError('无法删除 AI 对话。')
     }
   }
 
   const loadEarlier = async () => {
-    if (activeSessionId === null || messageOffset <= 0 || loadingEarlier) return
+    const sessionId = activeSessionIdRef.current
+    const generation = generationRef.current
+    if (sessionId === null || messageOffset <= 0 || loadingEarlier) return
     const nextOffset = Math.max(0, messageOffset - PAGE_SIZE)
     setLoadingEarlier(true)
     try {
       const result = await window.easyEpi.ai.session.get({
-        sessionId: activeSessionId,
+        sessionId,
         offset: nextOffset,
         limit: messageOffset - nextOffset
       })
+      if (!isCurrent(generation, sessionId)) return
       if (!result.ok) return handleFailure(result.errorCode, '无法加载更早的消息。')
       setMessages((current) => [...result.session.messages, ...current])
       setMessageOffset(nextOffset)
       setSessionPage((current) => current === null ? result.session : { ...current, total: result.session.total })
     } catch {
-      setError('无法加载更早的消息。')
+      if (isCurrent(generation, sessionId)) setError('无法加载更早的消息。')
     } finally {
-      setLoadingEarlier(false)
+      if (isCurrent(generation, sessionId)) setLoadingEarlier(false)
     }
   }
 
   const previewQuestionnaireAttachment = async () => {
+    const sessionId = activeSessionIdRef.current
+    const generation = generationRef.current
+    if (sessionId === null) return
     setAttachmentLoading(true)
     setError(null)
     try {
       const questionnaire = await window.easyEpi.qnaire.getData()
+      if (!isCurrent(generation, sessionId)) return
       setAttachmentPreview({
         name: questionnaire.name || '未命名问卷',
         description: questionnaire.description?.trim() || null,
@@ -365,13 +436,20 @@ export function AIQuestionnairePage() {
       })
       setAttachmentOpen(true)
     } catch {
-      setError('无法读取当前问卷。请先创建或打开项目并完成解锁。')
+      if (isCurrent(generation, sessionId)) {
+        setError('无法读取当前问卷。请先创建或打开项目并完成解锁。')
+      }
     } finally {
-      setAttachmentLoading(false)
+      if (isCurrent(generation, sessionId)) setAttachmentLoading(false)
     }
   }
 
-  const refreshAfterSend = async (sessionId: string, artifact: AIQuestionnaireArtifactPreviewDto) => {
+  const refreshAfterSend = async (
+    sessionId: string,
+    artifact: AIQuestionnaireArtifactPreviewDto,
+    generation: number
+  ) => {
+    if (!isCurrent(generation, sessionId)) return
     setActiveArtifact({
       sessionId,
       artifactId: artifact.artifactId,
@@ -379,16 +457,20 @@ export function AIQuestionnairePage() {
       preview: artifact.value
     })
     await Promise.all([
-      loadLatestSession(sessionId),
-      loadSessions(sessionId),
-      loadArtifact(sessionId, artifact.artifactId, artifact.operationId)
+      loadLatestSession(sessionId, generation),
+      loadSessions(sessionId, generation),
+      loadArtifact(sessionId, artifact.artifactId, artifact.operationId, generation)
     ])
   }
 
   const performSend = async () => {
-    if (activeSessionId === null || draft.trim().length === 0 || sending) return
+    const sessionId = activeSessionIdRef.current
+    const generation = generationRef.current
+    if (sessionId === null || draft.trim().length === 0 || sending || configMissing ||
+      sessionPage?.status === 'running') return
     const currentRequestId = crypto.randomUUID()
-    const sessionId = activeSessionId
+    const content = draft
+    const includeQuestionnaire = includeCurrentQuestionnaire
     setRequestId(currentRequestId)
     setSending(true)
     setError(null)
@@ -397,9 +479,10 @@ export function AIQuestionnairePage() {
       const result = await window.easyEpi.ai.send({
         requestId: currentRequestId,
         sessionId,
-        content: draft,
-        includeCurrentQuestionnaire
+        content,
+        includeCurrentQuestionnaire: includeQuestionnaire
       })
+      if (!isCurrent(generation, sessionId)) return
       if (!result.ok) {
         handleFailure(result.errorCode, 'AI 生成失败，请重试。')
         setAnnouncement('AI 请求未完成。')
@@ -407,64 +490,85 @@ export function AIQuestionnairePage() {
       }
       setDraft('')
       setAnnouncement('AI 问卷草稿已生成。')
-      await refreshAfterSend(sessionId, result.artifact)
+      await refreshAfterSend(sessionId, result.artifact, generation)
     } catch {
-      setError('AI 生成失败，请重试。')
-      setAnnouncement('AI 请求未完成。')
+      if (isCurrent(generation, sessionId)) {
+        setError('AI 生成失败，请重试。')
+        setAnnouncement('AI 请求未完成。')
+      }
     } finally {
-      setIncludeCurrentQuestionnaire(false)
-      setAttachmentPreview(null)
-      setSending(false)
-      setRequestId(null)
+      if (isCurrent(generation, sessionId)) {
+        setIncludeCurrentQuestionnaire(false)
+        setAttachmentPreview(null)
+        setSending(false)
+        setRequestId(null)
+      }
     }
   }
 
   const startSend = async () => {
-    if (activeSessionId === null || draft.trim().length === 0 || sending) return
+    const sessionId = activeSessionIdRef.current
+    const generation = generationRef.current
+    if (sessionId === null || draft.trim().length === 0 || sending || configMissing ||
+      sessionPage?.status === 'running') return
     if (privacyAccepted === true) return performSend()
     try {
       const result = await window.easyEpi.ai.privacy.status()
+      if (!isCurrent(generation, sessionId)) return
       if (!result.ok) return handleFailure(result.errorCode, '无法读取 AI 隐私确认状态。')
       setPrivacyAccepted(result.accepted)
       if (result.accepted) return performSend()
       setPrivacyOpen(true)
     } catch {
-      setError('无法读取 AI 隐私确认状态。')
+      if (isCurrent(generation, sessionId)) setError('无法读取 AI 隐私确认状态。')
     }
   }
 
   const acceptPrivacyAndSend = async () => {
+    const sessionId = activeSessionIdRef.current
+    const generation = generationRef.current
+    if (sessionId === null) return
     try {
       const result = await window.easyEpi.ai.privacy.accept()
+      if (!isCurrent(generation, sessionId)) return
       if (!result.ok) return handleFailure(result.errorCode, '无法保存 AI 隐私确认。')
       setPrivacyAccepted(true)
       setPrivacyOpen(false)
       await performSend()
     } catch {
-      setError('无法保存 AI 隐私确认。')
+      if (isCurrent(generation, sessionId)) setError('无法保存 AI 隐私确认。')
     }
   }
 
   const cancelSend = async () => {
-    if (requestId === null) return
+    const sessionId = activeSessionIdRef.current
+    const generation = generationRef.current
+    if (requestId === null || sessionId === null) return
+    const pendingRequestId = requestId
     try {
-      const result = await window.easyEpi.ai.cancel({ requestId })
+      const result = await window.easyEpi.ai.cancel({ requestId: pendingRequestId })
+      if (!isCurrent(generation, sessionId)) return
       setAnnouncement(result.ok && result.cancelled ? '已请求取消 AI 生成。' : '请求已结束，无需取消。')
     } catch {
-      setError('暂时无法取消 AI 请求。')
+      if (isCurrent(generation, sessionId)) setError('暂时无法取消 AI 请求。')
     }
   }
 
   const applyArtifact = async () => {
-    if (activeSessionId === null || activeArtifact === null || applying) return
+    const sessionId = activeSessionIdRef.current
+    const generation = generationRef.current
+    if (sessionId === null || activeArtifact === null ||
+      activeArtifact.sessionId !== sessionId || applying) return
+    const artifact = activeArtifact
     setApplying(true)
     setError(null)
     try {
       const result = await window.easyEpi.ai.artifact.apply({
-        sessionId: activeSessionId,
-        artifactId: activeArtifact.artifactId,
-        operationId: activeArtifact.operationId
+        sessionId,
+        artifactId: artifact.artifactId,
+        operationId: artifact.operationId
       })
+      if (!isCurrent(generation, sessionId)) return
       if (!result.ok) return handleFailure(result.errorCode, '无法应用 AI 草稿。')
       setActiveArtifact((current) => current === null ? null : { ...current, preview: result.preview })
       toast.push({
@@ -474,19 +578,22 @@ export function AIQuestionnairePage() {
       })
       setAnnouncement(result.applied ? 'AI 草稿已应用。' : '该草稿之前已经应用。')
       await Promise.all([
-        loadLatestSession(activeSessionId),
-        loadSessions(activeSessionId),
-        loadArtifact(activeSessionId, activeArtifact.artifactId, activeArtifact.operationId)
+        loadLatestSession(sessionId, generation),
+        loadSessions(sessionId, generation),
+        loadArtifact(sessionId, artifact.artifactId, artifact.operationId, generation)
       ])
     } catch {
-      setError('无法应用 AI 草稿，草稿仍保留供查看。')
+      if (isCurrent(generation, sessionId)) {
+        setError('无法应用 AI 草稿，草稿仍保留供查看。')
+      }
     } finally {
-      setApplying(false)
+      if (isCurrent(generation, sessionId)) setApplying(false)
     }
   }
 
   const activeSession = sessions.find(({ sessionId }) => sessionId === activeSessionId)
-  const canSend = activeSessionId !== null && draft.trim().length > 0 && !sending && !projectBlocked
+  const canSend = activeSessionId !== null && draft.trim().length > 0 && !sending &&
+    !projectBlocked && !configMissing && sessionPage?.status !== 'running'
 
   return (
     <MilestonePage
@@ -533,7 +640,7 @@ export function AIQuestionnairePage() {
                         className="w-full justify-start text-left"
                         variant={item.sessionId === activeSessionId ? 'secondary' : 'ghost'}
                         aria-pressed={item.sessionId === activeSessionId}
-                        onClick={() => setActiveSessionId(item.sessionId)}
+                        onClick={() => activateSession(item.sessionId)}
                       >
                         <span className="min-w-0 truncate">{item.title}</span>
                       </Button>
@@ -570,6 +677,11 @@ export function AIQuestionnairePage() {
                     <Button size="sm" variant="secondary" onClick={() => void loadLatestSession(activeSessionId)} disabled={loading} aria-label="刷新当前对话"><RefreshCw aria-hidden="true" size={16} />刷新</Button>
                   </CardHeader>
                   <CardContent className="grid gap-[var(--space-3)]">
+                    {sessionPage?.status === 'running' ? (
+                      <p className="m-0 rounded-[var(--radius-1)] bg-[var(--color-warning-soft)] p-[var(--space-3)] text-[var(--color-text-secondary)]">
+                        此对话仍在处理中。请等待后使用「刷新」查看最新状态，期间不能重复发送。
+                      </p>
+                    ) : null}
                     {messageOffset > 0 ? <Button variant="ghost" loading={loadingEarlier} onClick={() => void loadEarlier()}>加载更早</Button> : null}
                     {loading && messages.length === 0 ? <p className="m-0 text-[var(--color-text-secondary)]">正在加载对话…</p> : null}
                     {!loading && messages.length === 0 ? <EmptyState title="开始这段对话" description="描述研究目的、目标人群和希望收集的信息。" /> : null}
@@ -631,7 +743,6 @@ export function AIQuestionnairePage() {
       )}
 
       <Modal
-        trigger={<Button className="sr-only">隐私确认</Button>}
         title="AI 隐私确认"
         description={AI_PRIVACY_NOTICE}
         open={privacyOpen}
@@ -647,7 +758,6 @@ export function AIQuestionnairePage() {
       </Modal>
 
       <Modal
-        trigger={<Button className="sr-only">当前问卷发送预览</Button>}
         title="加入当前问卷"
         description="请确认本次发送将包含的问卷摘要。"
         open={attachmentOpen}
@@ -670,7 +780,6 @@ export function AIQuestionnairePage() {
       </Modal>
 
       <Modal
-        trigger={<Button className="sr-only">重命名对话</Button>}
         title="重命名 AI 对话"
         description="输入便于识别的对话名称。"
         open={renameOpen}

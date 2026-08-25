@@ -31,6 +31,18 @@ test('modal and confirm manage safe focus', async () => {
   expect(screen.getByRole('button', { name: '取消' })).toHaveFocus()
 })
 
+test('controlled modal does not require a trigger', () => {
+  render(
+    <Modal open title="受控对话框" description="由外部状态控制">
+      内容
+    </Modal>
+  )
+
+  expect(screen.getByRole('dialog', { name: '受控对话框' })).toBeVisible()
+  expect(screen.getAllByRole('button')).toHaveLength(1)
+  expect(screen.getByRole('button', { name: '关闭对话框' })).toBeVisible()
+})
+
 test('tooltip and toast provide supplemental status', async () => {
   const user = userEvent.setup()
   render(
