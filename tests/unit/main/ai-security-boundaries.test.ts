@@ -175,6 +175,24 @@ describe('AI Session version and artifact idempotency', () => {
         value: { enabled: false }
       })
     ).toThrow('AI_ARTIFACT_OPERATION_CONFLICT')
+    expect(() =>
+      repository.upsertArtifact(sessionId, {
+        artifactId: 7,
+        operationId: 'operation-numeric-id',
+        kind: 'questionnaire-patch',
+        status: 'completed',
+        versionStamp
+      })
+    ).toThrow('INVALID_AI_ARTIFACT')
+    expect(() =>
+      repository.upsertArtifact(sessionId, {
+        artifactId: 'artifact-invalid-status',
+        operationId: 'operation-invalid-status',
+        kind: 'questionnaire-patch',
+        status: 'done',
+        versionStamp
+      })
+    ).toThrow('INVALID_AI_ARTIFACT')
   })
 
   it('requires typed APIs for reserved state, run temp, and artifact structures', () => {
@@ -197,15 +215,36 @@ describe('AI Session version and artifact idempotency', () => {
       values: { partial: true }
     })
     repository.updateState(sessionId, { status: 'running', activeRunId: 'run-1' })
+    repository.appendMessage(sessionId, {
+      id: 'message-1',
+      role: 'assistant',
+      content: 'Draft ready',
+      createdAt: '2026-08-25T01:00:00.000Z',
+      runId: 'run-1'
+    })
+    repository.upsertAttachment(sessionId, {
+      attachmentId: 'attachment-1',
+      messageId: 'message-1',
+      kind: 'questionnaire-patch',
+      createdAt: '2026-08-25T01:00:00.000Z',
+      value: { ready: true }
+    })
 
     expect(repository.get(sessionId)?.state).toMatchObject({
       status: 'running',
       activeRunId: 'run-1'
     })
+    expect(repository.get(sessionId)?.conversation).toMatchObject({
+      messages: [{ id: 'message-1' }],
+      attachments: { 'attachment-1': { messageId: 'message-1' } }
+    })
     for (const path of [
+      `session://${sessionId}/conversation/messages`,
       `session://${sessionId}/state/runs/run-2`,
       `session://${sessionId}/temp/runs/run-2`,
-      `session://${sessionId}/artifacts/byId/artifact-2`
+      `session://${sessionId}/artifacts/byId/artifact-2`,
+      `session://${sessionId}/cache/values`,
+      `session://${sessionId}/cache/other/key`
     ]) {
       expect(() => repository.writeVirtual(path, {}, sessionId)).toThrow(
         'AI_SESSION_RESERVED_PATH'
@@ -214,5 +253,9 @@ describe('AI Session version and artifact idempotency', () => {
         'AI_SESSION_RESERVED_PATH'
       )
     }
+    const cachePath = `session://${sessionId}/cache/values/model-response`
+    expect(repository.writeVirtual(cachePath, { cached: true }, sessionId).mutated).toBe(true)
+    expect(repository.deleteVirtual(cachePath, sessionId)).toEqual({ value: true, mutated: true })
+    expect(repository.get(sessionId)?.cache).toEqual({ values: {} })
   })
 })

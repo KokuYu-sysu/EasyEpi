@@ -29,7 +29,8 @@ import {
   createProject,
   decryptProjectData,
   getProjectFilePath,
-  saveProject
+  saveProject,
+  saveProjectToPath
 } from '../../../src/main/services/project.service'
 
 type Handler = (event: IpcInvokeEventLike, ...args: unknown[]) => Promise<unknown>
@@ -115,17 +116,29 @@ describe('Project IPC recovery safety', () => {
     expect(damaged.encryptionKey).not.toEqual(originalKey)
   })
 
-  it('validates a damaged backup before replacing the active project file', async () => {
+  it('rejects a backup whose unauthenticated header differs from current state', async () => {
     const folder = mkdtempSync(join(tmpdir(), 'easyepi-project-restore-'))
     folders.push(folder)
     const created = createProject(folder, 'active', 'active-password')
     const projectPath = getProjectFilePath(folder, 'active')
     const backupPath = createBackup(projectPath)!
-    writeFileSync(backupPath, 'corrupt backup')
+    const backupBytes = readFileSync(backupPath)
+    backupBytes[28] = backupBytes[28] === 0x61 ? 0x62 : 0x61
+    writeFileSync(backupPath, backupBytes)
+    const currentProject = decryptProjectData(projectPath, created.encryptionKey)
+    currentProject.questionnaire.name = 'must remain current'
+    saveProject(
+      folder,
+      'active',
+      currentProject,
+      created.encryptionKey,
+      created.salt,
+      created.passwordHash
+    )
     const original = readFileSync(projectPath)
 
     const state = createProjectIpcState()
-    state.currentProject = decryptProjectData(projectPath, created.encryptionKey)
+    state.currentProject = currentProject
     state.currentFilePath = projectPath
     state.currentSaltHex = created.salt
     state.currentHashHex = created.passwordHash
@@ -164,6 +177,17 @@ describe('Project IPC recovery safety', () => {
       createdAt: '2026-08-25T00:00:00.000Z',
       values: { partial: true }
     }
+    project.meta.lastModifiedAt = '2000-01-01T00:00:00.000Z'
+    expect(() =>
+      saveProjectToPath(
+        join(folder, 'missing', 'cannot-write.easyepi'),
+        project,
+        created.encryptionKey,
+        created.salt,
+        created.passwordHash
+      )
+    ).toThrow()
+    expect(project.meta.lastModifiedAt).toBe('2000-01-01T00:00:00.000Z')
     saveProject(
       folder,
       'study',

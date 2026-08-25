@@ -284,6 +284,13 @@ export function registerProjectIpc(
       const success = restoreFromBackup(request.backupPath, state.currentFilePath, {
         dataFilePath,
         validateProject: (path) => {
+          const backupHeader = readProjectHeader(path)
+          if (
+            backupHeader.saltHex !== state.currentSaltHex ||
+            backupHeader.hashHex !== state.currentHashHex
+          ) {
+            throw new Error('PROJECT_RESTORE_HEADER_MISMATCH')
+          }
           decryptProjectData(path, key)
         },
         validateData: (path) => {

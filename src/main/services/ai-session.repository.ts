@@ -4,6 +4,8 @@ import type {
   AIArtifact,
   AIArtifactStatus,
   AIJsonValue,
+  AIMessage,
+  AIMessageAttachment,
   AIMutationResult,
   AIRun,
   AIRunTemp,
@@ -54,12 +56,21 @@ function invalidPath(): never {
   throw new Error('INVALID_AI_SESSION_PATH')
 }
 
+function hasControlCharacter(value: string): boolean {
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index)
+    if (code <= 0x1f || code === 0x7f) return true
+  }
+  return false
+}
+
 function validateSessionId(sessionId: string): void {
   if (!SESSION_ID_PATTERN.test(sessionId)) invalidPath()
 }
 
-function validatePathSegment(segment: string): void {
+function validatePathSegment(segment: unknown): asserts segment is string {
   if (
+    typeof segment !== 'string' ||
     !PATH_SEGMENT_PATTERN.test(segment) ||
     segment === '.' ||
     segment === '..' ||
@@ -80,7 +91,7 @@ export function parseAISessionVirtualPath(
     !value.startsWith('session://') ||
     value.includes('\\') ||
     value.includes('%') ||
-    /[\u0000-\u001f\u007f]/.test(value)
+    hasControlCharacter(value)
   ) {
     invalidPath()
   }
@@ -146,14 +157,14 @@ function normalizeTitle(value: string): string {
     value.length === 0 ||
     value.length > 120 ||
     value !== value.trim() ||
-    /[\u0000-\u001f\u007f]/.test(value)
+    hasControlCharacter(value)
   ) {
     throw new Error('INVALID_AI_SESSION_TITLE')
   }
   return value
 }
 
-function validateVersionStamp(value: AiVersionStamp): AiVersionStamp {
+function validateVersionStamp(value: unknown): AiVersionStamp {
   if (
     !isPlainObject(value) ||
     typeof value.promptId !== 'string' ||
@@ -168,12 +179,96 @@ function validateVersionStamp(value: AiVersionStamp): AiVersionStamp {
     typeof value.harnessVersion !== 'string' ||
     value.harnessVersion.length === 0 ||
     value.harnessVersion.length > 64 ||
+    typeof value.schemaVersion !== 'number' ||
     !Number.isInteger(value.schemaVersion) ||
     value.schemaVersion < 1
   ) {
     throw new Error('INVALID_AI_VERSION_STAMP')
   }
-  return clone(value)
+  return {
+    promptId: value.promptId,
+    promptVersion: value.promptVersion,
+    promptHash: value.promptHash,
+    harnessVersion: value.harnessVersion,
+    schemaVersion: value.schemaVersion
+  }
+}
+
+function parseMessage(value: unknown): AIMessage {
+  if (!isPlainObject(value)) throw new Error('INVALID_AI_MESSAGE')
+  const { id, role, content, createdAt, runId } = value
+  if (
+    typeof id !== 'string' ||
+    typeof role !== 'string' ||
+    !['system', 'user', 'assistant', 'tool'].includes(role) ||
+    typeof content !== 'string' ||
+    typeof createdAt !== 'string' ||
+    createdAt.length === 0 ||
+    (runId !== undefined && typeof runId !== 'string')
+  ) {
+    throw new Error('INVALID_AI_MESSAGE')
+  }
+  validatePathSegment(id)
+  if (runId !== undefined) validatePathSegment(runId)
+  return { id, role: role as AIMessage['role'], content, createdAt, ...(runId === undefined ? {} : { runId }) }
+}
+
+function parseAttachment(value: unknown): AIMessageAttachment {
+  if (!isPlainObject(value)) throw new Error('INVALID_AI_ATTACHMENT')
+  const { attachmentId, messageId, kind, createdAt, value: attachmentValue } = value
+  if (
+    typeof attachmentId !== 'string' ||
+    typeof messageId !== 'string' ||
+    typeof kind !== 'string' ||
+    kind.length === 0 ||
+    typeof createdAt !== 'string' ||
+    createdAt.length === 0
+  ) {
+    throw new Error('INVALID_AI_ATTACHMENT')
+  }
+  validatePathSegment(attachmentId)
+  validatePathSegment(messageId)
+  assertJsonValue(attachmentValue)
+  return { attachmentId, messageId, kind, createdAt, value: clone(attachmentValue) }
+}
+
+function parseArtifactUpsert(value: unknown): AIArtifactUpsert {
+  if (!isPlainObject(value)) throw new Error('INVALID_AI_ARTIFACT')
+  const {
+    artifactId,
+    operationId,
+    kind,
+    status,
+    versionStamp: rawVersionStamp,
+    value: artifactValue,
+    errorCode
+  } = value
+  if (
+    typeof artifactId !== 'string' ||
+    typeof operationId !== 'string' ||
+    typeof kind !== 'string' ||
+    kind.length === 0 ||
+    kind.length > 128 ||
+    kind !== kind.trim() ||
+    (status !== 'pending' && status !== 'completed' && status !== 'failed') ||
+    (errorCode !== undefined &&
+      (typeof errorCode !== 'string' || errorCode.length === 0 || errorCode.length > 128))
+  ) {
+    throw new Error('INVALID_AI_ARTIFACT')
+  }
+  validatePathSegment(artifactId)
+  validatePathSegment(operationId)
+  const versionStamp = validateVersionStamp(rawVersionStamp)
+  if (artifactValue !== undefined) assertJsonValue(artifactValue)
+  return {
+    artifactId,
+    operationId,
+    kind,
+    status,
+    versionStamp,
+    ...(artifactValue === undefined ? {} : { value: clone(artifactValue) }),
+    ...(errorCode === undefined ? {} : { errorCode })
+  }
 }
 
 function canonicalize(value: AIJsonValue): AIJsonValue {
@@ -219,8 +314,8 @@ function assertVersionMatchesSession(session: AISessionData, stamp: AiVersionSta
   }
 }
 
-function assertGeneralWritablePartition(partition: AISessionPartition): void {
-  if (partition !== 'conversation' && partition !== 'cache') {
+function assertGeneralCacheValuePath(path: AISessionVirtualPath): void {
+  if (path.partition !== 'cache' || path.segments.length !== 2 || path.segments[0] !== 'values') {
     throw new Error('AI_SESSION_RESERVED_PATH')
   }
 }
@@ -278,7 +373,7 @@ export class AISessionRepository {
         createdAt: timestamp,
         updatedAt: timestamp
       },
-      conversation: { messages: [] },
+      conversation: { messages: [], attachments: {} },
       state: {
         status: 'idle',
         runs: {},
@@ -359,6 +454,38 @@ export class AISessionRepository {
     }
     if (mutated) this.touch(session)
     return { value: clone(session.state), mutated }
+  }
+
+  appendMessage(sessionId: string, input: unknown): AIMutationResult<AIMessage> {
+    const session = this.requireSession(sessionId)
+    const message = parseMessage(input)
+    if (message.runId !== undefined && !hasOwn(session.state.runs, message.runId)) {
+      throw new Error('AI_RUN_NOT_FOUND')
+    }
+    if (session.conversation.messages.some(({ id }) => id === message.id)) {
+      throw new Error('AI_MESSAGE_ID_CONFLICT')
+    }
+    session.conversation.messages.push(message)
+    this.touch(session)
+    return { value: clone(message), mutated: true }
+  }
+
+  upsertAttachment(
+    sessionId: string,
+    input: unknown
+  ): AIMutationResult<AIMessageAttachment> {
+    const session = this.requireSession(sessionId)
+    const attachment = parseAttachment(input)
+    if (!session.conversation.messages.some(({ id }) => id === attachment.messageId)) {
+      throw new Error('AI_MESSAGE_NOT_FOUND')
+    }
+    const existing = session.conversation.attachments[attachment.attachmentId]
+    const mutated = existing === undefined || !structurallyEqual(existing as unknown as AIJsonValue, attachment as unknown as AIJsonValue)
+    if (mutated) {
+      session.conversation.attachments[attachment.attachmentId] = attachment
+      this.touch(session)
+    }
+    return { value: clone(existing === undefined || mutated ? attachment : existing), mutated }
   }
 
   upsertRun(sessionId: string, input: AIRun): AIMutationResult<AIRun> {
@@ -449,7 +576,7 @@ export class AISessionRepository {
     currentSessionId: string
   ): AIMutationResult<AIJsonValue> {
     const parsed = parseAISessionVirtualPath(path, currentSessionId)
-    assertGeneralWritablePartition(parsed.partition)
+    assertGeneralCacheValuePath(parsed)
     assertJsonValue(value)
     const session = this.requireSession(parsed.sessionId)
     let parent: unknown = session[parsed.partition]
@@ -472,7 +599,7 @@ export class AISessionRepository {
 
   deleteVirtual(path: string, currentSessionId: string): AIMutationResult<boolean> {
     const parsed = parseAISessionVirtualPath(path, currentSessionId)
-    assertGeneralWritablePartition(parsed.partition)
+    assertGeneralCacheValuePath(parsed)
     const session = this.requireSession(parsed.sessionId)
     let parent: unknown = session[parsed.partition]
     for (const segment of parsed.segments.slice(0, -1)) {
@@ -521,7 +648,8 @@ export class AISessionRepository {
     return { value: removed, mutated: removed > 0 }
   }
 
-  upsertArtifact(sessionId: string, input: AIArtifactUpsert): AIMutationResult<AIArtifact> {
+  upsertArtifact(sessionId: string, value: unknown): AIMutationResult<AIArtifact> {
+    const input = parseArtifactUpsert(value)
     validatePathSegment(input.artifactId)
     validatePathSegment(input.operationId)
     if (

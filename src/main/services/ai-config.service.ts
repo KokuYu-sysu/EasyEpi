@@ -57,6 +57,14 @@ function isStrictBase64(value: string): boolean {
   return value.length > 0 && value.length % 4 === 0 && /^[A-Za-z0-9+/]+={0,2}$/.test(value)
 }
 
+function hasControlCharacter(value: string): boolean {
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index)
+    if (code <= 0x1f || code === 0x7f) return true
+  }
+  return false
+}
+
 export function normalizeAIBaseUrl(value: string): string {
   if (
     typeof value !== 'string' ||
@@ -64,7 +72,8 @@ export function normalizeAIBaseUrl(value: string): string {
     value.length > MAX_BASE_URL_LENGTH ||
     value !== value.trim() ||
     value.includes('%') ||
-    /[\u0000-\u001f\u007f\\]/.test(value)
+    value.includes('\\') ||
+    hasControlCharacter(value)
   ) {
     throw new Error('INVALID_AI_BASE_URL')
   }
@@ -107,7 +116,7 @@ export function validateAIConfigUpdate(request: unknown): AIProviderConfigUpdate
     model !== model.trim() ||
     model.length === 0 ||
     model.length > MAX_MODEL_LENGTH ||
-    /[\u0000-\u001f\u007f]/.test(model) ||
+    hasControlCharacter(model) ||
     (apiKey !== undefined && apiKey !== null && typeof apiKey !== 'string') ||
     (typeof apiKey === 'string' && (apiKey.length > MAX_API_KEY_LENGTH || apiKey.includes('\0')))
   ) {
@@ -177,6 +186,7 @@ export function createAIConfigService(
       contents = await readFile(configPath, 'utf8')
     } catch (error) {
       if (isMissingFile(error)) return emptyConfig()
+      // eslint-disable-next-line preserve-caught-error -- Filesystem details may expose user paths.
       throw new Error('AI_CONFIG_READ_FAILED')
     }
 

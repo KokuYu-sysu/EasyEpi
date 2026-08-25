@@ -40,6 +40,14 @@ export interface AIMessage {
   runId?: string
 }
 
+export interface AIMessageAttachment {
+  attachmentId: string
+  messageId: string
+  kind: string
+  createdAt: string
+  value: AIJsonValue
+}
+
 export interface AiVersionStamp {
   promptId: string
   promptVersion: string
@@ -68,6 +76,7 @@ export interface AISessionState {
 
 export interface AIConversationPartition {
   messages: AIMessage[]
+  attachments: Record<string, AIMessageAttachment>
 }
 
 export interface AICachePartition {

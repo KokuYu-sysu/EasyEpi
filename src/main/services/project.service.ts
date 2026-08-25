@@ -146,11 +146,12 @@ export function saveProjectToPath(
   hashHex: string
 ): void {
   const now = Date.now()
-  data.meta.lastModifiedAt = new Date(now).toISOString()
+  const lastModifiedAt = new Date(now).toISOString()
   atomicWriteFile(
     filePath,
     createProjectFileContents(data, encryptionKey, saltHex, hashHex, now)
   )
+  data.meta.lastModifiedAt = lastModifiedAt
 }
 
 export function createProjectFileContents(
