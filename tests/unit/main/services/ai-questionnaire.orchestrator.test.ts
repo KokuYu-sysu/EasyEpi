@@ -51,6 +51,55 @@ function validCompletion(): string {
 }
 
 describe('AI questionnaire orchestrator', () => {
+  it('never reads the formal questionnaire when no attachment is allowed', async () => {
+    const value = project()
+    const formalQuestionnaire = value.questionnaire
+    const readFormalQuestionnaire = vi.fn(() => {
+      throw new Error('FORMAL_QUESTIONNAIRE_READ')
+    })
+    Object.defineProperty(value, 'questionnaire', {
+      configurable: true,
+      get: readFormalQuestionnaire
+    })
+    const orchestrator = createAIQuestionnaireOrchestrator({
+      persistProject: vi.fn(),
+      client: {
+        complete: vi.fn().mockResolvedValue({
+          content: validCompletion(),
+          responseFormatSupported: true
+        })
+      }
+    })
+
+    const first = await orchestrator.sendTurn({
+      project: value,
+      sessionId,
+      userText: 'Create',
+      config: { baseUrl: 'https://example.test/v1', model: 'model' }
+    })
+    expect(first.ok).toBe(true)
+    if (!first.ok) return
+    expect((first.artifact.value as { baseQuestionnaire: { name: string } })
+      .baseQuestionnaire.name).toBe('未命名问卷')
+
+    const refined = await orchestrator.sendTurn({
+      project: value,
+      sessionId,
+      userText: 'Refine',
+      config: { baseUrl: 'https://example.test/v1', model: 'model' }
+    })
+    expect(refined.ok).toBe(true)
+    if (refined.ok) {
+      expect((refined.artifact.value as { baseQuestionnaire: { name: string } })
+        .baseQuestionnaire.name).toBe('Study')
+    }
+    expect(readFormalQuestionnaire).not.toHaveBeenCalled()
+    Object.defineProperty(value, 'questionnaire', { value: formalQuestionnaire, writable: true })
+    expect(() => previewQuestionnaireArtifact(
+      value, sessionId, first.artifact.artifactId
+    )).toThrow('AI_ARTIFACT_STALE')
+  })
+
   it('uses one call normally and no more than two validation-repair calls', async () => {
     const firstProject = project()
     const oneCall = vi.fn().mockResolvedValue({ content: validCompletion(), responseFormatSupported: true })
@@ -112,6 +161,7 @@ describe('AI questionnaire orchestrator', () => {
       project: value,
       sessionId,
       userText: 'Create a questionnaire',
+      explicitAttachment: structuredClone(value.questionnaire),
       config: { baseUrl: 'https://example.test/v1', model: 'model' }
     })
     expect(result).toEqual({ ok: false, errorCode: 'AI_CANCELLED' })
@@ -134,6 +184,7 @@ describe('AI questionnaire orchestrator', () => {
       project: value,
       sessionId,
       userText: 'Create a questionnaire',
+      explicitAttachment: structuredClone(value.questionnaire),
       config: { baseUrl: 'https://example.test/v1', model: 'model' }
     })
     expect(generated.ok).toBe(true)
@@ -177,6 +228,7 @@ describe('AI questionnaire orchestrator', () => {
       client: { complete: vi.fn().mockResolvedValue({ content: validCompletion(), responseFormatSupported: true }) }
     }).sendTurn({
       project: value, sessionId, userText: 'Create',
+      explicitAttachment: structuredClone(value.questionnaire),
       config: { baseUrl: 'https://example.test/v1', model: 'model' }
     })
     expect(generated.ok).toBe(true)
@@ -219,6 +271,7 @@ describe('AI questionnaire orchestrator', () => {
       client: { complete: vi.fn().mockResolvedValue({ content: validCompletion(), responseFormatSupported: true }) }
     }).sendTurn({
       project: value, sessionId, userText: 'Create',
+      explicitAttachment: structuredClone(value.questionnaire),
       config: { baseUrl: 'https://example.test/v1', model: 'model' }
     })
     expect(generated.ok).toBe(true)
@@ -256,6 +309,7 @@ describe('AI questionnaire orchestrator', () => {
     const orchestrator = createAIQuestionnaireOrchestrator({ persistProject: vi.fn(), client: { complete } })
     const generated = await orchestrator.sendTurn({
       project: value, sessionId, userText: 'Create',
+      explicitAttachment: structuredClone(value.questionnaire),
       config: { baseUrl: 'https://example.test/v1', model: 'model' }
     })
     expect(generated.ok).toBe(true)
@@ -274,6 +328,7 @@ describe('AI questionnaire orchestrator', () => {
     const callsBefore = complete.mock.calls.length
     const stale = await orchestrator.sendTurn({
       project: value, sessionId, userText: 'Refine again',
+      explicitAttachment: structuredClone(value.questionnaire),
       config: { baseUrl: 'https://example.test/v1', model: 'model' }
     })
     expect(stale).toMatchObject({ ok: false, errorCode: 'AI_ARTIFACT_STALE' })
@@ -321,6 +376,7 @@ describe('AI questionnaire orchestrator', () => {
       client: { complete: vi.fn().mockResolvedValue({ content: validCompletion(), responseFormatSupported: true }) }
     }).sendTurn({
       project: value, sessionId, userText: 'Create',
+      explicitAttachment: structuredClone(value.questionnaire),
       config: { baseUrl: 'https://example.test/v1', model: 'model' }
     })
     expect(generated.ok).toBe(true)

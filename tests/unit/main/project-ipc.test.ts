@@ -163,6 +163,44 @@ describe('Project IPC recovery safety', () => {
     expect(state.currentProject?.meta.name).toBe('active')
   })
 
+  it('cancels AI requests before activating a restored project object', async () => {
+    const folder = mkdtempSync(join(tmpdir(), 'easyepi-project-restore-switch-'))
+    folders.push(folder)
+    const created = createProject(folder, 'active', 'active-password')
+    const projectPath = getProjectFilePath(folder, 'active')
+    const project = decryptProjectData(projectPath, created.encryptionKey)
+    project.questionnaire.name = 'Backed up'
+    saveProjectToPath(
+      projectPath, project, created.encryptionKey, created.salt, created.passwordHash
+    )
+    const backupPath = createBackup(projectPath)!
+    project.questionnaire.name = 'Current'
+    saveProjectToPath(
+      projectPath, project, created.encryptionKey, created.salt, created.passwordHash
+    )
+
+    const state = createProjectIpcState()
+    state.currentProject = project
+    state.currentFilePath = projectPath
+    state.currentSaltHex = created.salt
+    state.currentHashHex = created.passwordHash
+    state.auth.encryptionKey = Buffer.from(created.encryptionKey)
+    const cancelAIRequests = vi.fn(() => {
+      expect(state.currentProject).toBe(project)
+    })
+    const { handlers, ipcMain } = createHarness()
+    registerProjectIpc(
+      ipcMain, state, packagedUrl, undefined, () => undefined, cancelAIRequests
+    )
+
+    await expect(
+      handlers.get(PROJECT_RESTORE_CHANNEL)!(trustedEvent, { backupPath })
+    ).resolves.toMatchObject({ ok: true })
+    expect(cancelAIRequests).toHaveBeenCalledOnce()
+    expect(state.currentProject).not.toBe(project)
+    expect(state.currentProject?.questionnaire.name).toBe('Backed up')
+  })
+
   it('clears recovered AI temp at the exact moved project path', async () => {
     const folder = mkdtempSync(join(tmpdir(), 'easyepi-project-moved-'))
     folders.push(folder)

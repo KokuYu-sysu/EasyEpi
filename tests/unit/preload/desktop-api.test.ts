@@ -170,6 +170,37 @@ describe('createDesktopApi', () => {
     expect(JSON.stringify(result)).not.toContain('sk-secret')
   })
 
+  it('recursively rejects malformed or sensitive AI responses', async () => {
+    const invoke = vi.fn()
+      .mockResolvedValueOnce({ ok: true, accepted: 'yes', acceptedAt: null, notice: 'invalid' })
+      .mockResolvedValueOnce({
+        ok: true,
+        session: {
+          manifest: {
+            sessionId: '123e4567-e89b-42d3-a456-426614174000',
+            title: 'AI',
+            versionStamp: {
+              promptId: 'assistant', promptVersion: '1', promptHash: 'hash',
+              harnessVersion: '1', schemaVersion: 1
+            },
+            createdAt: '2026-08-25T00:00:00.000Z',
+            updatedAt: '2026-08-25T00:00:00.000Z'
+          },
+          conversation: { messages: [], attachments: {} },
+          state: { status: 'idle', runs: {}, values: { nested: { password: 'leak' } } },
+          cache: { values: {} },
+          artifacts: { byId: {} },
+          temp: { runs: {} }
+        }
+      })
+    const api = createDesktopApi(invoke)
+
+    await expect(api.ai.privacy.status()).rejects.toThrow('INVALID_AI_RESPONSE')
+    await expect(api.ai.session.get({
+      sessionId: '123e4567-e89b-42d3-a456-426614174000'
+    })).rejects.toThrow('INVALID_AI_RESPONSE')
+  })
+
   it('exposes fixed export and baseline channels with renderer-side request validation', async () => {
     const invoke = vi.fn(async (channel: string) => {
       if (channel === BASELINE_GENERATE_CHANNEL) return { headers: [], rows: [] }

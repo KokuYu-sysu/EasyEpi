@@ -1,4 +1,10 @@
-import type { QuestionnaireDef } from './types/qnaire'
+import {
+  isConditionOperator,
+  isConstraintType,
+  isQuestionType,
+  type QuestionnaireDef
+} from './types/qnaire'
+import { isDerivedResultType } from './types/derived'
 
 export type AIJsonValue =
   | string
@@ -383,48 +389,467 @@ export function parseAIArtifactApplyRequest(value: unknown): AIArtifactApplyRequ
   }
 }
 
-function assertPublicError(input: Record<string, unknown>): void {
-  exactKeys(input, ['ok', 'errorCode', 'message'])
-  if (input.ok !== false || typeof input.errorCode !== 'string' ||
-    !/^[A-Z][A-Z0-9_]{1,127}$/.test(input.errorCode) ||
-    typeof input.message !== 'string' || input.message.length === 0 || input.message.length > 200) {
-    throw new Error('INVALID_AI_RESPONSE')
+const MAX_RESPONSE_DEPTH = 24
+const MAX_RESPONSE_NODES = 100_000
+const MAX_RESPONSE_COLLECTION = 10_000
+const MAX_RESPONSE_STRING = 2_000_000
+const DANGEROUS_KEYS = new Set(['__proto__', 'prototype', 'constructor'])
+const SENSITIVE_KEY_PARTS = ['apikey', 'password', 'path', 'stack', 'recovery', 'secret', 'credential']
+const SAFE_SENSITIVE_KEYS = new Set(['hasApiKey', 'maskedApiKey'])
+
+function invalidResponse(): never {
+  throw new Error('INVALID_AI_RESPONSE')
+}
+
+function responseKeys(
+  value: unknown,
+  required: readonly string[],
+  optional: readonly string[] = []
+): Record<string, unknown> {
+  if (!isPlainObject(value)) invalidResponse()
+  const allowed = new Set([...required, ...optional])
+  if (required.some((key) => !Object.prototype.hasOwnProperty.call(value, key)) ||
+    Object.keys(value).some((key) => !allowed.has(key))) invalidResponse()
+  return value
+}
+
+function responseString(value: unknown, maxLength: number, allowEmpty = false): string {
+  if (typeof value !== 'string' || value.length > maxLength || value.includes('\0') ||
+    (!allowEmpty && value.length === 0)) invalidResponse()
+  return value
+}
+
+function responseId(value: unknown, pattern = PUBLIC_ID_PATTERN): string {
+  const id = responseString(value, 128)
+  if (!pattern.test(id)) invalidResponse()
+  return id
+}
+
+function responseTimestamp(value: unknown): string {
+  const timestamp = responseString(value, 64)
+  if (!Number.isFinite(Date.parse(timestamp))) invalidResponse()
+  return timestamp
+}
+
+function responseNumber(value: unknown, integer = false): number {
+  if (typeof value !== 'number' || !Number.isFinite(value) || (integer && !Number.isInteger(value))) {
+    invalidResponse()
+  }
+  return value
+}
+
+function assertSafeResponseTree(value: unknown): void {
+  const seen = new Set<object>()
+  let nodes = 0
+  const visit = (current: unknown, depth: number): void => {
+    nodes += 1
+    if (nodes > MAX_RESPONSE_NODES || depth > MAX_RESPONSE_DEPTH) invalidResponse()
+    if (current === null || typeof current === 'boolean') return
+    if (typeof current === 'string') {
+      if (current.length > MAX_RESPONSE_STRING || current.includes('\0')) invalidResponse()
+      return
+    }
+    if (typeof current === 'number') {
+      if (!Number.isFinite(current)) invalidResponse()
+      return
+    }
+    if (typeof current !== 'object' || seen.has(current)) invalidResponse()
+    seen.add(current)
+    if (Array.isArray(current)) {
+      if (current.length > MAX_RESPONSE_COLLECTION) invalidResponse()
+      for (const item of current) visit(item, depth + 1)
+    } else {
+      if (!isPlainObject(current) || Object.keys(current).length > MAX_RESPONSE_COLLECTION) {
+        invalidResponse()
+      }
+      for (const [key, item] of Object.entries(current)) {
+        if (key.length === 0 || key.length > 128 || DANGEROUS_KEYS.has(key)) invalidResponse()
+        const normalized = key.toLowerCase().replace(/[^a-z0-9]/g, '')
+        if (!SAFE_SENSITIVE_KEYS.has(key) &&
+          SENSITIVE_KEY_PARTS.some((part) => normalized.includes(part))) {
+          invalidResponse()
+        }
+        visit(item, depth + 1)
+      }
+    }
+    seen.delete(current)
+  }
+  visit(value, 0)
+}
+
+function parseKnownResponse<T>(
+  value: unknown,
+  successKeys: readonly string[],
+  validate: (input: Record<string, unknown>) => void
+): T {
+  assertSafeResponseTree(value)
+  const input = responseKeys(value, ['ok'], value !== null && typeof value === 'object' &&
+    'ok' in value && value.ok === false ? ['errorCode', 'message'] : successKeys)
+  if (input.ok === false) {
+    responseKeys(input, ['ok', 'errorCode', 'message'])
+    const code = responseString(input.errorCode, 128)
+    if (!/^[A-Z][A-Z0-9_]{1,127}$/.test(code)) invalidResponse()
+    responseString(input.message, 200)
+  } else {
+    if (input.ok !== true) invalidResponse()
+    responseKeys(input, ['ok', ...successKeys])
+    validate(input)
+  }
+  return structuredClone(input) as T
+}
+
+function assertVersionStamp(value: unknown): void {
+  const input = responseKeys(
+    value,
+    ['promptId', 'promptVersion', 'promptHash', 'harnessVersion', 'schemaVersion']
+  )
+  responseString(input.promptId, 128)
+  responseString(input.promptVersion, 64)
+  responseString(input.promptHash, 256)
+  responseString(input.harnessVersion, 64)
+  const schemaVersion = responseNumber(input.schemaVersion, true)
+  if (schemaVersion < 1 || schemaVersion > 1_000) invalidResponse()
+}
+
+function assertQuestionnaire(value: unknown, allowDerivedVariables: boolean): void {
+  const input = responseKeys(
+    value,
+    ['name', 'questions', 'conditionRules', 'keyQuestionIds'],
+    allowDerivedVariables ? ['description', 'derivedVariables'] : ['description']
+  )
+  responseString(input.name, 20_000, true)
+  if (input.description !== undefined) responseString(input.description, 20_000, true)
+  if (!Array.isArray(input.questions) || input.questions.length > 500 ||
+    !Array.isArray(input.conditionRules) || input.conditionRules.length > 1_000 ||
+    !Array.isArray(input.keyQuestionIds) || input.keyQuestionIds.length > 500) invalidResponse()
+  for (const question of input.questions) {
+    const item = responseKeys(
+      question,
+      ['id', 'content', 'variableName', 'type', 'options', 'constraint', 'isKey', 'allowSkip', 'order'],
+      ['defaultValue', 'skipValue']
+    )
+    responseId(item.id)
+    responseString(item.content, 20_000, true)
+    responseString(item.variableName, 128)
+    if (typeof item.type !== 'string' || !isQuestionType(item.type)) invalidResponse()
+    if (!Array.isArray(item.options) || item.options.length > 1_000) invalidResponse()
+    for (const option of item.options) {
+      const parsed = responseKeys(option, ['value', 'label'])
+      responseString(parsed.value, 20_000, true)
+      responseString(parsed.label, 20_000, true)
+    }
+    const constraint = responseKeys(
+      item.constraint,
+      ['type'],
+      ['fixedLength', 'minValue', 'maxValue', 'step', 'regexPattern', 'regexFlags']
+    )
+    if (typeof constraint.type !== 'string' || !isConstraintType(constraint.type)) invalidResponse()
+    for (const key of ['fixedLength', 'minValue', 'maxValue', 'step'] as const) {
+      if (constraint[key] !== undefined) responseNumber(constraint[key], key === 'fixedLength')
+    }
+    if (constraint.regexPattern !== undefined) responseString(constraint.regexPattern, 20_000, true)
+    if (constraint.regexFlags !== undefined) responseString(constraint.regexFlags, 32, true)
+    if (item.defaultValue !== undefined) responseString(item.defaultValue, 20_000, true)
+    if (typeof item.isKey !== 'boolean' || typeof item.allowSkip !== 'boolean') invalidResponse()
+    if (item.skipValue !== undefined) responseString(item.skipValue, 20_000, true)
+    const order = responseNumber(item.order, true)
+    if (order < 0 || order >= input.questions.length) invalidResponse()
+  }
+  for (const rule of input.conditionRules) {
+    const item = responseKeys(
+      rule,
+      ['id', 'sourceQuestionId', 'conditions', 'logic', 'action', 'targetQuestionIds']
+    )
+    responseId(item.id)
+    responseId(item.sourceQuestionId)
+    if (!Array.isArray(item.conditions) || item.conditions.length > 500 ||
+      !Array.isArray(item.targetQuestionIds) || item.targetQuestionIds.length > 500) invalidResponse()
+    for (const condition of item.conditions) {
+      const parsed = responseKeys(condition, ['questionId', 'operator', 'value'])
+      responseId(parsed.questionId)
+      if (typeof parsed.operator !== 'string' || !isConditionOperator(parsed.operator)) invalidResponse()
+      responseString(parsed.value, 20_000, true)
+    }
+    if (item.logic !== 'AND' && item.logic !== 'OR') invalidResponse()
+    if (item.action !== 'skip' && item.action !== 'show' && item.action !== 'require') invalidResponse()
+    for (const id of item.targetQuestionIds) responseId(id)
+  }
+  for (const id of input.keyQuestionIds) responseId(id)
+  if (input.derivedVariables !== undefined) {
+    if (!allowDerivedVariables || !Array.isArray(input.derivedVariables) ||
+      input.derivedVariables.length > 500) invalidResponse()
+    for (const derived of input.derivedVariables) {
+      const item = responseKeys(
+        derived,
+        ['id', 'variableName', 'label', 'formula', 'resultType', 'order'],
+        ['displayDecimals']
+      )
+      responseId(item.id)
+      responseString(item.variableName, 128)
+      responseString(item.label, 20_000, true)
+      responseString(item.formula, 100_000)
+      if (!isDerivedResultType(item.resultType)) invalidResponse()
+      const order = responseNumber(item.order, true)
+      if (order < 0 || order >= input.derivedVariables.length) invalidResponse()
+      if (item.displayDecimals !== undefined) responseNumber(item.displayDecimals, true)
+    }
+  }
+}
+
+function assertDiff(value: unknown): void {
+  const input = responseKeys(value, ['metadata', 'questions', 'rules'])
+  const metadata = responseKeys(input.metadata, ['name', 'description'])
+  for (const [key, change] of Object.entries(metadata)) {
+    if (change === null) continue
+    const parsed = responseKeys(change, ['before', 'after'])
+    if (key === 'description') {
+      if (parsed.before !== null) responseString(parsed.before, 20_000, true)
+      if (parsed.after !== null) responseString(parsed.after, 20_000, true)
+    } else {
+      responseString(parsed.before, 20_000, true)
+      responseString(parsed.after, 20_000, true)
+    }
+  }
+  const questions = responseKeys(input.questions, ['added', 'removed', 'modified'])
+  for (const key of ['added', 'removed'] as const) {
+    if (!Array.isArray(questions[key]) || questions[key].length > 500) invalidResponse()
+    for (const entry of questions[key]) {
+      const parsed = responseKeys(entry, ['id', 'variableName', 'content'])
+      responseId(parsed.id)
+      responseString(parsed.variableName, 128)
+      responseString(parsed.content, 20_000, true)
+    }
+  }
+  if (!Array.isArray(questions.modified) || questions.modified.length > 500) invalidResponse()
+  for (const entry of questions.modified) {
+    const parsed = responseKeys(entry, ['id', 'variableName', 'fields'])
+    responseId(parsed.id)
+    responseString(parsed.variableName, 128)
+    if (!Array.isArray(parsed.fields) || parsed.fields.length > 64) invalidResponse()
+    for (const field of parsed.fields) responseString(field, 128)
+  }
+  const rules = responseKeys(input.rules, ['added', 'removed', 'modified'])
+  for (const key of ['added', 'removed', 'modified'] as const) {
+    if (!Array.isArray(rules[key]) || rules[key].length > 1_000) invalidResponse()
+    for (const id of rules[key]) responseId(id)
+  }
+}
+
+function assertArtifactPreview(value: unknown): void {
+  const input = responseKeys(
+    value,
+    [
+      'draft', 'diff', 'assistantMessage', 'rollingSummary', 'validation',
+      'baseQuestionnaireHash', 'baseQuestionnaire'
+    ]
+  )
+  assertQuestionnaire(input.draft, false)
+  assertDiff(input.diff)
+  responseString(input.assistantMessage, 100_000, true)
+  responseString(input.rollingSummary, 100_000, true)
+  const validation = responseKeys(input.validation, ['success', 'errors'])
+  if (validation.success !== true || !Array.isArray(validation.errors) || validation.errors.length !== 0) {
+    invalidResponse()
+  }
+  responseString(input.baseQuestionnaireHash, 256)
+  assertQuestionnaire(input.baseQuestionnaire, false)
+}
+
+function assertRun(value: unknown): void {
+  const input = responseKeys(
+    value,
+    ['runId', 'status', 'startedAt', 'versionStamp'],
+    ['completedAt', 'errorCode']
+  )
+  responseId(input.runId)
+  if (!['running', 'completed', 'failed', 'cancelled'].includes(String(input.status))) invalidResponse()
+  responseTimestamp(input.startedAt)
+  if (input.completedAt !== undefined) responseTimestamp(input.completedAt)
+  assertVersionStamp(input.versionStamp)
+  if (input.errorCode !== undefined) responseString(input.errorCode, 128)
+}
+
+function assertArtifact(value: unknown): void {
+  const input = responseKeys(
+    value,
+    [
+      'artifactId', 'operationId', 'kind', 'status', 'versionStamp', 'createdAt', 'updatedAt'
+    ],
+    ['value', 'errorCode']
+  )
+  responseId(input.artifactId)
+  responseId(input.operationId)
+  responseString(input.kind, 128)
+  if (input.status !== 'pending' && input.status !== 'completed' && input.status !== 'failed') {
+    invalidResponse()
+  }
+  assertVersionStamp(input.versionStamp)
+  responseTimestamp(input.createdAt)
+  responseTimestamp(input.updatedAt)
+  if (input.errorCode !== undefined) responseString(input.errorCode, 128)
+  if (input.kind === 'questionnaire-draft' && input.value !== undefined) {
+    assertArtifactPreview(input.value)
+  }
+}
+
+function responseRecord(value: unknown, limit = 5_000): Record<string, unknown> {
+  if (!isPlainObject(value) || Object.keys(value).length > limit) invalidResponse()
+  return value
+}
+
+function assertManifest(value: unknown): void {
+  const input = responseKeys(
+    value,
+    ['sessionId', 'title', 'versionStamp', 'createdAt', 'updatedAt']
+  )
+  responseId(input.sessionId, SESSION_ID_PATTERN)
+  responseString(input.title, 120)
+  assertVersionStamp(input.versionStamp)
+  responseTimestamp(input.createdAt)
+  responseTimestamp(input.updatedAt)
+}
+
+function assertSession(value: unknown): void {
+  const input = responseKeys(
+    value,
+    ['manifest', 'conversation', 'state', 'cache', 'artifacts', 'temp']
+  )
+  assertManifest(input.manifest)
+  const conversation = responseKeys(input.conversation, ['messages', 'attachments'])
+  if (!Array.isArray(conversation.messages) || conversation.messages.length > 5_000) invalidResponse()
+  for (const message of conversation.messages) {
+    const item = responseKeys(message, ['id', 'role', 'content', 'createdAt'], ['runId'])
+    responseId(item.id)
+    if (!['system', 'user', 'assistant', 'tool'].includes(String(item.role))) invalidResponse()
+    responseString(item.content, MAX_RESPONSE_STRING, true)
+    responseTimestamp(item.createdAt)
+    if (item.runId !== undefined) responseId(item.runId)
+  }
+  for (const [id, attachment] of Object.entries(responseRecord(conversation.attachments))) {
+    const item = responseKeys(
+      attachment,
+      ['attachmentId', 'messageId', 'kind', 'createdAt', 'value']
+    )
+    if (responseId(item.attachmentId) !== id) invalidResponse()
+    responseId(item.messageId)
+    responseString(item.kind, 128)
+    responseTimestamp(item.createdAt)
+  }
+  const state = responseKeys(input.state, ['status', 'runs', 'values'], ['activeRunId'])
+  if (!['idle', 'running', 'completed', 'failed', 'cancelled'].includes(String(state.status))) {
+    invalidResponse()
+  }
+  for (const [id, run] of Object.entries(responseRecord(state.runs))) {
+    assertRun(run)
+    if ((run as { runId: unknown }).runId !== id) invalidResponse()
+  }
+  responseRecord(state.values)
+  if (state.activeRunId !== undefined) responseId(state.activeRunId)
+  const cache = responseKeys(input.cache, ['values'])
+  responseRecord(cache.values)
+  const artifacts = responseKeys(input.artifacts, ['byId'])
+  for (const [id, artifact] of Object.entries(responseRecord(artifacts.byId))) {
+    assertArtifact(artifact)
+    if ((artifact as { artifactId: unknown }).artifactId !== id) invalidResponse()
+  }
+  const temp = responseKeys(input.temp, ['runs'])
+  for (const [id, runTemp] of Object.entries(responseRecord(temp.runs))) {
+    const item = responseKeys(runTemp, ['runId', 'versionStamp', 'createdAt', 'values'])
+    if (responseId(item.runId) !== id) invalidResponse()
+    assertVersionStamp(item.versionStamp)
+    responseTimestamp(item.createdAt)
+    responseRecord(item.values)
   }
 }
 
 export function parseAIResponse<T>(value: unknown, successKeys: readonly string[]): T {
-  if (!isPlainObject(value)) throw new Error('INVALID_AI_RESPONSE')
-  if (value.ok === false) {
-    try {
-      assertPublicError(value)
-    } catch {
-      throw new Error('INVALID_AI_RESPONSE')
-    }
-    return structuredClone(value) as T
-  }
-  if (value.ok !== true) throw new Error('INVALID_AI_RESPONSE')
-  try {
-    exactKeys(value, ['ok', ...successKeys])
-  } catch {
-    throw new Error('INVALID_AI_RESPONSE')
-  }
-  return structuredClone(value) as T
+  return parseKnownResponse<T>(value, successKeys, () => undefined)
 }
 
 export function parseAIConfigResponse(value: unknown): AIConfigIpcResult {
-  const result = parseAIResponse<AIConfigIpcResult>(value, ['config'])
-  if (!result.ok) return result
-  const config = result.config
-  if (!isPlainObject(config)) throw new Error('INVALID_AI_RESPONSE')
-  try {
-    exactKeys(config, ['baseUrl', 'model', 'hasApiKey', 'maskedApiKey'])
-  } catch {
-    throw new Error('INVALID_AI_RESPONSE')
-  }
-  if (typeof config.baseUrl !== 'string' || typeof config.model !== 'string' ||
-    typeof config.hasApiKey !== 'boolean' ||
-    (config.maskedApiKey !== null && typeof config.maskedApiKey !== 'string')) {
-    throw new Error('INVALID_AI_RESPONSE')
-  }
-  return result
+  return parseKnownResponse<AIConfigIpcResult>(value, ['config'], (result) => {
+    const config = responseKeys(result.config, ['baseUrl', 'model', 'hasApiKey', 'maskedApiKey'])
+    responseString(config.baseUrl, 2_048)
+    responseString(config.model, 200, true)
+    if (typeof config.hasApiKey !== 'boolean') invalidResponse()
+    if (config.hasApiKey) responseString(config.maskedApiKey, 64)
+    else if (config.maskedApiKey !== null) invalidResponse()
+  })
+}
+
+export function parseAIConnectionTestResponse(value: unknown): AIConnectionTestResult {
+  return parseKnownResponse<AIConnectionTestResult>(value, [], () => undefined)
+}
+
+export function parseAIPrivacyStatusResponse(value: unknown): AIPrivacyStatusResult {
+  return parseKnownResponse<AIPrivacyStatusResult>(
+    value,
+    ['accepted', 'acceptedAt', 'notice'],
+    (result) => {
+      if (typeof result.accepted !== 'boolean' || result.notice !== AI_PRIVACY_NOTICE) invalidResponse()
+      if (result.accepted) responseTimestamp(result.acceptedAt)
+      else if (result.acceptedAt !== null) invalidResponse()
+    }
+  )
+}
+
+export function parseAISessionResponse(value: unknown): AISessionResult {
+  return parseKnownResponse<AISessionResult>(value, ['session'], (result) => assertSession(result.session))
+}
+
+export function parseAISessionListResponse(value: unknown): AISessionListResult {
+  return parseKnownResponse<AISessionListResult>(value, ['sessions'], (result) => {
+    if (!Array.isArray(result.sessions) || result.sessions.length > 1_000) invalidResponse()
+    for (const manifest of result.sessions) assertManifest(manifest)
+  })
+}
+
+export function parseAISessionDeleteResponse(value: unknown): AISessionDeleteResult {
+  return parseKnownResponse<AISessionDeleteResult>(value, ['deleted'], (result) => {
+    if (typeof result.deleted !== 'boolean') invalidResponse()
+  })
+}
+
+export function parseAISessionMigrateResponse(value: unknown): AISessionMigrateResult {
+  return parseKnownResponse<AISessionMigrateResult>(value, ['migrated', 'session'], (result) => {
+    if (typeof result.migrated !== 'boolean') invalidResponse()
+    assertSession(result.session)
+  })
+}
+
+export function parseAISendResponse(value: unknown): AISendResult {
+  return parseKnownResponse<AISendResult>(
+    value,
+    ['requestId', 'artifact', 'attempts'],
+    (result) => {
+      responseId(result.requestId)
+      assertArtifact(result.artifact)
+      const attempts = responseNumber(result.attempts, true)
+      if (attempts < 0 || attempts > 3) invalidResponse()
+    }
+  )
+}
+
+export function parseAICancelResponse(value: unknown): AICancelResult {
+  return parseKnownResponse<AICancelResult>(value, ['cancelled'], (result) => {
+    if (typeof result.cancelled !== 'boolean') invalidResponse()
+  })
+}
+
+export function parseAIArtifactPreviewResponse(value: unknown): AIArtifactPreviewResult {
+  return parseKnownResponse<AIArtifactPreviewResult>(value, ['preview'], (result) => {
+    assertArtifactPreview(result.preview)
+  })
+}
+
+export function parseAIArtifactApplyResponse(value: unknown): AIArtifactApplyResult {
+  return parseKnownResponse<AIArtifactApplyResult>(
+    value,
+    ['applied', 'questionnaire', 'preview'],
+    (result) => {
+      if (typeof result.applied !== 'boolean') invalidResponse()
+      assertQuestionnaire(result.questionnaire, true)
+      assertArtifactPreview(result.preview)
+    }
+  )
 }

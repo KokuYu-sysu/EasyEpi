@@ -155,7 +155,8 @@ void app.whenReady().then(() => {
     projectState,
     packagedRendererUrl,
     developmentUrl,
-    () => adminSessionService.invalidate()
+    () => adminSessionService.invalidate(),
+    aiRegistration.cancelAll
   )
   disposeAdminIpc = registerAdminIpcHandlers(
     ipcMain,

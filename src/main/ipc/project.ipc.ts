@@ -322,6 +322,7 @@ export function registerProjectIpc(
       })
       if (success) {
         if (restoredProject === undefined) throw new Error('PROJECT_RESTORE_FINALIZE_FAILED')
+        cancelAIRequests()
         state.currentProject = restoredProject
         return { ok: true, meta: restoredProject.meta } satisfies ProjectResult
       }

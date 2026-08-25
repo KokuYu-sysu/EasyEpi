@@ -361,52 +361,57 @@ export function registerAIIpcHandlers(
     let request: ReturnType<typeof parseAISendRequest>
     try {
       request = parseAISendRequest(rawRequest)
-      const privacy = await dependencies.configService.getPrivacyStatus()
-      if (!privacy.accepted) throw new Error('AI_PRIVACY_NOTICE_REQUIRED')
     } catch (error) {
       return publicError(error)
     }
     if (inFlight.has(request.requestId)) return publicError('AI_REQUEST_IN_PROGRESS')
 
+    let captured: CapturedProject
     try {
-      const captured = captureProject(state)
-      const config = await dependencies.configService.getPlaintextForMain()
-      if (!isCurrentProject(state, captured)) throw new Error('PROJECT_CHANGED')
-      const controller = new AbortController()
-      const entry: InFlightRequest = {
-        controller,
-        project: captured.project,
-        filePath: captured.filePath,
-        owner: callerOwner(event)
-      }
-      inFlight.set(request.requestId, entry)
-      try {
-        const orchestrator = createAIQuestionnaireOrchestrator({
-          client,
-          persistProject: (project) => {
-            if (project !== captured.project) throw new Error('PROJECT_CHANGED')
-            persist(captured)
-          }
-        })
-        const result = await orchestrator.sendTurn({
-          project: captured.project,
-          sessionId: request.sessionId,
-          userText: request.content,
-          config,
-          ...(request.includeCurrentQuestionnaire
-            ? { explicitAttachment: structuredClone(captured.project.questionnaire) }
-            : {}),
-          signal: controller.signal,
-          operationId: request.requestId
-        })
-        return result.ok
-          ? { ok: true, requestId: request.requestId, artifact: result.artifact, attempts: result.attempts } satisfies AISendResult
-          : publicError(result.errorCode)
-      } finally {
-        if (inFlight.get(request.requestId) === entry) inFlight.delete(request.requestId)
-      }
+      captured = captureProject(state)
     } catch (error) {
       return publicError(error)
+    }
+    const controller = new AbortController()
+    const entry: InFlightRequest = {
+      controller,
+      project: captured.project,
+      filePath: captured.filePath,
+      owner: callerOwner(event)
+    }
+    inFlight.set(request.requestId, entry)
+    try {
+      const privacy = await dependencies.configService.getPrivacyStatus()
+      if (!privacy.accepted) throw new Error('AI_PRIVACY_NOTICE_REQUIRED')
+      if (controller.signal.aborted) throw new Error('AI_CANCELLED')
+      const config = await dependencies.configService.getPlaintextForMain()
+      if (controller.signal.aborted) throw new Error('AI_CANCELLED')
+      if (!isCurrentProject(state, captured)) throw new Error('PROJECT_CHANGED')
+      const orchestrator = createAIQuestionnaireOrchestrator({
+        client,
+        persistProject: (project) => {
+          if (project !== captured.project) throw new Error('PROJECT_CHANGED')
+          persist(captured)
+        }
+      })
+      const result = await orchestrator.sendTurn({
+        project: captured.project,
+        sessionId: request.sessionId,
+        userText: request.content,
+        config,
+        ...(request.includeCurrentQuestionnaire
+          ? { explicitAttachment: structuredClone(captured.project.questionnaire) }
+          : {}),
+        signal: controller.signal,
+        operationId: request.requestId
+      })
+      return result.ok
+        ? { ok: true, requestId: request.requestId, artifact: result.artifact, attempts: result.attempts } satisfies AISendResult
+        : publicError(result.errorCode)
+    } catch (error) {
+      return publicError(error)
+    } finally {
+      if (inFlight.get(request.requestId) === entry) inFlight.delete(request.requestId)
     }
   })
 

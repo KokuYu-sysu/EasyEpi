@@ -132,14 +132,23 @@ import {
   AI_SESSION_MIGRATE_CHANNEL,
   AI_SESSION_UPDATE_CHANNEL,
   parseAIArtifactApplyRequest,
+  parseAIArtifactApplyResponse,
   parseAIArtifactRequest,
+  parseAIArtifactPreviewResponse,
   parseAICancelRequest,
+  parseAICancelResponse,
   parseAIConfigResponse,
   parseAIConfigUpdateRequest,
-  parseAIResponse,
+  parseAIConnectionTestResponse,
+  parseAIPrivacyStatusResponse,
   parseAISendRequest,
+  parseAISendResponse,
   parseAISessionCreateRequest,
+  parseAISessionDeleteResponse,
   parseAISessionIdRequest,
+  parseAISessionListResponse,
+  parseAISessionMigrateResponse,
+  parseAISessionResponse,
   parseAISessionUpdateRequest,
   type AIArtifactApplyRequest,
   type AIArtifactApplyResult,
@@ -279,9 +288,9 @@ function parseQuestionnaireDef(value: unknown): QuestionnaireDef {
   return value as QuestionnaireDef
 }
 
-function parsePublicAIResult<T>(value: unknown, successKeys: readonly string[]): T {
+function parsePublicAIResult<T>(value: unknown, parse: (input: unknown) => T): T {
   try {
-    return parseAIResponse<T>(value, successKeys)
+    return parse(value)
   } catch {
     throw new Error('INVALID_AI_RESPONSE')
   }
@@ -479,61 +488,61 @@ export function createDesktopApi(invoke: DesktopInvoke): DesktopApi {
       clear: async () => parsePublicAIConfigResult(await invoke(AI_CONFIG_CLEAR_CHANNEL)),
       testConnection: async () => parsePublicAIResult<AIConnectionTestResult>(
         await invoke(AI_CONFIG_TEST_CONNECTION_CHANNEL),
-        []
+        parseAIConnectionTestResponse
       )
     }),
     privacy: Object.freeze({
       status: async () => parsePublicAIResult<AIPrivacyStatusResult>(
         await invoke(AI_PRIVACY_STATUS_CHANNEL),
-        ['accepted', 'acceptedAt', 'notice']
+        parseAIPrivacyStatusResponse
       ),
       accept: async () => parsePublicAIResult<AIPrivacyStatusResult>(
         await invoke(AI_PRIVACY_ACCEPT_CHANNEL),
-        ['accepted', 'acceptedAt', 'notice']
+        parseAIPrivacyStatusResponse
       )
     }),
     session: Object.freeze({
       create: async (request: AISessionCreateRequest = {}) => parsePublicAIResult<AISessionResult>(
         await invoke(AI_SESSION_CREATE_CHANNEL, parseAISessionCreateRequest(request)),
-        ['session']
+        parseAISessionResponse
       ),
       list: async () => parsePublicAIResult<AISessionListResult>(
         await invoke(AI_SESSION_LIST_CHANNEL),
-        ['sessions']
+        parseAISessionListResponse
       ),
       get: async (request: AISessionIdRequest) => parsePublicAIResult<AISessionResult>(
         await invoke(AI_SESSION_GET_CHANNEL, parseAISessionIdRequest(request)),
-        ['session']
+        parseAISessionResponse
       ),
       update: async (request: AISessionUpdateRequest) => parsePublicAIResult<AISessionResult>(
         await invoke(AI_SESSION_UPDATE_CHANNEL, parseAISessionUpdateRequest(request)),
-        ['session']
+        parseAISessionResponse
       ),
       delete: async (request: AISessionIdRequest) => parsePublicAIResult<AISessionDeleteResult>(
         await invoke(AI_SESSION_DELETE_CHANNEL, parseAISessionIdRequest(request)),
-        ['deleted']
+        parseAISessionDeleteResponse
       ),
       migrate: async (request: AISessionIdRequest) => parsePublicAIResult<AISessionMigrateResult>(
         await invoke(AI_SESSION_MIGRATE_CHANNEL, parseAISessionIdRequest(request)),
-        ['migrated', 'session']
+        parseAISessionMigrateResponse
       )
     }),
     send: async (request: AISendRequest) => parsePublicAIResult<AISendResult>(
       await invoke(AI_SEND_CHANNEL, parseAISendRequest(request)),
-      ['requestId', 'artifact', 'attempts']
+      parseAISendResponse
     ),
     cancel: async (request: AICancelRequest) => parsePublicAIResult<AICancelResult>(
       await invoke(AI_CANCEL_CHANNEL, parseAICancelRequest(request)),
-      ['cancelled']
+      parseAICancelResponse
     ),
     artifact: Object.freeze({
       preview: async (request: AIArtifactRequest) => parsePublicAIResult<AIArtifactPreviewResult>(
         await invoke(AI_ARTIFACT_PREVIEW_CHANNEL, parseAIArtifactRequest(request)),
-        ['preview']
+        parseAIArtifactPreviewResponse
       ),
       apply: async (request: AIArtifactApplyRequest) => parsePublicAIResult<AIArtifactApplyResult>(
         await invoke(AI_ARTIFACT_APPLY_CHANNEL, parseAIArtifactApplyRequest(request)),
-        ['applied', 'questionnaire', 'preview']
+        parseAIArtifactApplyResponse
       )
     })
   })

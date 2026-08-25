@@ -35,10 +35,14 @@ describe('EpiData IPC', () => {
       removeHandler: vi.fn()
     }
     const projectState = createProjectIpcState()
+    const cancelAIRequests = vi.fn()
     const dispose = registerEpiDataIpcHandlers(
       ipcMain,
       projectState,
-      'file:///D:/EasyEpi/out/renderer/index.html'
+      'file:///D:/EasyEpi/out/renderer/index.html',
+      undefined,
+      () => undefined,
+      cancelAIRequests
     )
     const importHandler = handlers.get(EPIDATA_IMPORT_CHANNEL)!
     const request = {
@@ -62,6 +66,7 @@ describe('EpiData IPC', () => {
     ).resolves.toMatchObject({ success: true })
     expect(projectState.currentProject?.questionnaire.questions).toHaveLength(1)
     expect(projectState.auth.encryptionKey).not.toBeNull()
+    expect(cancelAIRequests).toHaveBeenCalledOnce()
 
     dispose()
     expect(ipcMain.removeHandler).toHaveBeenCalledWith(EPIDATA_IMPORT_CHANNEL)

@@ -88,7 +88,9 @@ function parseArtifactValue(
   const value = validateQuestionnaireArtifact(
     artifact,
     session.manifest.versionStamp,
-    (project.questionnaire.derivedVariables ?? []).map((item) => item.variableName)
+    checkStale
+      ? (project.questionnaire.derivedVariables ?? []).map((item) => item.variableName)
+      : []
   )
   if (checkStale && value.baseQuestionnaireHash !== hashAIQuestionnaire(project.questionnaire)) {
     throw new Error('AI_ARTIFACT_STALE')
@@ -233,21 +235,19 @@ export function createAIQuestionnaireOrchestrator(
       let activeDraft: QuestionnaireDef | undefined
       let activeArtifactId: string | undefined
       let capabilityKey: string
-      const protectedDerivedNames = (request.project.questionnaire.derivedVariables ?? [])
+      const protectedDerivedNames = (request.explicitAttachment?.derivedVariables ?? [])
         .map((item) => item.variableName)
       try {
         const resolvedEntry = resolveAIRegistryEntry(versionStamp)
         if (resolvedEntry.compatibility !== 'supported') throw new Error('AI_VERSION_MIGRATION_REQUIRED')
         registryEntry = resolvedEntry
-        baseQuestionnaire = validateStrictQuestionnaireDto(
-          stripDerivedVariables(request.project.questionnaire)
-        )
+        baseQuestionnaire = request.explicitAttachment === undefined
+          ? { name: '未命名问卷', questions: [], conditionRules: [], keyQuestionIds: [] }
+          : validateStrictQuestionnaireDto(stripDerivedVariables(request.explicitAttachment))
         baseQuestionnaireHash = hashAIQuestionnaire(baseQuestionnaire)
         if (request.explicitAttachment !== undefined) {
-          explicitAttachment = validateStrictQuestionnaireDto(
-            stripDerivedVariables(request.explicitAttachment)
-          )
-          if (hashAIQuestionnaire(explicitAttachment) !== baseQuestionnaireHash) {
+          explicitAttachment = baseQuestionnaire
+          if (hashAIQuestionnaire(request.project.questionnaire) !== baseQuestionnaireHash) {
             throw new Error('AI_ARTIFACT_STALE')
           }
         }
@@ -261,7 +261,10 @@ export function createAIQuestionnaireOrchestrator(
             protectedDerivedNames
           )
           const activeDraftHash = hashAIQuestionnaire(activeValue.draft)
-          if (baseQuestionnaireHash !== activeValue.baseQuestionnaireHash &&
+          if (explicitAttachment === undefined) {
+            baseQuestionnaire = activeValue.draft
+            baseQuestionnaireHash = activeDraftHash
+          } else if (baseQuestionnaireHash !== activeValue.baseQuestionnaireHash &&
             baseQuestionnaireHash !== activeDraftHash) {
             throw new Error('AI_ARTIFACT_STALE')
           }
@@ -285,6 +288,22 @@ export function createAIQuestionnaireOrchestrator(
       const messageId = createId()
       const artifactId = createId()
       const startedAt = now()
+      const basisUnchanged = (lockedSession: AISessionData): boolean => {
+        const lockedActiveArtifactId = typeof lockedSession.state.values.activeArtifactId === 'string'
+          ? lockedSession.state.values.activeArtifactId
+          : undefined
+        if (lockedActiveArtifactId !== activeArtifactId) return false
+        if (explicitAttachment !== undefined) {
+          return hashAIQuestionnaire(request.project.questionnaire) === baseQuestionnaireHash
+        }
+        if (lockedActiveArtifactId === undefined) return true
+        const lockedArtifact = validateQuestionnaireArtifact(
+          lockedSession.artifacts.byId[lockedActiveArtifactId],
+          versionStamp,
+          []
+        )
+        return hashAIQuestionnaire(lockedArtifact.draft) === baseQuestionnaireHash
+      }
       try {
         await mutateAndPersist(request.project, dependencies.persistProject, 'run-started', () => {
           const lockedSession = repository.get(request.sessionId)
@@ -293,11 +312,7 @@ export function createAIQuestionnaireOrchestrator(
             throw new Error('AI_RUN_ALREADY_ACTIVE')
           }
           if (lockedSession.state.runs[runId] !== undefined) throw new Error('AI_RUN_ID_CONFLICT')
-          const lockedActiveArtifactId = typeof lockedSession.state.values.activeArtifactId === 'string'
-            ? lockedSession.state.values.activeArtifactId
-            : undefined
-          if (lockedActiveArtifactId !== activeArtifactId ||
-            hashAIQuestionnaire(request.project.questionnaire) !== baseQuestionnaireHash) {
+          if (!basisUnchanged(lockedSession)) {
             throw new Error('AI_ARTIFACT_STALE')
           }
           repository.upsertRun(request.sessionId, { runId, status: 'running', startedAt, versionStamp })
@@ -331,9 +346,7 @@ export function createAIQuestionnaireOrchestrator(
 
       const runningSession = repository.get(request.sessionId)!
       let errorCode: string | undefined
-      const base = activeDraft ?? (explicitAttachment === undefined
-        ? { name: '', questions: [], conditionRules: [], keyQuestionIds: [] }
-        : explicitAttachment)
+      const base = activeDraft ?? baseQuestionnaire
       let capability = responseCapability(runningSession.cache.values[capabilityKey])
       let lastErrors: AIValidationError[] | undefined
       let repair: string | undefined
@@ -404,7 +417,8 @@ export function createAIQuestionnaireOrchestrator(
           let artifact: AIArtifact | undefined
           const completedAt = now()
           await mutateAndPersist(request.project, dependencies.persistProject, 'run-completed', () => {
-            if (hashAIQuestionnaire(request.project.questionnaire) !== baseQuestionnaireHash) {
+            const lockedSession = repository.get(request.sessionId)
+            if (lockedSession === undefined || !basisUnchanged(lockedSession)) {
               throw new Error('AI_ARTIFACT_STALE')
             }
             repository.appendMessage(request.sessionId, {

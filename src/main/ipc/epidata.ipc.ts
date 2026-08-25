@@ -24,7 +24,8 @@ export function registerEpiDataIpcHandlers(
   projectState: ProjectIpcState,
   packagedRendererUrl: string,
   developmentOrigin?: string,
-  invalidateAdminSession: () => void = () => undefined
+  invalidateAdminSession: () => void = () => undefined,
+  cancelAIRequests: () => void = () => undefined
 ): () => void {
   const importService = new ImportService()
 
@@ -41,6 +42,7 @@ export function registerEpiDataIpcHandlers(
       const key = verifyAndDeriveKey(parsed.password, header.saltHex, header.hashHex)
       if (key === null) throw new Error('IMPORTED_PROJECT_UNLOCK_FAILED')
       const project = decryptProjectData(result.projectPath, key)
+      cancelAIRequests()
       projectState.currentProject = project
       projectState.currentFilePath = result.projectPath
       projectState.currentSaltHex = header.saltHex

@@ -15,7 +15,7 @@ import {
 } from '@main/services/ai-session.repository'
 import { parseAISendRequest, type AiVersionStamp } from '@shared/ai-assistant-contract'
 import type { ProjectData } from '@shared/types/project'
-import { AI_SEND_CHANNEL } from '@shared/ai-assistant-contract'
+import { AI_CANCEL_CHANNEL, AI_SEND_CHANNEL } from '@shared/ai-assistant-contract'
 import { registerAIIpcHandlers } from '@main/ipc/ai.ipc'
 import { createProjectIpcState } from '@main/ipc/project.ipc'
 import type { IpcInvokeEventLike, IpcMainLike } from '@main/ipc/types'
@@ -130,9 +130,15 @@ describe('AI IPC privacy boundary', () => {
       getPrivacyStatus: async () => ({ accepted: false, acceptedAt: null }),
       acceptPrivacy: async () => ({ accepted: true, acceptedAt: '2026-08-25T00:00:00.000Z' } as const)
     } satisfies AIConfigService
+    const state = createProjectIpcState()
+    state.currentProject = createProjectData()
+    state.currentFilePath = 'D:\\privacy.easyepi'
+    state.currentSaltHex = 'a'.repeat(64)
+    state.currentHashHex = 'b'.repeat(64)
+    state.auth.encryptionKey = Buffer.alloc(32, 1)
     const registration = registerAIIpcHandlers(
       ipcMain,
-      createProjectIpcState(),
+      state,
       { configService },
       'file:///app/index.html'
     )
@@ -153,6 +159,57 @@ describe('AI IPC privacy boundary', () => {
       message: '请先确认 AI 隐私说明。'
     })
     expect(getPlaintextForMain).not.toHaveBeenCalled()
+    registration.dispose()
+  })
+
+  it('reserves request ids before config reads and keeps cancellation reliable', async () => {
+    const handlers = new Map<string, (event: IpcInvokeEventLike, ...args: unknown[]) => Promise<unknown>>()
+    const ipcMain: IpcMainLike = {
+      handle: (channel, handler) => handlers.set(channel, handler),
+      removeHandler: (channel) => { handlers.delete(channel) }
+    }
+    let resolveConfig!: (value: { baseUrl: string; model: string }) => void
+    const configPending = new Promise<{ baseUrl: string; model: string }>((resolve) => {
+      resolveConfig = resolve
+    })
+    const configService = {
+      get: async () => ({ ok: true, config: { baseUrl: '', model: '', hasApiKey: false, maskedApiKey: null } } as const),
+      update: async () => ({ ok: false, code: 'INVALID_AI_CONFIG' } as const),
+      clear: async () => ({ ok: false, code: 'AI_CONFIG_SAVE_FAILED' } as const),
+      getPlaintextForMain: () => configPending,
+      getPrivacyStatus: async () => ({ accepted: true, acceptedAt: '2026-08-25T00:00:00.000Z' }),
+      acceptPrivacy: async () => ({ accepted: true, acceptedAt: '2026-08-25T00:00:00.000Z' } as const)
+    } satisfies AIConfigService
+    const state = createProjectIpcState()
+    state.currentProject = createProjectData()
+    state.currentFilePath = 'D:\\study.easyepi'
+    state.currentSaltHex = 'a'.repeat(64)
+    state.currentHashHex = 'b'.repeat(64)
+    state.auth.encryptionKey = Buffer.alloc(32, 1)
+    const registration = registerAIIpcHandlers(
+      ipcMain,
+      state,
+      { configService },
+      'file:///app/index.html'
+    )
+    const event = {
+      senderFrame: { url: 'file:///app/index.html' },
+      sender: { id: 7, send: () => undefined }
+    }
+    const request = {
+      requestId: 'reserved-request', sessionId, content: 'Create',
+      includeCurrentQuestionnaire: false
+    }
+
+    const first = handlers.get(AI_SEND_CHANNEL)!(event, request)
+    await expect(handlers.get(AI_SEND_CHANNEL)!(event, request)).resolves.toMatchObject({
+      ok: false, errorCode: 'AI_REQUEST_IN_PROGRESS'
+    })
+    await expect(handlers.get(AI_CANCEL_CHANNEL)!(event, {
+      requestId: request.requestId
+    })).resolves.toEqual({ ok: true, cancelled: true })
+    resolveConfig({ baseUrl: 'https://example.test/v1', model: 'model' })
+    await expect(first).resolves.toMatchObject({ ok: false, errorCode: 'AI_CANCELLED' })
     registration.dispose()
   })
 })
