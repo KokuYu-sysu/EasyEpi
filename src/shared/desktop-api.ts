@@ -78,6 +78,7 @@ export interface DesktopApi {
     open(request: ProjectOpenRequest): Promise<ProjectResult>
     save(request: ProjectSaveRequest): Promise<ProjectResult>
     close(): Promise<{ ok: boolean }>
+    onClosed?(callback: () => void): () => void
     backup(): Promise<ProjectResult>
     listBackups(): Promise<BackupListResult>
     restore(request: ProjectRestoreRequest): Promise<ProjectResult>

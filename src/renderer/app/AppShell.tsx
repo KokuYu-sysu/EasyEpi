@@ -21,7 +21,11 @@ import { Button, Tooltip } from '@renderer/components/ui'
 import { SettingsDialog } from '@renderer/components/common/SettingsDialog'
 import { BackupDialog } from '@renderer/components/common/BackupDialog'
 import { usePreferencesStore } from '@renderer/stores/preferences-store'
-import { syncAdminSession, useAdminSession } from '@renderer/stores/admin-session.store'
+import {
+  clearAdminSession,
+  syncAdminSession,
+  useAdminSession
+} from '@renderer/stores/admin-session.store'
 import { useCurrentRouteHandle } from './route-metadata'
 
 export interface NavigationItem {
@@ -106,6 +110,15 @@ export function AppShell({ children }: PropsWithChildren) {
   useEffect(() => {
     void syncAdminSession()
   }, [])
+
+  useEffect(
+    () =>
+      window.easyEpi.project.onClosed?.(() => {
+        clearAdminSession()
+        void syncAdminSession()
+      }),
+    []
+  )
 
   useEffect(() => {
     if (

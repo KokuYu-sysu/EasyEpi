@@ -15,6 +15,7 @@ import {
   PROJECT_OPEN_CHANNEL,
   PROJECT_SAVE_CHANNEL,
   PROJECT_CLOSE_CHANNEL,
+  PROJECT_CLOSED_CHANNEL,
   PROJECT_BACKUP_CHANNEL,
   PROJECT_LIST_BACKUPS_CHANNEL,
   PROJECT_RESTORE_CHANNEL,
@@ -236,6 +237,11 @@ export function createDesktopApi(invoke: DesktopInvoke): DesktopApi {
     save: async (request: ProjectSaveRequest) =>
       parseProjectResultSafe(await invoke(PROJECT_SAVE_CHANNEL, request)),
     close: async () => (await invoke(PROJECT_CLOSE_CHANNEL)) as { ok: boolean },
+    onClosed: (callback: () => void) => {
+      const listener = () => callback()
+      ipcRenderer.on(PROJECT_CLOSED_CHANNEL, listener)
+      return () => ipcRenderer.removeListener(PROJECT_CLOSED_CHANNEL, listener)
+    },
     backup: async () => parseProjectResultSafe(await invoke(PROJECT_BACKUP_CHANNEL)),
     listBackups: async () => (await invoke(PROJECT_LIST_BACKUPS_CHANNEL)) as BackupListResult,
     restore: async (request: ProjectRestoreRequest) =>

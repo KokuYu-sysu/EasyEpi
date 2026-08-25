@@ -4,6 +4,7 @@ import {
   PROJECT_OPEN_CHANNEL,
   PROJECT_SAVE_CHANNEL,
   PROJECT_CLOSE_CHANNEL,
+  PROJECT_CLOSED_CHANNEL,
   PROJECT_BACKUP_CHANNEL,
   PROJECT_RESTORE_CHANNEL,
   PROJECT_LIST_BACKUPS_CHANNEL,
@@ -291,6 +292,7 @@ export function registerProjectIpc(
     lock(state.auth)
     stopPeriodicBackups()
     stopPeriodicBackups = () => undefined
+    event.sender?.send(PROJECT_CLOSED_CHANNEL, undefined)
     return { ok: true }
   })
 

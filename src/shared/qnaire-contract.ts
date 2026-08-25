@@ -2,6 +2,7 @@ export const PROJECT_CREATE_CHANNEL = 'project:create' as const
 export const PROJECT_OPEN_CHANNEL = 'project:open' as const
 export const PROJECT_SAVE_CHANNEL = 'project:save' as const
 export const PROJECT_CLOSE_CHANNEL = 'project:close' as const
+export const PROJECT_CLOSED_CHANNEL = 'project:closed' as const
 export const PROJECT_BACKUP_CHANNEL = 'project:backup' as const
 export const PROJECT_LIST_BACKUPS_CHANNEL = 'project:listBackups' as const
 export const PROJECT_RESTORE_CHANNEL = 'project:restore' as const
