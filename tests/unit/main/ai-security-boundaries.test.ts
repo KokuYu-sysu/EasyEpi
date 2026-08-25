@@ -176,4 +176,43 @@ describe('AI Session version and artifact idempotency', () => {
       })
     ).toThrow('AI_ARTIFACT_OPERATION_CONFLICT')
   })
+
+  it('requires typed APIs for reserved state, run temp, and artifact structures', () => {
+    const repository = new AISessionRepository(
+      createProjectData(),
+      () => sessionId,
+      () => '2026-08-25T01:00:00.000Z'
+    )
+    repository.create(versionStamp, 'Review')
+    repository.upsertRun(sessionId, {
+      runId: 'run-1',
+      status: 'running',
+      startedAt: '2026-08-25T01:00:00.000Z',
+      versionStamp
+    })
+    repository.setRunTemp(sessionId, {
+      runId: 'run-1',
+      createdAt: '2026-08-25T01:00:00.000Z',
+      versionStamp,
+      values: { partial: true }
+    })
+    repository.updateState(sessionId, { status: 'running', activeRunId: 'run-1' })
+
+    expect(repository.get(sessionId)?.state).toMatchObject({
+      status: 'running',
+      activeRunId: 'run-1'
+    })
+    for (const path of [
+      `session://${sessionId}/state/runs/run-2`,
+      `session://${sessionId}/temp/runs/run-2`,
+      `session://${sessionId}/artifacts/byId/artifact-2`
+    ]) {
+      expect(() => repository.writeVirtual(path, {}, sessionId)).toThrow(
+        'AI_SESSION_RESERVED_PATH'
+      )
+      expect(() => repository.deleteVirtual(path, sessionId)).toThrow(
+        'AI_SESSION_RESERVED_PATH'
+      )
+    }
+  })
 })

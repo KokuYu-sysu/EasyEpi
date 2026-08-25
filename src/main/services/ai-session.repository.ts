@@ -5,10 +5,14 @@ import type {
   AIArtifactStatus,
   AIJsonValue,
   AIMutationResult,
+  AIRun,
+  AIRunTemp,
   AiVersionStamp,
   AISessionData,
   AISessionListItem,
   AISessionPartition,
+  AISessionState,
+  AISessionStatus,
   AISessionVirtualPath
 } from '@shared/ai-assistant-contract'
 import type { ProjectData } from '@shared/types/project'
@@ -28,6 +32,12 @@ const MAX_VIRTUAL_PATH_LENGTH = 2_048
 
 export interface AISessionUpdate {
   title?: string
+}
+
+export interface AISessionStateUpdate {
+  status?: AISessionStatus
+  activeRunId?: string | null
+  values?: Record<string, AIJsonValue>
 }
 
 export interface AIArtifactUpsert {
@@ -200,6 +210,21 @@ function artifactPayload(value: AIArtifact | AIArtifactUpsert): AIJsonValue {
   }
 }
 
+function assertVersionMatchesSession(session: AISessionData, stamp: AiVersionStamp): void {
+  if (!structurallyEqual(
+    versionStampValue(stamp),
+    versionStampValue(session.manifest.versionStamp)
+  )) {
+    throw new Error('AI_VERSION_STAMP_MISMATCH')
+  }
+}
+
+function assertGeneralWritablePartition(partition: AISessionPartition): void {
+  if (partition !== 'conversation' && partition !== 'cache') {
+    throw new Error('AI_SESSION_RESERVED_PATH')
+  }
+}
+
 function hasOwn(value: Record<string, unknown>, key: string): boolean {
   return Object.prototype.hasOwnProperty.call(value, key)
 }
@@ -293,6 +318,109 @@ export class AISessionRepository {
     return { value: clone(session), mutated }
   }
 
+  updateState(
+    sessionId: string,
+    update: AISessionStateUpdate
+  ): AIMutationResult<AISessionState> {
+    const session = this.requireSession(sessionId)
+    let mutated = false
+    if (update.status !== undefined) {
+      if (!['idle', 'running', 'completed', 'failed', 'cancelled'].includes(update.status)) {
+        throw new Error('INVALID_AI_SESSION_STATE')
+      }
+      if (session.state.status !== update.status) {
+        session.state.status = update.status
+        mutated = true
+      }
+    }
+    if (update.activeRunId !== undefined) {
+      if (update.activeRunId === null) {
+        if (session.state.activeRunId !== undefined) {
+          delete session.state.activeRunId
+          mutated = true
+        }
+      } else {
+        validatePathSegment(update.activeRunId)
+        if (!hasOwn(session.state.runs, update.activeRunId)) {
+          throw new Error('AI_RUN_NOT_FOUND')
+        }
+        if (session.state.activeRunId !== update.activeRunId) {
+          session.state.activeRunId = update.activeRunId
+          mutated = true
+        }
+      }
+    }
+    if (update.values !== undefined) {
+      assertJsonValue(update.values)
+      if (!structurallyEqual(session.state.values, update.values)) {
+        session.state.values = clone(update.values)
+        mutated = true
+      }
+    }
+    if (mutated) this.touch(session)
+    return { value: clone(session.state), mutated }
+  }
+
+  upsertRun(sessionId: string, input: AIRun): AIMutationResult<AIRun> {
+    validatePathSegment(input.runId)
+    if (
+      !['running', 'completed', 'failed', 'cancelled'].includes(input.status) ||
+      typeof input.startedAt !== 'string' ||
+      input.startedAt.length === 0 ||
+      (input.completedAt !== undefined &&
+        (typeof input.completedAt !== 'string' || input.completedAt.length === 0)) ||
+      (input.errorCode !== undefined &&
+        (typeof input.errorCode !== 'string' || input.errorCode.length === 0))
+    ) {
+      throw new Error('INVALID_AI_RUN')
+    }
+    const session = this.requireSession(sessionId)
+    const versionStamp = validateVersionStamp(input.versionStamp)
+    assertVersionMatchesSession(session, versionStamp)
+    const run: AIRun = { ...clone(input), versionStamp }
+    assertJsonValue(run)
+    const existing = session.state.runs[input.runId]
+    if (existing !== undefined) assertJsonValue(existing)
+    const mutated = existing === undefined || !structurallyEqual(
+      existing as unknown as AIJsonValue,
+      run as unknown as AIJsonValue
+    )
+    if (mutated) {
+      session.state.runs[input.runId] = run
+      this.touch(session)
+    }
+    return { value: clone(existing === undefined || mutated ? run : existing), mutated }
+  }
+
+  setRunTemp(sessionId: string, input: AIRunTemp): AIMutationResult<AIRunTemp> {
+    validatePathSegment(input.runId)
+    if (typeof input.createdAt !== 'string' || input.createdAt.length === 0) {
+      throw new Error('INVALID_AI_RUN_TEMP')
+    }
+    assertJsonValue(input.values)
+    const session = this.requireSession(sessionId)
+    const run = session.state.runs[input.runId]
+    if (run === undefined) throw new Error('AI_RUN_NOT_FOUND')
+    const versionStamp = validateVersionStamp(input.versionStamp)
+    assertVersionMatchesSession(session, versionStamp)
+    if (!structurallyEqual(versionStampValue(versionStamp), versionStampValue(run.versionStamp))) {
+      throw new Error('AI_VERSION_STAMP_MISMATCH')
+    }
+    const runTemp: AIRunTemp = { ...clone(input), versionStamp }
+    assertJsonValue(runTemp)
+    const existing = session.temp.runs[input.runId]
+    if (existing !== undefined) assertJsonValue(existing)
+    const mutated = existing === undefined || !structurallyEqual(
+      existing as unknown as AIJsonValue,
+      runTemp as unknown as AIJsonValue
+    )
+    if (mutated) {
+      session.temp.runs[input.runId] = runTemp
+      this.touch(session)
+    }
+    return { value: clone(existing === undefined || mutated ? runTemp : existing), mutated }
+  }
+
   delete(sessionId: string): AIMutationResult<boolean> {
     validateSessionId(sessionId)
     const sessions = this.sessions()
@@ -321,6 +449,7 @@ export class AISessionRepository {
     currentSessionId: string
   ): AIMutationResult<AIJsonValue> {
     const parsed = parseAISessionVirtualPath(path, currentSessionId)
+    assertGeneralWritablePartition(parsed.partition)
     assertJsonValue(value)
     const session = this.requireSession(parsed.sessionId)
     let parent: unknown = session[parsed.partition]
@@ -343,6 +472,7 @@ export class AISessionRepository {
 
   deleteVirtual(path: string, currentSessionId: string): AIMutationResult<boolean> {
     const parsed = parseAISessionVirtualPath(path, currentSessionId)
+    assertGeneralWritablePartition(parsed.partition)
     const session = this.requireSession(parsed.sessionId)
     let parent: unknown = session[parsed.partition]
     for (const segment of parsed.segments.slice(0, -1)) {
@@ -407,12 +537,7 @@ export class AISessionRepository {
     const versionStamp = validateVersionStamp(input.versionStamp)
 
     const session = this.requireSession(sessionId)
-    if (!structurallyEqual(
-      versionStampValue(versionStamp),
-      versionStampValue(session.manifest.versionStamp)
-    )) {
-      throw new Error('AI_VERSION_STAMP_MISMATCH')
-    }
+    assertVersionMatchesSession(session, versionStamp)
 
     const artifactById = session.artifacts.byId[input.artifactId]
     if (artifactById !== undefined && artifactById.operationId !== input.operationId) {

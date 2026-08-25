@@ -1,10 +1,11 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
 
 import type { ProjectData, ProjectMeta } from '@shared/types/project'
 import { PROJECT_MAGIC, PROJECT_VERSION } from '@shared/types/project'
 
 import { encrypt, decrypt, deriveKey, hashPassword, verifyPassword } from './crypto.service'
+import { atomicWriteFile } from './record.service'
 
 const PROJECT_FILE_EXT = '.easyepi'
 
@@ -128,10 +129,28 @@ export function saveProject(
   saltHex: string,
   hashHex: string
 ): void {
+  saveProjectToPath(
+    getProjectFilePath(folderPath, name),
+    data,
+    encryptionKey,
+    saltHex,
+    hashHex
+  )
+}
+
+export function saveProjectToPath(
+  filePath: string,
+  data: ProjectData,
+  encryptionKey: Buffer,
+  saltHex: string,
+  hashHex: string
+): void {
   const now = Date.now()
   data.meta.lastModifiedAt = new Date(now).toISOString()
-  const filePath = getProjectFilePath(folderPath, name)
-  writeFileSync(filePath, createProjectFileContents(data, encryptionKey, saltHex, hashHex, now))
+  atomicWriteFile(
+    filePath,
+    createProjectFileContents(data, encryptionKey, saltHex, hashHex, now)
+  )
 }
 
 export function createProjectFileContents(

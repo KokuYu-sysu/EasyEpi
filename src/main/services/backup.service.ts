@@ -24,6 +24,7 @@ export interface RestoreBackupOptions {
   dataFilePath?: string
   validateProject?: (backupPath: string) => void
   validateData?: (backupPath: string) => void
+  finalizeProject?: (projectFilePath: string) => void
 }
 
 function getBackupDir(projectFilePath: string): string {
@@ -183,6 +184,7 @@ export function restoreFromBackup(
       } else {
         rmSync(dataFilePath, { force: true })
       }
+      options.finalizeProject?.(projectFilePath)
     } catch (error) {
       writeSnapshotFile(projectFilePath, previousProject)
       if (previousData !== null) {

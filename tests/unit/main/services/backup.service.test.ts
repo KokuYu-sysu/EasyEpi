@@ -132,4 +132,30 @@ describe('BackupService complete project snapshots', () => {
 
     expect(getBackups(projectPath).map((backup) => backup.filePath)).toEqual([selectedBackup])
   })
+
+  it('rolls back restored files when post-restore finalization fails', () => {
+    const folder = mkdtempSync(join(tmpdir(), 'easyepi-backup-finalize-'))
+    folders.push(folder)
+    const created = createProject(folder, 'study', 'backup-password')
+    const projectPath = getProjectFilePath(folder, 'study')
+    const backupPath = createBackup(projectPath)!
+    const project = decryptProjectData(projectPath, created.encryptionKey)
+    project.questionnaire.name = 'current questionnaire'
+    saveProject(
+      folder,
+      'study',
+      project,
+      created.encryptionKey,
+      created.salt,
+      created.passwordHash
+    )
+    const currentBytes = readFileSync(projectPath)
+
+    expect(restoreFromBackup(backupPath, projectPath, {
+      finalizeProject: () => {
+        throw new Error('simulated cleanup save failure')
+      }
+    })).toBe(false)
+    expect(readFileSync(projectPath)).toEqual(currentBytes)
+  })
 })

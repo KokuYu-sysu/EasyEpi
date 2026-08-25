@@ -1,4 +1,13 @@
-import { mkdtempSync, readFileSync, rmSync, truncateSync, writeFileSync } from 'node:fs'
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  truncateSync,
+  writeFileSync
+} from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -15,10 +24,12 @@ import {
 } from '../../../src/main/ipc/project.ipc'
 import type { IpcInvokeEventLike, IpcMainLike } from '../../../src/main/ipc/types'
 import { createBackup, getBackups } from '../../../src/main/services/backup.service'
+import { AISessionRepository } from '../../../src/main/services/ai-session.repository'
 import {
   createProject,
   decryptProjectData,
-  getProjectFilePath
+  getProjectFilePath,
+  saveProject
 } from '../../../src/main/services/project.service'
 
 type Handler = (event: IpcInvokeEventLike, ...args: unknown[]) => Promise<unknown>
@@ -128,5 +139,59 @@ describe('Project IPC recovery safety', () => {
     ).resolves.toMatchObject({ ok: false })
     expect(readFileSync(projectPath)).toEqual(original)
     expect(state.currentProject?.meta.name).toBe('active')
+  })
+
+  it('clears recovered AI temp at the exact moved project path', async () => {
+    const folder = mkdtempSync(join(tmpdir(), 'easyepi-project-moved-'))
+    folders.push(folder)
+    const created = createProject(folder, 'study', 'study-password')
+    const originalPath = getProjectFilePath(folder, 'study')
+    const project = decryptProjectData(originalPath, created.encryptionKey)
+    const repository = new AISessionRepository(
+      project,
+      () => '123e4567-e89b-42d3-a456-426614174000'
+    )
+    const session = repository.create({
+      promptId: 'assistant',
+      promptVersion: '1',
+      promptHash: 'hash',
+      harnessVersion: '1',
+      schemaVersion: 1
+    }).value
+    project.aiAssistant!.sessions[session.manifest.sessionId]!.temp.runs['run-1'] = {
+      runId: 'run-1',
+      versionStamp: session.manifest.versionStamp,
+      createdAt: '2026-08-25T00:00:00.000Z',
+      values: { partial: true }
+    }
+    saveProject(
+      folder,
+      'study',
+      project,
+      created.encryptionKey,
+      created.salt,
+      created.passwordHash
+    )
+    const movedDirectory = join(folder, 'moved')
+    const movedPath = join(movedDirectory, 'renamed.easyepi')
+    mkdirSync(movedDirectory)
+    renameSync(originalPath, movedPath)
+
+    const state = createProjectIpcState()
+    const { handlers, ipcMain } = createHarness()
+    registerProjectIpc(ipcMain, state, packagedUrl)
+
+    await expect(
+      handlers.get(PROJECT_OPEN_CHANNEL)!(trustedEvent, {
+        filePath: movedPath,
+        password: 'study-password'
+      })
+    ).resolves.toMatchObject({ ok: true })
+    expect(state.currentFilePath).toBe(movedPath)
+    expect(
+      decryptProjectData(movedPath, created.encryptionKey)
+        .aiAssistant!.sessions[session.manifest.sessionId]!.temp.runs
+    ).toEqual({})
+    expect(existsSync(originalPath)).toBe(false)
   })
 })

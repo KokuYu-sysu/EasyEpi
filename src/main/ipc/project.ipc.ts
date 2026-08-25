@@ -19,11 +19,11 @@ import { createAuthService, lock } from '../services/auth.service'
 import { AISessionRepository } from '../services/ai-session.repository'
 import {
   createProject,
-  saveProject,
   readProjectHeader,
   decryptProjectData,
   verifyAndDeriveKey,
-  getProjectFilePath
+  getProjectFilePath,
+  saveProjectToPath
 } from '../services/project.service'
 import { recoverProjectRekeyTransaction } from '../services/project-rekey.service'
 import { loadRecords, resolveProjectDataFilePath } from '../services/record.service'
@@ -58,14 +58,14 @@ export function createProjectIpcState(): ProjectIpcState {
 
 function clearRecoveredAITemp(
   project: ProjectData,
+  projectFilePath: string,
   key: Buffer,
   saltHex: string,
   hashHex: string
 ): void {
   if (!new AISessionRepository(project).clearAllTempOnStartup().mutated) return
-  saveProject(
-    project.meta.folderPath,
-    project.meta.name,
+  saveProjectToPath(
+    projectFilePath,
     project,
     key,
     saltHex,
@@ -172,7 +172,7 @@ export function registerProjectIpc(
 
       // Decrypt the payload with the derived key
       const data = decryptProjectData(request.filePath, key)
-      clearRecoveredAITemp(data, key, header.saltHex, header.hashHex)
+      clearRecoveredAITemp(data, request.filePath, key, header.saltHex, header.hashHex)
       state.currentProject = data
       state.currentFilePath = request.filePath
       state.currentSaltHex = header.saltHex
@@ -189,7 +189,7 @@ export function registerProjectIpc(
   ipcMain.handle(PROJECT_SAVE_CHANNEL, async (event: IpcInvokeEventLike) => {
     assertTrustedSender(event, packagedRendererUrl, developmentOrigin)
 
-    if (!state.currentProject) {
+    if (!state.currentProject || !state.currentFilePath) {
       return { ok: false, error: '没有打开的项目' } satisfies ProjectResult
     }
 
@@ -209,9 +209,8 @@ export function registerProjectIpc(
         if (backupPath) resetBackupTimer(state.currentFilePath)
       }
 
-      saveProject(
-        state.currentProject.meta.folderPath,
-        state.currentProject.meta.name,
+      saveProjectToPath(
+        state.currentFilePath,
         state.currentProject,
         key,
         state.currentSaltHex,
@@ -281,6 +280,7 @@ export function registerProjectIpc(
         state.currentFilePath,
         state.currentProject.meta.name
       )
+      let restoredProject: ProjectData | undefined
       const success = restoreFromBackup(request.backupPath, state.currentFilePath, {
         dataFilePath,
         validateProject: (path) => {
@@ -288,17 +288,21 @@ export function registerProjectIpc(
         },
         validateData: (path) => {
           loadRecords(path, key)
+        },
+        finalizeProject: (path) => {
+          const candidate = decryptProjectData(path, key)
+          clearRecoveredAITemp(
+            candidate,
+            path,
+            key,
+            state.currentSaltHex,
+            state.currentHashHex
+          )
+          restoredProject = candidate
         }
       })
       if (success) {
-        // Reload the project after restore
-        const restoredProject = decryptProjectData(state.currentFilePath, key)
-        clearRecoveredAITemp(
-          restoredProject,
-          key,
-          state.currentSaltHex,
-          state.currentHashHex
-        )
+        if (restoredProject === undefined) throw new Error('PROJECT_RESTORE_FINALIZE_FAILED')
         state.currentProject = restoredProject
         return { ok: true, meta: restoredProject.meta } satisfies ProjectResult
       }
