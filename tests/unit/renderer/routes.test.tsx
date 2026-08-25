@@ -1,5 +1,6 @@
 import { render, screen } from '@testing-library/react'
 import { createMemoryRouter, MemoryRouter, RouterProvider } from 'react-router-dom'
+import { vi } from 'vitest'
 
 import { PRODUCTION_ROUTES, createAppRouter, createAppRoutes } from '@renderer/app/routes'
 import { NotFoundPage } from '@renderer/pages/NotFoundPage'
@@ -15,6 +16,20 @@ import { DEFAULT_PREFERENCES, type PreferencesV1 } from '@shared/preferences-con
 function renderDataRouter(
   router: ReturnType<typeof createMemoryRouter> | ReturnType<typeof createAppRouter>
 ) {
+  Object.defineProperty(window, 'easyEpi', {
+    configurable: true,
+    value: {
+      admin: {
+        checkSession: vi.fn().mockResolvedValue({
+          isAuthenticated: true,
+          expiresAt: Date.now() + 30 * 60 * 1000
+        })
+      },
+      project: {
+        onClosed: vi.fn(() => () => undefined)
+      }
+    }
+  })
   const appearance: PreferencesAppearance = {
     apply: () => undefined,
     observeSystemTheme: () => () => undefined

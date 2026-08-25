@@ -39,6 +39,9 @@ describe('AdminLoginPage', () => {
   it('uses the current project password and routes successful authentication to data', async () => {
     const user = userEvent.setup()
     login.mockResolvedValue({ success: true, expiresAt: Date.now() + 1000 })
+    checkSession
+      .mockResolvedValueOnce({ isAuthenticated: false })
+      .mockResolvedValue({ isAuthenticated: true, expiresAt: Date.now() + 1000 })
     const router = renderLogin()
     expect(screen.queryByText(/admin123/)).not.toBeInTheDocument()
 

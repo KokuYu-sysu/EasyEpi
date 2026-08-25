@@ -86,6 +86,9 @@ describe('ImportWizard', () => {
             progressListener = callback
           }),
           offImportProgress: vi.fn()
+        },
+        admin: {
+          checkSession: vi.fn().mockResolvedValue({ isAuthenticated: false })
         }
       }
     })
