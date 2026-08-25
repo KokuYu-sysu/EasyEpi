@@ -1,4 +1,5 @@
 import type { QuestionnaireDef } from './qnaire'
+import type { AIAssistantProjectData } from '../ai-assistant-contract'
 
 export interface ProjectMeta {
   name: string
@@ -12,6 +13,8 @@ export interface ProjectData {
   questionnaire: QuestionnaireDef
   passwordHash?: string
   recoveryKeyHash?: string
+  /** Optional for backward compatibility with projects created before AI support. */
+  aiAssistant?: AIAssistantProjectData
 }
 
 export const PROJECT_MAGIC = 0x4550_4901
