@@ -16,6 +16,7 @@ import {
 } from '@shared/qnaire-contract'
 
 import { createAuthService, lock } from '../services/auth.service'
+import { AISessionRepository } from '../services/ai-session.repository'
 import {
   createProject,
   saveProject,
@@ -53,6 +54,23 @@ export function createProjectIpcState(): ProjectIpcState {
     currentHashHex: '',
     auth: createAuthService()
   }
+}
+
+function clearRecoveredAITemp(
+  project: ProjectData,
+  key: Buffer,
+  saltHex: string,
+  hashHex: string
+): void {
+  if (!new AISessionRepository(project).clearAllTempOnStartup().mutated) return
+  saveProject(
+    project.meta.folderPath,
+    project.meta.name,
+    project,
+    key,
+    saltHex,
+    hashHex
+  )
 }
 
 function getProjectErrorMessage(error: unknown): string {
@@ -154,6 +172,7 @@ export function registerProjectIpc(
 
       // Decrypt the payload with the derived key
       const data = decryptProjectData(request.filePath, key)
+      clearRecoveredAITemp(data, key, header.saltHex, header.hashHex)
       state.currentProject = data
       state.currentFilePath = request.filePath
       state.currentSaltHex = header.saltHex
@@ -273,8 +292,15 @@ export function registerProjectIpc(
       })
       if (success) {
         // Reload the project after restore
-        state.currentProject = decryptProjectData(state.currentFilePath, key)
-        return { ok: true, meta: state.currentProject?.meta } satisfies ProjectResult
+        const restoredProject = decryptProjectData(state.currentFilePath, key)
+        clearRecoveredAITemp(
+          restoredProject,
+          key,
+          state.currentSaltHex,
+          state.currentHashHex
+        )
+        state.currentProject = restoredProject
+        return { ok: true, meta: restoredProject.meta } satisfies ProjectResult
       }
       return { ok: false, error: '恢复备份失败' } satisfies ProjectResult
     } catch (error) {

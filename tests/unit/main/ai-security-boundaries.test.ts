@@ -1,9 +1,38 @@
 import { describe, expect, it } from 'vitest'
 
 import { normalizeAIBaseUrl, validateAIConfigUpdate } from '@main/services/ai-config.service'
-import { parseAISessionVirtualPath } from '@main/services/ai-session.repository'
+import {
+  AISessionRepository,
+  parseAISessionVirtualPath
+} from '@main/services/ai-session.repository'
+import type { AiVersionStamp } from '@shared/ai-assistant-contract'
+import type { ProjectData } from '@shared/types/project'
 
 const sessionId = '123e4567-e89b-42d3-a456-426614174000'
+const versionStamp: AiVersionStamp = {
+  promptId: 'questionnaire-assistant',
+  promptVersion: '1.0.0',
+  promptHash: 'sha256:abc123',
+  harnessVersion: '1.0.0',
+  schemaVersion: 1
+}
+
+function createProjectData(): ProjectData {
+  return {
+    meta: {
+      name: 'security-test',
+      folderPath: 'virtual-project',
+      createdAt: '2026-08-25T00:00:00.000Z',
+      lastModifiedAt: '2026-08-25T00:00:00.000Z'
+    },
+    questionnaire: {
+      name: 'security-test',
+      questions: [],
+      conditionRules: [],
+      keyQuestionIds: []
+    }
+  }
+}
 
 describe('AI configuration security boundary', () => {
   it.each([
@@ -77,5 +106,74 @@ describe('AI Session virtual path security boundary', () => {
         '16fd2706-8baf-433b-82eb-8c7fada847da'
       )
     ).toThrow('AI_SESSION_SCOPE_MISMATCH')
+  })
+
+  it('rejects a virtual path when the current Session scope is omitted', () => {
+    expect(() =>
+      parseAISessionVirtualPath(
+        `session://${sessionId}/state/current`,
+        undefined as unknown as string
+      )
+    ).toThrow()
+  })
+})
+
+describe('AI Session version and artifact idempotency', () => {
+  it('fixes a complete version stamp on a newly created Session', () => {
+    const repository = new AISessionRepository(
+      createProjectData(),
+      () => sessionId,
+      () => '2026-08-25T01:00:00.000Z'
+    )
+
+    const session = repository.create(versionStamp, 'Review').value
+
+    expect(session.manifest.versionStamp).toEqual(versionStamp)
+  })
+
+  it('deduplicates structurally equivalent operations and rejects conflicting payloads', () => {
+    const repository = new AISessionRepository(
+      createProjectData(),
+      () => sessionId,
+      () => '2026-08-25T01:00:00.000Z'
+    )
+    repository.create(versionStamp, 'Review')
+    const first = repository.upsertArtifact(sessionId, {
+      artifactId: 'artifact-1',
+      operationId: 'operation-1',
+      kind: 'questionnaire-patch',
+      status: 'completed',
+      versionStamp,
+      value: { section: { title: 'A', order: 1 }, enabled: true }
+    })
+
+    const replay = repository.upsertArtifact(sessionId, {
+      artifactId: 'artifact-2',
+      operationId: 'operation-1',
+      kind: 'questionnaire-patch',
+      status: 'completed',
+      versionStamp: {
+        schemaVersion: 1,
+        harnessVersion: '1.0.0',
+        promptHash: 'sha256:abc123',
+        promptVersion: '1.0.0',
+        promptId: 'questionnaire-assistant'
+      },
+      value: { enabled: true, section: { order: 1, title: 'A' } }
+    })
+
+    expect(first.mutated).toBe(true)
+    expect(replay).toEqual({ value: first.value, mutated: false })
+    expect(Object.keys(repository.get(sessionId)!.artifacts.byId)).toEqual(['artifact-1'])
+    expect(() =>
+      repository.upsertArtifact(sessionId, {
+        artifactId: 'artifact-3',
+        operationId: 'operation-1',
+        kind: 'questionnaire-patch',
+        status: 'completed',
+        versionStamp,
+        value: { enabled: false }
+      })
+    ).toThrow('AI_ARTIFACT_OPERATION_CONFLICT')
   })
 })

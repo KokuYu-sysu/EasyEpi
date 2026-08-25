@@ -5,7 +5,7 @@ import type {
   AIArtifactStatus,
   AIJsonValue,
   AIMutationResult,
-  AIPromptVersionReference,
+  AiVersionStamp,
   AISessionData,
   AISessionListItem,
   AISessionPartition,
@@ -28,7 +28,6 @@ const MAX_VIRTUAL_PATH_LENGTH = 2_048
 
 export interface AISessionUpdate {
   title?: string
-  promptVersion?: AIPromptVersionReference | null
 }
 
 export interface AIArtifactUpsert {
@@ -36,6 +35,7 @@ export interface AIArtifactUpsert {
   operationId: string
   kind: string
   status: AIArtifactStatus
+  versionStamp: AiVersionStamp
   value?: AIJsonValue
   errorCode?: string
 }
@@ -61,7 +61,7 @@ function validatePathSegment(segment: string): void {
 
 export function parseAISessionVirtualPath(
   value: string,
-  expectedSessionId?: string
+  currentSessionId: string
 ): AISessionVirtualPath {
   if (
     typeof value !== 'string' ||
@@ -80,10 +80,11 @@ export function parseAISessionVirtualPath(
   const [sessionId, rawPartition, ...segments] = parts
   if (sessionId === undefined || rawPartition === undefined || segments.length === 0) invalidPath()
   validateSessionId(sessionId)
+  validateSessionId(currentSessionId)
   if (!PARTITIONS.has(rawPartition as AISessionPartition)) invalidPath()
   for (const segment of segments) validatePathSegment(segment)
 
-  if (expectedSessionId !== undefined && sessionId !== expectedSessionId) {
+  if (sessionId !== currentSessionId) {
     throw new Error('AI_SESSION_SCOPE_MISMATCH')
   }
 
@@ -142,21 +143,61 @@ function normalizeTitle(value: string): string {
   return value
 }
 
-function validatePromptReference(value: AIPromptVersionReference): AIPromptVersionReference {
+function validateVersionStamp(value: AiVersionStamp): AiVersionStamp {
   if (
     !isPlainObject(value) ||
     typeof value.promptId !== 'string' ||
     value.promptId.length === 0 ||
     value.promptId.length > 128 ||
-    typeof value.version !== 'string' ||
-    value.version.length === 0 ||
-    value.version.length > 64 ||
-    (value.digest !== undefined &&
-      (typeof value.digest !== 'string' || value.digest.length === 0 || value.digest.length > 256))
+    typeof value.promptVersion !== 'string' ||
+    value.promptVersion.length === 0 ||
+    value.promptVersion.length > 64 ||
+    typeof value.promptHash !== 'string' ||
+    value.promptHash.length === 0 ||
+    value.promptHash.length > 256 ||
+    typeof value.harnessVersion !== 'string' ||
+    value.harnessVersion.length === 0 ||
+    value.harnessVersion.length > 64 ||
+    !Number.isInteger(value.schemaVersion) ||
+    value.schemaVersion < 1
   ) {
-    throw new Error('INVALID_AI_PROMPT_VERSION')
+    throw new Error('INVALID_AI_VERSION_STAMP')
   }
   return clone(value)
+}
+
+function canonicalize(value: AIJsonValue): AIJsonValue {
+  if (Array.isArray(value)) return value.map(canonicalize)
+  if (!isPlainObject(value)) return value
+  return Object.fromEntries(
+    Object.keys(value)
+      .sort()
+      .map((key) => [key, canonicalize(value[key] as AIJsonValue)])
+  )
+}
+
+function structurallyEqual(left: AIJsonValue, right: AIJsonValue): boolean {
+  return JSON.stringify(canonicalize(left)) === JSON.stringify(canonicalize(right))
+}
+
+function versionStampValue(stamp: AiVersionStamp): AIJsonValue {
+  return {
+    promptId: stamp.promptId,
+    promptVersion: stamp.promptVersion,
+    promptHash: stamp.promptHash,
+    harnessVersion: stamp.harnessVersion,
+    schemaVersion: stamp.schemaVersion
+  }
+}
+
+function artifactPayload(value: AIArtifact | AIArtifactUpsert): AIJsonValue {
+  return {
+    kind: value.kind,
+    status: value.status,
+    versionStamp: versionStampValue(value.versionStamp),
+    ...(value.value === undefined ? {} : { value: value.value }),
+    ...(value.errorCode === undefined ? {} : { errorCode: value.errorCode })
+  }
 }
 
 function hasOwn(value: Record<string, unknown>, key: string): boolean {
@@ -197,27 +238,24 @@ export class AISessionRepository {
     session.manifest.updatedAt = this.now()
   }
 
-  create(title = 'New session', promptVersion?: AIPromptVersionReference): AIMutationResult<AISessionData> {
+  create(versionStamp: AiVersionStamp, title = 'New session'): AIMutationResult<AISessionData> {
     const sessionId = this.createId()
     validateSessionId(sessionId)
     const sessions = this.mutableSessions()
     if (sessions[sessionId] !== undefined) throw new Error('AI_SESSION_ID_COLLISION')
     const timestamp = this.now()
-    const normalizedPrompt = promptVersion === undefined
-      ? undefined
-      : validatePromptReference(promptVersion)
+    const normalizedVersionStamp = validateVersionStamp(versionStamp)
     const session: AISessionData = {
       manifest: {
         sessionId,
         title: normalizeTitle(title),
+        versionStamp: normalizedVersionStamp,
         createdAt: timestamp,
-        updatedAt: timestamp,
-        ...(normalizedPrompt === undefined ? {} : { promptVersion: normalizedPrompt })
+        updatedAt: timestamp
       },
       conversation: { messages: [] },
       state: {
         status: 'idle',
-        ...(normalizedPrompt === undefined ? {} : { promptVersion: clone(normalizedPrompt) }),
         runs: {},
         values: {}
       },
@@ -251,22 +289,6 @@ export class AISessionRepository {
         mutated = true
       }
     }
-    if (update.promptVersion !== undefined) {
-      const promptVersion = update.promptVersion === null
-        ? undefined
-        : validatePromptReference(update.promptVersion)
-      const current = session.manifest.promptVersion
-      if (JSON.stringify(current) !== JSON.stringify(promptVersion)) {
-        if (promptVersion === undefined) {
-          delete session.manifest.promptVersion
-          delete session.state.promptVersion
-        } else {
-          session.manifest.promptVersion = promptVersion
-          session.state.promptVersion = clone(promptVersion)
-        }
-        mutated = true
-      }
-    }
     if (mutated) this.touch(session)
     return { value: clone(session), mutated }
   }
@@ -279,8 +301,8 @@ export class AISessionRepository {
     return { value: true, mutated: true }
   }
 
-  readVirtual(path: string, expectedSessionId?: string): AIJsonValue {
-    const parsed = parseAISessionVirtualPath(path, expectedSessionId)
+  readVirtual(path: string, currentSessionId: string): AIJsonValue {
+    const parsed = parseAISessionVirtualPath(path, currentSessionId)
     const session = this.requireSession(parsed.sessionId)
     let value: unknown = session[parsed.partition]
     for (const segment of parsed.segments) {
@@ -296,9 +318,9 @@ export class AISessionRepository {
   writeVirtual(
     path: string,
     value: AIJsonValue,
-    expectedSessionId?: string
+    currentSessionId: string
   ): AIMutationResult<AIJsonValue> {
-    const parsed = parseAISessionVirtualPath(path, expectedSessionId)
+    const parsed = parseAISessionVirtualPath(path, currentSessionId)
     assertJsonValue(value)
     const session = this.requireSession(parsed.sessionId)
     let parent: unknown = session[parsed.partition]
@@ -319,8 +341,8 @@ export class AISessionRepository {
     return { value: clone(clonedValue), mutated }
   }
 
-  deleteVirtual(path: string, expectedSessionId?: string): AIMutationResult<boolean> {
-    const parsed = parseAISessionVirtualPath(path, expectedSessionId)
+  deleteVirtual(path: string, currentSessionId: string): AIMutationResult<boolean> {
+    const parsed = parseAISessionVirtualPath(path, currentSessionId)
     const session = this.requireSession(parsed.sessionId)
     let parent: unknown = session[parsed.partition]
     for (const segment of parsed.segments.slice(0, -1)) {
@@ -382,25 +404,28 @@ export class AISessionRepository {
       throw new Error('INVALID_AI_ARTIFACT')
     }
     if (input.value !== undefined) assertJsonValue(input.value)
+    const versionStamp = validateVersionStamp(input.versionStamp)
 
     const session = this.requireSession(sessionId)
-    const existing = session.artifacts.byId[input.artifactId]
-    if (existing !== undefined && existing.operationId !== input.operationId) {
+    if (!structurallyEqual(
+      versionStampValue(versionStamp),
+      versionStampValue(session.manifest.versionStamp)
+    )) {
+      throw new Error('AI_VERSION_STAMP_MISMATCH')
+    }
+
+    const artifactById = session.artifacts.byId[input.artifactId]
+    if (artifactById !== undefined && artifactById.operationId !== input.operationId) {
       throw new Error('AI_ARTIFACT_ID_CONFLICT')
     }
 
-    const comparableExisting = existing === undefined
-      ? undefined
-      : {
-          artifactId: existing.artifactId,
-          operationId: existing.operationId,
-          kind: existing.kind,
-          status: existing.status,
-          ...(existing.value === undefined ? {} : { value: existing.value }),
-          ...(existing.errorCode === undefined ? {} : { errorCode: existing.errorCode })
-        }
-    if (JSON.stringify(comparableExisting) === JSON.stringify(input)) {
-      return { value: clone(existing!), mutated: false }
+    const artifactByOperation = Object.values(session.artifacts.byId)
+      .find((artifact) => artifact.operationId === input.operationId)
+    if (artifactByOperation !== undefined) {
+      if (structurallyEqual(artifactPayload(artifactByOperation), artifactPayload(input))) {
+        return { value: clone(artifactByOperation), mutated: false }
+      }
+      throw new Error('AI_ARTIFACT_OPERATION_CONFLICT')
     }
 
     const timestamp = this.now()
@@ -409,7 +434,8 @@ export class AISessionRepository {
       operationId: input.operationId,
       kind: input.kind,
       status: input.status,
-      createdAt: existing?.createdAt ?? timestamp,
+      versionStamp,
+      createdAt: timestamp,
       updatedAt: timestamp,
       ...(input.value === undefined ? {} : { value: clone(input.value) }),
       ...(input.errorCode === undefined ? {} : { errorCode: input.errorCode })

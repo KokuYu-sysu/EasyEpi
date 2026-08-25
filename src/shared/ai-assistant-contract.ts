@@ -40,10 +40,12 @@ export interface AIMessage {
   runId?: string
 }
 
-export interface AIPromptVersionReference {
+export interface AiVersionStamp {
   promptId: string
-  version: string
-  digest?: string
+  promptVersion: string
+  promptHash: string
+  harnessVersion: string
+  schemaVersion: number
 }
 
 export type AISessionStatus = 'idle' | 'running' | 'completed' | 'failed' | 'cancelled'
@@ -53,14 +55,13 @@ export interface AIRun {
   status: Exclude<AISessionStatus, 'idle'>
   startedAt: string
   completedAt?: string
-  promptVersion?: AIPromptVersionReference
+  versionStamp: AiVersionStamp
   errorCode?: string
 }
 
 export interface AISessionState {
   status: AISessionStatus
   activeRunId?: string
-  promptVersion?: AIPromptVersionReference
   runs: Record<string, AIRun>
   values: Record<string, AIJsonValue>
 }
@@ -82,6 +83,7 @@ export interface AIArtifact {
   operationId: string
   kind: string
   status: AIArtifactStatus
+  versionStamp: AiVersionStamp
   createdAt: string
   updatedAt: string
   value?: AIJsonValue
@@ -94,6 +96,7 @@ export interface AIArtifactsPartition {
 
 export interface AIRunTemp {
   runId: string
+  versionStamp: AiVersionStamp
   createdAt: string
   values: Record<string, AIJsonValue>
 }
@@ -105,9 +108,10 @@ export interface AITempPartition {
 export interface AISessionManifest {
   sessionId: string
   title: string
+  /** Immutable for the lifetime of this Session. */
+  versionStamp: AiVersionStamp
   createdAt: string
   updatedAt: string
-  promptVersion?: AIPromptVersionReference
 }
 
 export type AISessionListItem = AISessionManifest
