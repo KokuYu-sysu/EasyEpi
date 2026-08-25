@@ -413,6 +413,41 @@ export class AISessionRepository {
     return { value: clone(session), mutated }
   }
 
+  migrateSessionVersion(
+    sessionId: string,
+    targetVersionStamp: AiVersionStamp
+  ): AIMutationResult<AISessionData> {
+    const session = this.requireSession(sessionId)
+    if (session.state.activeRunId !== undefined || session.state.status === 'running') {
+      throw new Error('AI_RUN_ALREADY_ACTIVE')
+    }
+    const target = validateVersionStamp(targetVersionStamp)
+    if (structurallyEqual(
+      versionStampValue(session.manifest.versionStamp),
+      versionStampValue(target)
+    )) {
+      return { value: clone(session), mutated: false }
+    }
+    const existingAudit = session.state.values.versionMigrations
+    if (existingAudit !== undefined && !Array.isArray(existingAudit)) {
+      throw new Error('INVALID_AI_VERSION_MIGRATION_AUDIT')
+    }
+    const from = clone(session.manifest.versionStamp)
+    const migratedAt = this.now()
+    session.manifest.versionStamp = target
+    session.cache.values = {}
+    const values = { ...session.state.values }
+    delete values.activeArtifactId
+    values.versionMigrations = [
+      ...(existingAudit ?? []),
+      { from: versionStampValue(from), to: versionStampValue(target), migratedAt }
+    ]
+    session.state.values = values
+    session.state.status = 'idle'
+    session.manifest.updatedAt = migratedAt
+    return { value: clone(session), mutated: true }
+  }
+
   updateState(
     sessionId: string,
     update: AISessionStateUpdate

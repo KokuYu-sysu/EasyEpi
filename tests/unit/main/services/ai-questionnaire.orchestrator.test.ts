@@ -3,9 +3,13 @@ import { describe, expect, it, vi } from 'vitest'
 import {
   applyArtifact,
   createAIQuestionnaireOrchestrator,
+  migrateSessionVersion,
   previewQuestionnaireArtifact
 } from '@main/services/ai-questionnaire.orchestrator'
-import { getAiVersionStamp } from '@main/services/ai-questionnaire.harness'
+import {
+  getAiVersionStamp,
+  hashAIQuestionnaire
+} from '@main/services/ai-questionnaire.harness'
 import { AISessionRepository } from '@main/services/ai-session.repository'
 import { AIClientError, createOpenAICompatibleClient } from '@main/services/openai-compatible.client'
 import { ensureProjectId } from '@main/services/project.service'
@@ -13,7 +17,7 @@ import type { ProjectData } from '@shared/types/project'
 
 const sessionId = '123e4567-e89b-42d3-a456-426614174000'
 
-function project(): ProjectData {
+function project(versionStamp = getAiVersionStamp()): ProjectData {
   const meta = {
     projectId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
     name: 'AI test',
@@ -25,7 +29,7 @@ function project(): ProjectData {
     meta,
     questionnaire: { name: 'Existing', questions: [], conditionRules: [], keyQuestionIds: [] }
   }
-  new AISessionRepository(value, () => sessionId).create(getAiVersionStamp(), 'AI')
+  new AISessionRepository(value, () => sessionId).create(versionStamp, 'AI')
   return value
 }
 
@@ -160,9 +164,101 @@ describe('AI questionnaire orchestrator', () => {
     expect(backup).not.toHaveBeenCalled()
 
     value.questionnaire.name = 'Existing'
-    delete (generated.artifact.value as Record<string, unknown>).diff
+    const artifactValue = generated.artifact.value as Record<string, unknown>
+    expect(artifactValue.baseQuestionnaire).toEqual({
+      name: 'Existing', questions: [], conditionRules: [], keyQuestionIds: []
+    })
+    artifactValue.diff = {
+      metadataChanged: false,
+      questions: { added: [], removed: [], modified: [] },
+      rulesChanged: false
+    }
     value.aiAssistant!.sessions[sessionId]!.artifacts.byId[generated.artifact.artifactId] = generated.artifact
     expect(() => previewQuestionnaireArtifact(value, sessionId, generated.artifact.artifactId)).toThrow('AI_ARTIFACT_INVALID')
+  })
+
+  it('rejects stale refinement but allows refining an applied active artifact', async () => {
+    const value = project()
+    const complete = vi.fn().mockResolvedValue({ content: validCompletion(), responseFormatSupported: true })
+    const orchestrator = createAIQuestionnaireOrchestrator({ persistProject: vi.fn(), client: { complete } })
+    const generated = await orchestrator.sendTurn({
+      project: value, sessionId, userText: 'Create',
+      config: { baseUrl: 'https://example.test/v1', model: 'model' }
+    })
+    expect(generated.ok).toBe(true)
+    if (!generated.ok) return
+    await applyArtifact({
+      project: value, sessionId, artifactId: generated.artifact.artifactId,
+      currentProjectPath: 'D:\\study.easyepi', backup: vi.fn(), saveAtomic: vi.fn()
+    })
+    const refined = await orchestrator.sendTurn({
+      project: value, sessionId, userText: 'Refine',
+      config: { baseUrl: 'https://example.test/v1', model: 'model' }
+    })
+    expect(refined.ok).toBe(true)
+
+    value.questionnaire.name = 'Concurrent edit'
+    const callsBefore = complete.mock.calls.length
+    const stale = await orchestrator.sendTurn({
+      project: value, sessionId, userText: 'Refine again',
+      config: { baseUrl: 'https://example.test/v1', model: 'model' }
+    })
+    expect(stale).toMatchObject({ ok: false, errorCode: 'AI_ARTIFACT_STALE' })
+    expect(complete).toHaveBeenCalledTimes(callsBefore)
+  })
+
+  it('requires explicit attachments to match the current formal questionnaire', async () => {
+    const value = project()
+    const complete = vi.fn()
+    const result = await createAIQuestionnaireOrchestrator({
+      persistProject: vi.fn(), client: { complete }
+    }).sendTurn({
+      project: value, sessionId, userText: 'Use this',
+      explicitAttachment: { name: 'Other', questions: [], conditionRules: [], keyQuestionIds: [] },
+      config: { baseUrl: 'https://example.test/v1', model: 'model' }
+    })
+    expect(result).toMatchObject({ ok: false, errorCode: 'AI_ARTIFACT_STALE' })
+    expect(complete).not.toHaveBeenCalled()
+  })
+
+  it('explicitly migrates historical sessions with an audit trail', async () => {
+    const historical = { ...getAiVersionStamp(), harnessVersion: '1.0.0' }
+    const value = project(historical)
+    const repository = new AISessionRepository(value)
+    const persistProject = vi.fn()
+    await migrateSessionVersion({
+      project: value, sessionId, targetVersionStamp: getAiVersionStamp(), persistProject
+    })
+    expect(repository.get(sessionId)?.manifest.versionStamp).toEqual(getAiVersionStamp())
+    expect(repository.get(sessionId)?.state.values.versionMigrations).toEqual([
+      expect.objectContaining({ from: historical, to: getAiVersionStamp() })
+    ])
+    expect(persistProject).toHaveBeenCalledWith(value, 'session-migrated')
+  })
+
+  it('requires exact normalized artifact drafts and matching base snapshots', async () => {
+    const value = project()
+    const generated = await createAIQuestionnaireOrchestrator({
+      persistProject: vi.fn(),
+      client: { complete: vi.fn().mockResolvedValue({ content: validCompletion(), responseFormatSupported: true }) }
+    }).sendTurn({
+      project: value, sessionId, userText: 'Create',
+      config: { baseUrl: 'https://example.test/v1', model: 'model' }
+    })
+    expect(generated.ok).toBe(true)
+    if (!generated.ok) return
+    const stored = value.aiAssistant!.sessions[sessionId]!.artifacts.byId[generated.artifact.artifactId]!
+    const original = structuredClone(stored.value) as Record<string, unknown>
+    const valueRecord = stored.value as Record<string, unknown>
+    expect(valueRecord.baseQuestionnaireHash).toBe(hashAIQuestionnaire(valueRecord.baseQuestionnaire as ProjectData['questionnaire']))
+
+    const draft = valueRecord.draft as { questions: Array<Record<string, unknown>> }
+    delete draft.questions[0]!.isKey
+    expect(() => previewQuestionnaireArtifact(value, sessionId, stored.artifactId)).toThrow('AI_ARTIFACT_INVALID')
+
+    stored.value = structuredClone(original) as typeof stored.value
+    ;(stored.value as { baseQuestionnaire: { name: string } }).baseQuestionnaire.name = 'Tampered'
+    expect(() => previewQuestionnaireArtifact(value, sessionId, stored.artifactId)).toThrow('AI_ARTIFACT_INVALID')
   })
 
   it('clears active runs in memory when completion and failure persistence both fail', async () => {

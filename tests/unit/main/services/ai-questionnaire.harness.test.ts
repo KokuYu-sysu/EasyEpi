@@ -21,9 +21,16 @@ function envelope(questionnaire: Record<string, unknown>): string {
 
 describe('questionnaire harness trust boundary', () => {
   it('resolves immutable registered versions and rejects unknown hashes', () => {
-    expect(resolveAIRegistryEntry(getAiVersionStamp())).toMatchObject({
+    const current = getAiVersionStamp()
+    const historical = { ...current, harnessVersion: '1.0.0' }
+    expect(resolveAIRegistryEntry(current)).toMatchObject({
       versionStamp: getAiVersionStamp()
     })
+    expect(resolveAIRegistryEntry(historical)).toMatchObject({
+      versionStamp: historical,
+      compatibility: 'requires-migration'
+    })
+    expect(() => migrateAISessionVersion(historical, current)).not.toThrow()
     expect(() => resolveAIRegistryEntry({
       ...getAiVersionStamp(),
       promptHash: 'sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff'

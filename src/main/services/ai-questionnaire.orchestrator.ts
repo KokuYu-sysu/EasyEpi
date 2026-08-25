@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import path from 'node:path'
 
-import type { AIArtifact, AIJsonValue, AISessionData } from '@shared/ai-assistant-contract'
+import type { AIArtifact, AIJsonValue, AiVersionStamp, AISessionData } from '@shared/ai-assistant-contract'
 import type { QuestionnaireDef } from '@shared/types/qnaire'
 import type { ProjectData } from '@shared/types/project'
 
@@ -10,13 +10,15 @@ import {
   artifactValueAsJson,
   buildAIContentCacheKey,
   buildQuestionnaireContext,
+  diffQuestionnaires,
   hashAIQuestionnaire,
+  migrateAISessionVersion,
   resolveAIRegistryEntry,
   stripDerivedVariables,
-  validateQuestionnaireDraft,
+  validateQuestionnaireArtifact,
+  validateStrictQuestionnaireDto,
   type AIValidationError,
-  type QuestionnaireArtifactValue,
-  type QuestionnaireDiffSummary
+  type QuestionnaireArtifactValue
 } from './ai-questionnaire.harness'
 import { AISessionRepository } from './ai-session.repository'
 import { DerivedService } from './derived/derived.service'
@@ -27,7 +29,12 @@ import {
   type AIChatCompletionResult
 } from './openai-compatible.client'
 
-export type AIPersistReason = 'run-started' | 'repair-requested' | 'run-completed' | 'run-failed'
+export type AIPersistReason =
+  | 'run-started'
+  | 'repair-requested'
+  | 'run-completed'
+  | 'run-failed'
+  | 'session-migrated'
 export type AIPersistProjectHook = (project: ProjectData, reason: AIPersistReason) => void | Promise<void>
 
 export interface AIQuestionnaireOrchestratorDependencies {
@@ -58,87 +65,21 @@ function jsonObject(value: unknown): value is Record<string, AIJsonValue> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
-function exactKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
-  return Object.keys(value).sort().join('\0') === [...keys].sort().join('\0')
-}
-
-function validDiff(value: unknown): value is QuestionnaireDiffSummary {
-  if (!jsonObject(value) || !exactKeys(value, ['metadata', 'questions', 'rules'])) return false
-  if (!jsonObject(value.metadata) || !exactKeys(value.metadata, ['name', 'description'])) return false
-  const nameChange = value.metadata.name
-  const descriptionChange = value.metadata.description
-  if (!(nameChange === null || (jsonObject(nameChange) && exactKeys(nameChange, ['before', 'after']) &&
-    typeof nameChange.before === 'string' && typeof nameChange.after === 'string'))) return false
-  if (!(descriptionChange === null || (jsonObject(descriptionChange) && exactKeys(descriptionChange, ['before', 'after']) &&
-    (descriptionChange.before === null || typeof descriptionChange.before === 'string') &&
-    (descriptionChange.after === null || typeof descriptionChange.after === 'string')))) return false
-  if (!jsonObject(value.questions) || !exactKeys(value.questions, ['added', 'removed', 'modified'])) return false
-  if (!Array.isArray(value.questions.added) || !Array.isArray(value.questions.removed) || !Array.isArray(value.questions.modified)) return false
-  const validQuestionSummary = (item: AIJsonValue): boolean =>
-    jsonObject(item) && exactKeys(item, ['id', 'variableName', 'content']) &&
-    typeof item.id === 'string' && typeof item.variableName === 'string' && typeof item.content === 'string'
-  const validModified = (item: AIJsonValue): boolean =>
-    jsonObject(item) && exactKeys(item, ['id', 'variableName', 'fields']) &&
-    typeof item.id === 'string' && typeof item.variableName === 'string' &&
-    Array.isArray(item.fields) && item.fields.every((field) => typeof field === 'string')
-  if (!value.questions.added.every(validQuestionSummary) ||
-    !value.questions.removed.every(validQuestionSummary) ||
-    !value.questions.modified.every(validModified)) return false
-  if (!jsonObject(value.rules) || !exactKeys(value.rules, ['added', 'removed', 'modified'])) return false
-  const rules = value.rules
-  return (['added', 'removed', 'modified'] as const).every((key) =>
-    Array.isArray(rules[key]) && rules[key].every((item) => typeof item === 'string')
-  )
-}
-
-function sameVersion(left: AIArtifact['versionStamp'], right: AIArtifact['versionStamp']): boolean {
-  return left.promptId === right.promptId && left.promptVersion === right.promptVersion &&
-    left.promptHash === right.promptHash && left.harnessVersion === right.harnessVersion &&
-    left.schemaVersion === right.schemaVersion
-}
-
 function parseArtifactValue(
   project: ProjectData,
   session: AISessionData,
   artifact: AIArtifact | undefined,
   checkStale = true
 ): QuestionnaireArtifactValue {
-  if (artifact?.kind !== 'questionnaire-draft' || artifact.status !== 'completed' ||
-    !sameVersion(artifact.versionStamp, session.manifest.versionStamp)) {
-    throw new Error('AI_ARTIFACT_INVALID')
-  }
-  resolveAIRegistryEntry(artifact.versionStamp)
-  if (!jsonObject(artifact.value) || !exactKeys(artifact.value, [
-    'draft', 'diff', 'assistantMessage', 'rollingSummary', 'baseQuestionnaireHash', 'validation'
-  ])) throw new Error('AI_ARTIFACT_INVALID')
-  const value = artifact.value
-  if (typeof value.assistantMessage !== 'string' || typeof value.rollingSummary !== 'string' ||
-    value.assistantMessage.length === 0 || value.assistantMessage.length > 20_000 ||
-    value.rollingSummary.length > 20_000 ||
-    typeof value.baseQuestionnaireHash !== 'string' ||
-    !/^sha256:[a-f0-9]{64}$/.test(value.baseQuestionnaireHash) || !validDiff(value.diff) ||
-    !jsonObject(value.validation) || !exactKeys(value.validation, ['success', 'errors']) ||
-    value.validation.success !== true || !Array.isArray(value.validation.errors) ||
-    value.validation.errors.length !== 0 || !jsonObject(value.draft) ||
-    Object.prototype.hasOwnProperty.call(value.draft, 'derivedVariables')) {
-    throw new Error('AI_ARTIFACT_INVALID')
-  }
-  const draft = value.draft as unknown as QuestionnaireDef
-  if (!validateQuestionnaireDraft(draft, (project.questionnaire.derivedVariables ?? []).map((item) => item.variableName)).ok) {
-    throw new Error('AI_ARTIFACT_INVALID')
-  }
-  const safeDraft = stripDerivedVariables(draft)
+  const value = validateQuestionnaireArtifact(
+    artifact,
+    session.manifest.versionStamp,
+    (project.questionnaire.derivedVariables ?? []).map((item) => item.variableName)
+  )
   if (checkStale && value.baseQuestionnaireHash !== hashAIQuestionnaire(project.questionnaire)) {
     throw new Error('AI_ARTIFACT_STALE')
   }
-  return {
-    draft: safeDraft,
-    diff: structuredClone(value.diff),
-    assistantMessage: value.assistantMessage,
-    rollingSummary: value.rollingSummary,
-    baseQuestionnaireHash: value.baseQuestionnaireHash,
-    validation: { success: true, errors: [] }
-  }
+  return value
 }
 
 function restoreAssistant(project: ProjectData, snapshot: ProjectData['aiAssistant']): void {
@@ -184,6 +125,38 @@ function responseCapability(value: AIJsonValue | undefined): boolean | undefined
   return value.supported
 }
 
+function sameVersionStamp(left: AiVersionStamp, right: AiVersionStamp): boolean {
+  return left.promptId === right.promptId && left.promptVersion === right.promptVersion &&
+    left.promptHash === right.promptHash && left.harnessVersion === right.harnessVersion &&
+    left.schemaVersion === right.schemaVersion
+}
+
+export interface AIMigrateSessionVersionRequest {
+  project: ProjectData
+  sessionId: string
+  targetVersionStamp: AiVersionStamp
+  persistProject: AIPersistProjectHook
+}
+
+export async function migrateSessionVersion(
+  request: AIMigrateSessionVersionRequest
+): Promise<{ migrated: boolean }> {
+  const repository = new AISessionRepository(request.project)
+  const session = repository.get(request.sessionId)
+  if (session === undefined) throw new Error('AI_SESSION_NOT_FOUND')
+  resolveAIRegistryEntry(session.manifest.versionStamp)
+  const target = resolveAIRegistryEntry(request.targetVersionStamp)
+  if (target.compatibility !== 'supported') throw new Error('AI_VERSION_MIGRATION_REQUIRED')
+  migrateAISessionVersion(session.manifest.versionStamp, request.targetVersionStamp)
+  if (sameVersionStamp(session.manifest.versionStamp, request.targetVersionStamp)) {
+    return { migrated: false }
+  }
+  await mutateAndPersist(request.project, request.persistProject, 'session-migrated', () => {
+    repository.migrateSessionVersion(request.sessionId, request.targetVersionStamp)
+  })
+  return { migrated: true }
+}
+
 export function createAIQuestionnaireOrchestrator(
   dependencies: AIQuestionnaireOrchestratorDependencies
 ): { sendTurn(request: AISendTurnRequest): Promise<AISendTurnResult> } {
@@ -222,12 +195,46 @@ export function createAIQuestionnaireOrchestrator(
       if (signalAborted(request.signal)) return { ok: false, errorCode: 'AI_CANCELLED' }
 
       const versionStamp = session.manifest.versionStamp
-      let registryEntry
+      let registryEntry: Extract<ReturnType<typeof resolveAIRegistryEntry>, { compatibility: 'supported' }>
+      let baseQuestionnaire: QuestionnaireDef
       let baseQuestionnaireHash: string
+      let explicitAttachment: QuestionnaireDef | undefined
+      let activeDraft: QuestionnaireDef | undefined
       let capabilityKey: string
+      const protectedDerivedNames = (request.project.questionnaire.derivedVariables ?? [])
+        .map((item) => item.variableName)
       try {
-        registryEntry = resolveAIRegistryEntry(versionStamp)
-        baseQuestionnaireHash = hashAIQuestionnaire(request.project.questionnaire)
+        const resolvedEntry = resolveAIRegistryEntry(versionStamp)
+        if (resolvedEntry.compatibility !== 'supported') throw new Error('AI_VERSION_MIGRATION_REQUIRED')
+        registryEntry = resolvedEntry
+        baseQuestionnaire = validateStrictQuestionnaireDto(
+          stripDerivedVariables(request.project.questionnaire)
+        )
+        baseQuestionnaireHash = hashAIQuestionnaire(baseQuestionnaire)
+        if (request.explicitAttachment !== undefined) {
+          explicitAttachment = validateStrictQuestionnaireDto(
+            stripDerivedVariables(request.explicitAttachment)
+          )
+          if (hashAIQuestionnaire(explicitAttachment) !== baseQuestionnaireHash) {
+            throw new Error('AI_ARTIFACT_STALE')
+          }
+        }
+        const activeArtifactId = typeof session.state.values.activeArtifactId === 'string'
+          ? session.state.values.activeArtifactId
+          : undefined
+        if (activeArtifactId !== undefined) {
+          const activeValue = validateQuestionnaireArtifact(
+            session.artifacts.byId[activeArtifactId],
+            versionStamp,
+            protectedDerivedNames
+          )
+          const activeDraftHash = hashAIQuestionnaire(activeValue.draft)
+          if (baseQuestionnaireHash !== activeValue.baseQuestionnaireHash &&
+            baseQuestionnaireHash !== activeDraftHash) {
+            throw new Error('AI_ARTIFACT_STALE')
+          }
+          activeDraft = activeValue.draft
+        }
         capabilityKey = `cap-${buildAIContentCacheKey({
           projectId: request.project.meta.projectId ?? '',
           sessionId: request.sessionId,
@@ -262,7 +269,7 @@ export function createAIQuestionnaireOrchestrator(
               messageId,
               kind: 'questionnaire',
               createdAt: startedAt,
-              value: stripDerivedVariables(request.explicitAttachment) as unknown as AIJsonValue
+              value: explicitAttachment as unknown as AIJsonValue
             })
           }
           repository.setRunTemp(request.sessionId, {
@@ -278,34 +285,16 @@ export function createAIQuestionnaireOrchestrator(
       }
 
       const runningSession = repository.get(request.sessionId)!
-      const activeArtifactId = typeof runningSession.state.values.activeArtifactId === 'string'
-        ? runningSession.state.values.activeArtifactId
-        : undefined
       let errorCode: string | undefined
-      let activeDraft: QuestionnaireDef | undefined
-      if (activeArtifactId !== undefined) {
-        try {
-          activeDraft = parseArtifactValue(
-            request.project,
-            runningSession,
-            runningSession.artifacts.byId[activeArtifactId],
-            false
-          ).draft
-        } catch (error) {
-          errorCode = safeErrorCode(error)
-        }
-      }
-      const base = activeDraft ?? (request.explicitAttachment === undefined
+      const base = activeDraft ?? (explicitAttachment === undefined
         ? { name: '', questions: [], conditionRules: [], keyQuestionIds: [] }
-        : stripDerivedVariables(request.explicitAttachment))
-      const protectedDerivedNames = (request.project.questionnaire.derivedVariables ?? [])
-        .map((item) => item.variableName)
+        : explicitAttachment)
       let messages: ReturnType<typeof buildQuestionnaireContext> = []
       try {
         messages = buildQuestionnaireContext(
           runningSession,
           activeDraft,
-          request.explicitAttachment,
+          explicitAttachment,
           60_000,
           registryEntry
         )
@@ -334,7 +323,12 @@ export function createAIQuestionnaireOrchestrator(
           )
           const harness = registryEntry.runHarness(completion.content, base, protectedDerivedNames)
           if (harness.ok) {
-            resultValue = { ...harness.value, baseQuestionnaireHash }
+            resultValue = {
+              ...harness.value,
+              diff: diffQuestionnaires(baseQuestionnaire, harness.value.draft),
+              baseQuestionnaireHash,
+              baseQuestionnaire
+            }
             break
           }
           lastErrors = harness.errors

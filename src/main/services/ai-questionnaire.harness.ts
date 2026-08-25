@@ -1,6 +1,11 @@
 import { createHash, randomUUID } from 'node:crypto'
 
-import type { AIJsonValue, AiVersionStamp, AISessionData } from '@shared/ai-assistant-contract'
+import type {
+  AIArtifact,
+  AIJsonValue,
+  AiVersionStamp,
+  AISessionData
+} from '@shared/ai-assistant-contract'
 import { DERIVED_VARIABLE_NAME_PATTERN } from '@shared/types/derived'
 import {
   isConditionOperator,
@@ -60,18 +65,25 @@ export interface QuestionnaireHarnessValue {
 
 export interface QuestionnaireArtifactValue extends QuestionnaireHarnessValue {
   baseQuestionnaireHash: string
+  baseQuestionnaire: QuestionnaireDef
 }
 
-export interface AIRegistryEntry {
+interface AIRegistryEntryBase {
   versionStamp: AiVersionStamp
   systemPrompt: string
   schemaVersion: number
+}
+
+export type AIRegistryEntry = AIRegistryEntryBase & ({
+  compatibility: 'supported'
   runHarness(
     responseText: string,
     base?: QuestionnaireDef,
     protectedDerivedVariableNames?: readonly string[]
   ): QuestionnaireHarnessResult
-}
+} | {
+  compatibility: 'requires-migration'
+})
 
 export type QuestionnaireHarnessResult =
   | { ok: true; value: QuestionnaireHarnessValue }
@@ -737,35 +749,61 @@ export function getAiVersionStamp(): AiVersionStamp {
   }
 }
 
-const V1_STAMP = Object.freeze(getAiVersionStamp())
-const V1_REGISTRY_ENTRY: AIRegistryEntry = Object.freeze({
-  versionStamp: V1_STAMP,
+const HISTORICAL_V1_SYSTEM_PROMPT = QUESTIONNAIRE_SYSTEM_PROMPT
+const historicalV1Stamp: AiVersionStamp = Object.freeze({
+  promptId: AI_PROMPT_ID,
+  promptVersion: AI_PROMPT_VERSION,
+  promptHash: `sha256:${createHash('sha256').update(HISTORICAL_V1_SYSTEM_PROMPT).digest('hex')}`,
+  harnessVersion: '1.0.0',
+  schemaVersion: QUESTIONNAIRE_SCHEMA_VERSION
+})
+const currentV1Stamp: AiVersionStamp = Object.freeze(getAiVersionStamp())
+const historicalV1RegistryEntry: AIRegistryEntry = Object.freeze({
+  versionStamp: historicalV1Stamp,
+  systemPrompt: HISTORICAL_V1_SYSTEM_PROMPT,
+  schemaVersion: QUESTIONNAIRE_SCHEMA_VERSION,
+  compatibility: 'requires-migration'
+})
+const currentV1RegistryEntry: AIRegistryEntry = Object.freeze({
+  versionStamp: currentV1Stamp,
   systemPrompt: QUESTIONNAIRE_SYSTEM_PROMPT,
   schemaVersion: QUESTIONNAIRE_SCHEMA_VERSION,
+  compatibility: 'supported',
   runHarness: runQuestionnaireHarness
 })
-const AI_REGISTRY = new Map([[JSON.stringify(V1_STAMP), V1_REGISTRY_ENTRY]])
 
-export function resolveAIRegistryEntry(stamp: AiVersionStamp): AIRegistryEntry {
-  const entry = AI_REGISTRY.get(JSON.stringify({
+function versionRegistryKey(stamp: AiVersionStamp): string {
+  return JSON.stringify({
     promptId: stamp.promptId,
     promptVersion: stamp.promptVersion,
     promptHash: stamp.promptHash,
     harnessVersion: stamp.harnessVersion,
     schemaVersion: stamp.schemaVersion
-  }))
+  })
+}
+
+const AI_REGISTRY = new Map<string, AIRegistryEntry>([
+  [versionRegistryKey(historicalV1Stamp), historicalV1RegistryEntry],
+  [versionRegistryKey(currentV1Stamp), currentV1RegistryEntry]
+])
+
+export function resolveAIRegistryEntry(stamp: AiVersionStamp): AIRegistryEntry {
+  const entry = AI_REGISTRY.get(versionRegistryKey(stamp))
   if (entry === undefined) throw new Error('AI_VERSION_NOT_REGISTERED')
   return entry
 }
 
-export function migrateAISessionVersion(from: AiVersionStamp, to: AiVersionStamp): never {
+export function migrateAISessionVersion(from: AiVersionStamp, to: AiVersionStamp): void {
+  resolveAIRegistryEntry(from)
   const major = (version: string): number => Number.parseInt(version.split('.')[0] ?? '', 10)
-  const crossesMajor = major(from.promptVersion) !== major(to.promptVersion) ||
+  if (from.promptId !== to.promptId ||
+    major(from.promptVersion) !== major(to.promptVersion) ||
     major(from.harnessVersion) !== major(to.harnessVersion) ||
-    from.schemaVersion !== to.schemaVersion
-  throw new Error(crossesMajor
-    ? 'AI_MAJOR_VERSION_MIGRATION_REQUIRED'
-    : 'AI_VERSION_MIGRATION_REQUIRED')
+    from.schemaVersion !== to.schemaVersion) {
+    throw new Error('AI_MAJOR_VERSION_MIGRATION_REQUIRED')
+  }
+  const target = resolveAIRegistryEntry(to)
+  if (target.compatibility !== 'supported') throw new Error('AI_VERSION_MIGRATION_REQUIRED')
 }
 
 export function stripDerivedVariables(questionnaire: QuestionnaireDef): QuestionnaireDef {
@@ -831,6 +869,147 @@ export function hashAIQuestionnaire(questionnaire: QuestionnaireDef): string {
   return `sha256:${createHash('sha256')
     .update(JSON.stringify(canonicalizeUnknown(stripDerivedVariables(questionnaire))))
     .digest('hex')}`
+}
+
+function hasExactKeys(value: JsonObject, required: readonly string[], optional: readonly string[] = []): boolean {
+  const allowed = new Set([...required, ...optional])
+  return required.every((key) => Object.prototype.hasOwnProperty.call(value, key)) &&
+    Object.keys(value).every((key) => allowed.has(key))
+}
+
+export function validateStrictQuestionnaireDto(
+  value: unknown,
+  protectedDerivedVariableNames: readonly string[] = []
+): QuestionnaireDef {
+  if (!isObject(value) || !hasExactKeys(
+    value,
+    ['name', 'questions', 'conditionRules', 'keyQuestionIds'],
+    ['description']
+  ) || typeof value.name !== 'string' ||
+    (Object.prototype.hasOwnProperty.call(value, 'description') && typeof value.description !== 'string') ||
+    !Array.isArray(value.questions) || !Array.isArray(value.conditionRules) ||
+    !Array.isArray(value.keyQuestionIds) || value.keyQuestionIds.some((id) => typeof id !== 'string')) {
+    throw new Error('AI_ARTIFACT_INVALID')
+  }
+  for (const [index, rawQuestion] of value.questions.entries()) {
+    if (!isObject(rawQuestion) || !hasExactKeys(
+      rawQuestion,
+      ['id', 'content', 'variableName', 'type', 'options', 'constraint', 'isKey', 'allowSkip', 'order'],
+      ['defaultValue', 'skipValue']
+    ) || typeof rawQuestion.id !== 'string' || !ID_PATTERN.test(rawQuestion.id) ||
+      typeof rawQuestion.content !== 'string' || typeof rawQuestion.variableName !== 'string' ||
+      typeof rawQuestion.type !== 'string' || !isQuestionType(rawQuestion.type) ||
+      typeof rawQuestion.isKey !== 'boolean' || typeof rawQuestion.allowSkip !== 'boolean' ||
+      rawQuestion.order !== index ||
+      (Object.prototype.hasOwnProperty.call(rawQuestion, 'defaultValue') &&
+        typeof rawQuestion.defaultValue !== 'string') ||
+      (Object.prototype.hasOwnProperty.call(rawQuestion, 'skipValue') &&
+        typeof rawQuestion.skipValue !== 'string') ||
+      !Array.isArray(rawQuestion.options) || !isObject(rawQuestion.constraint)) {
+      throw new Error('AI_ARTIFACT_INVALID')
+    }
+    for (const option of rawQuestion.options) {
+      if (!isObject(option) || !hasExactKeys(option, ['value', 'label']) ||
+        typeof option.value !== 'string' || typeof option.label !== 'string') {
+        throw new Error('AI_ARTIFACT_INVALID')
+      }
+    }
+    if (!hasExactKeys(rawQuestion.constraint, ['type'], [
+      'fixedLength', 'minValue', 'maxValue', 'step', 'regexPattern', 'regexFlags'
+    ]) || typeof rawQuestion.constraint.type !== 'string' ||
+      !isConstraintType(rawQuestion.constraint.type)) {
+      throw new Error('AI_ARTIFACT_INVALID')
+    }
+    for (const field of ['fixedLength', 'minValue', 'maxValue', 'step'] as const) {
+      const item = rawQuestion.constraint[field]
+      if (Object.prototype.hasOwnProperty.call(rawQuestion.constraint, field) &&
+        (typeof item !== 'number' || !Number.isFinite(item))) {
+        throw new Error('AI_ARTIFACT_INVALID')
+      }
+    }
+    for (const field of ['regexPattern', 'regexFlags'] as const) {
+      const item = rawQuestion.constraint[field]
+      if (Object.prototype.hasOwnProperty.call(rawQuestion.constraint, field) && typeof item !== 'string') {
+        throw new Error('AI_ARTIFACT_INVALID')
+      }
+    }
+  }
+  for (const rawRule of value.conditionRules) {
+    if (!isObject(rawRule) || !hasExactKeys(rawRule, [
+      'id', 'sourceQuestionId', 'conditions', 'logic', 'action', 'targetQuestionIds'
+    ]) || typeof rawRule.id !== 'string' || !ID_PATTERN.test(rawRule.id) ||
+      typeof rawRule.sourceQuestionId !== 'string' || !Array.isArray(rawRule.conditions) ||
+      (rawRule.logic !== 'AND' && rawRule.logic !== 'OR') ||
+      (rawRule.action !== 'skip' && rawRule.action !== 'show' && rawRule.action !== 'require') ||
+      !Array.isArray(rawRule.targetQuestionIds) ||
+      rawRule.targetQuestionIds.some((id) => typeof id !== 'string')) {
+      throw new Error('AI_ARTIFACT_INVALID')
+    }
+    for (const condition of rawRule.conditions) {
+      if (!isObject(condition) || !hasExactKeys(condition, ['questionId', 'operator', 'value']) ||
+        typeof condition.questionId !== 'string' || typeof condition.operator !== 'string' ||
+        !isConditionOperator(condition.operator) || typeof condition.value !== 'string') {
+        throw new Error('AI_ARTIFACT_INVALID')
+      }
+    }
+  }
+  const validation = validateQuestionnaireDraft(value, protectedDerivedVariableNames)
+  if (!validation.ok) throw new Error('AI_ARTIFACT_INVALID')
+  return stripDerivedVariables(value as unknown as QuestionnaireDef)
+}
+
+function sameVersionStamp(left: AiVersionStamp, right: AiVersionStamp): boolean {
+  return versionRegistryKey(left) === versionRegistryKey(right)
+}
+
+function structurallyEqualUnknown(left: unknown, right: unknown): boolean {
+  return JSON.stringify(canonicalizeUnknown(left)) === JSON.stringify(canonicalizeUnknown(right))
+}
+
+export function validateQuestionnaireArtifact(
+  artifact: AIArtifact | undefined,
+  expectedVersionStamp: AiVersionStamp,
+  protectedDerivedVariableNames: readonly string[] = []
+): QuestionnaireArtifactValue {
+  if (artifact?.kind !== 'questionnaire-draft' || artifact.status !== 'completed' ||
+    artifact.errorCode !== undefined ||
+    !sameVersionStamp(artifact.versionStamp, expectedVersionStamp)) {
+    throw new Error('AI_ARTIFACT_INVALID')
+  }
+  resolveAIRegistryEntry(artifact.versionStamp)
+  if (!isObject(artifact.value) || !hasExactKeys(artifact.value, [
+    'draft', 'diff', 'assistantMessage', 'rollingSummary', 'baseQuestionnaireHash',
+    'baseQuestionnaire', 'validation'
+  ]) || typeof artifact.value.assistantMessage !== 'string' ||
+    artifact.value.assistantMessage.trim().length === 0 ||
+    artifact.value.assistantMessage.length > 20_000 ||
+    typeof artifact.value.rollingSummary !== 'string' || artifact.value.rollingSummary.length > 20_000 ||
+    typeof artifact.value.baseQuestionnaireHash !== 'string' ||
+    !/^sha256:[a-f0-9]{64}$/.test(artifact.value.baseQuestionnaireHash) ||
+    !isObject(artifact.value.validation) ||
+    !hasExactKeys(artifact.value.validation, ['success', 'errors']) ||
+    artifact.value.validation.success !== true || !Array.isArray(artifact.value.validation.errors) ||
+    artifact.value.validation.errors.length !== 0) {
+    throw new Error('AI_ARTIFACT_INVALID')
+  }
+  const baseQuestionnaire = validateStrictQuestionnaireDto(artifact.value.baseQuestionnaire)
+  const draft = validateStrictQuestionnaireDto(artifact.value.draft, protectedDerivedVariableNames)
+  if (hashAIQuestionnaire(baseQuestionnaire) !== artifact.value.baseQuestionnaireHash) {
+    throw new Error('AI_ARTIFACT_INVALID')
+  }
+  const expectedDiff = diffQuestionnaires(baseQuestionnaire, draft)
+  if (!structurallyEqualUnknown(artifact.value.diff, expectedDiff)) {
+    throw new Error('AI_ARTIFACT_INVALID')
+  }
+  return {
+    draft,
+    diff: expectedDiff,
+    assistantMessage: artifact.value.assistantMessage,
+    rollingSummary: artifact.value.rollingSummary,
+    baseQuestionnaireHash: artifact.value.baseQuestionnaireHash,
+    baseQuestionnaire,
+    validation: { success: true, errors: [] }
+  }
 }
 
 export function buildQuestionnaireContext(

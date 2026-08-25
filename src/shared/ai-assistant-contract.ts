@@ -117,7 +117,7 @@ export interface AITempPartition {
 export interface AISessionManifest {
   sessionId: string
   title: string
-  /** Immutable for the lifetime of this Session. */
+  /** Immutable except through the explicit, audited Session migration API. */
   versionStamp: AiVersionStamp
   createdAt: string
   updatedAt: string
