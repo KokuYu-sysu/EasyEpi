@@ -2,6 +2,8 @@ import type { QuestionnaireDef } from './qnaire'
 import type { AIAssistantProjectData } from '../ai-assistant-contract'
 
 export interface ProjectMeta {
+  /** Stable identity; optional only while loading projects created before v0.8. */
+  readonly projectId?: string
   name: string
   folderPath: string
   createdAt: string

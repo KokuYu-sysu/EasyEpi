@@ -19,7 +19,7 @@ import { detectConflicts } from './qnaire.service'
 
 export const AI_PROMPT_ID = 'easyepi-questionnaire-assistant'
 export const AI_PROMPT_VERSION = '1.0.0'
-export const HARNESS_VERSION = '1.0.0'
+export const HARNESS_VERSION = '1.1.0'
 export const QUESTIONNAIRE_SCHEMA_VERSION = 1
 
 export const QUESTIONNAIRE_SYSTEM_PROMPT = `You are EasyEpi's questionnaire drafting assistant.
@@ -50,7 +50,7 @@ export interface QuestionnaireDiffSummary {
   }
 }
 
-export interface QuestionnaireArtifactValue {
+export interface QuestionnaireHarnessValue {
   draft: QuestionnaireDef
   diff: QuestionnaireDiffSummary
   assistantMessage: string
@@ -58,8 +58,23 @@ export interface QuestionnaireArtifactValue {
   validation: { success: true; errors: [] }
 }
 
+export interface QuestionnaireArtifactValue extends QuestionnaireHarnessValue {
+  baseQuestionnaireHash: string
+}
+
+export interface AIRegistryEntry {
+  versionStamp: AiVersionStamp
+  systemPrompt: string
+  schemaVersion: number
+  runHarness(
+    responseText: string,
+    base?: QuestionnaireDef,
+    protectedDerivedVariableNames?: readonly string[]
+  ): QuestionnaireHarnessResult
+}
+
 export type QuestionnaireHarnessResult =
-  | { ok: true; value: QuestionnaireArtifactValue }
+  | { ok: true; value: QuestionnaireHarnessValue }
   | { ok: false; errors: AIValidationError[] }
 
 type JsonObject = Record<string, unknown>
@@ -68,6 +83,7 @@ const ENVELOPE_FIELDS = new Set(['assistantMessage', 'rollingSummary', 'question
 const QUESTIONNAIRE_FIELDS = new Set([
   'name', 'description', 'questions', 'conditionRules', 'keyQuestionIds'
 ])
+const QUESTIONNAIRE_ATTACHMENT_FIELDS = new Set([...QUESTIONNAIRE_FIELDS, 'derivedVariables'])
 const QUESTION_FIELDS = new Set([
   'id', 'content', 'variableName', 'type', 'options', 'constraint', 'defaultValue',
   'isKey', 'allowSkip', 'skipValue', 'order'
@@ -87,10 +103,6 @@ function isObject(value: unknown): value is JsonObject {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return false
   const prototype = Object.getPrototypeOf(value)
   return prototype === Object.prototype || prototype === null
-}
-
-function clone<T>(value: T): T {
-  return structuredClone(value)
 }
 
 function addError(
@@ -288,15 +300,12 @@ function normalizeQuestionnaire(value: JsonObject, base?: QuestionnaireDef): Que
   const questions: QuestionDef[] = rawQuestions.map((raw, order) => {
     const input = isObject(raw) ? raw : {}
     const variableName = stringValue(input.variableName)
-    const matched = baseByVariable.get(variableName)
-    const requestedId = typeof input.id === 'string' && ID_PATTERN.test(input.id) ? input.id : undefined
-    const id = requestedId !== undefined && !usedIds.has(requestedId)
-      ? requestedId
-      : matched !== undefined && !usedIds.has(matched.id)
-        ? matched.id
-        : randomUUID()
+    const matched = base?.questions.find((question) => question.id === input.id) ??
+      baseByVariable.get(variableName)
+    const id = matched !== undefined && !usedIds.has(matched.id) ? matched.id : randomUUID()
     usedIds.add(id)
     if (typeof input.id === 'string') referenceMap.set(input.id, id)
+    if (variableName.length > 0) referenceMap.set(variableName, id)
     const options: OptionItem[] = Array.isArray(input.options)
       ? input.options.map((rawOption) => {
           const option = isObject(rawOption) ? rawOption : {}
@@ -323,14 +332,20 @@ function normalizeQuestionnaire(value: JsonObject, base?: QuestionnaireDef): Que
     const raw = stringValue(value)
     return referenceMap.get(raw) ?? raw
   }
-  const usedRuleIds = new Set<string>()
+  const usedBaseRuleIds = new Set<string>()
+  const semanticKey = (rule: Omit<ConditionRule, 'id'> | ConditionRule): string => JSON.stringify({
+    sourceQuestionId: rule.sourceQuestionId,
+    conditions: [...rule.conditions].sort((left, right) =>
+      JSON.stringify(left).localeCompare(JSON.stringify(right))
+    ),
+    logic: rule.logic,
+    action: rule.action,
+    targetQuestionIds: [...rule.targetQuestionIds].sort()
+  })
   const conditionRules: ConditionRule[] = (Array.isArray(value.conditionRules)
     ? value.conditionRules
     : []).map((raw) => {
       const input = isObject(raw) ? raw : {}
-      const requestedId = typeof input.id === 'string' && ID_PATTERN.test(input.id) ? input.id : undefined
-      const id = requestedId !== undefined && !usedRuleIds.has(requestedId) ? requestedId : randomUUID()
-      usedRuleIds.add(id)
       const conditions: ConditionDef[] = (Array.isArray(input.conditions) ? input.conditions : [])
         .map((rawCondition) => {
           const condition = isObject(rawCondition) ? rawCondition : {}
@@ -342,8 +357,7 @@ function normalizeQuestionnaire(value: JsonObject, base?: QuestionnaireDef): Que
             value: typeof condition.value === 'string' ? condition.value : ''
           }
         })
-      return {
-        id,
+      const normalized: Omit<ConditionRule, 'id'> = {
         sourceQuestionId: mapReference(input.sourceQuestionId),
         conditions,
         logic: input.logic === 'OR' ? 'OR' : 'AND',
@@ -352,6 +366,11 @@ function normalizeQuestionnaire(value: JsonObject, base?: QuestionnaireDef): Que
           ? input.targetQuestionIds.map(mapReference)
           : []
       }
+      const matched = base?.conditionRules.find((rule) =>
+        !usedBaseRuleIds.has(rule.id) && semanticKey(rule) === semanticKey(normalized)
+      )
+      if (matched !== undefined) usedBaseRuleIds.add(matched.id)
+      return { id: matched?.id ?? randomUUID(), ...normalized }
     })
   const explicitKeys = Array.isArray(value.keyQuestionIds)
     ? value.keyQuestionIds.map(mapReference)
@@ -365,6 +384,47 @@ function normalizeQuestionnaire(value: JsonObject, base?: QuestionnaireDef): Que
     conditionRules,
     keyQuestionIds: explicitKeys
   }
+}
+
+function validateStableQuestionReferences(
+  value: JsonObject,
+  base?: QuestionnaireDef
+): AIValidationError[] {
+  if (base === undefined || !Array.isArray(value.questions)) return []
+  const errors: AIValidationError[] = []
+  const claimed = new Set<string>()
+  for (const [index, raw] of value.questions.entries()) {
+    if (!isObject(raw)) continue
+    const byRef = typeof raw.id === 'string'
+      ? base.questions.find((question) => question.id === raw.id)
+      : undefined
+    const rawVariableName = typeof raw.variableName === 'string' ? raw.variableName.trim() : undefined
+    const byVariable = rawVariableName !== undefined
+      ? base.questions.find((question) => question.variableName === rawVariableName)
+      : undefined
+    if (byRef !== undefined && byVariable !== undefined && byRef.id !== byVariable.id) {
+      addError(
+        errors,
+        'AMBIGUOUS_QUESTION_REFERENCE',
+        `$.questionnaire.questions[${index}]`,
+        'Question reference and variable name identify different local questions'
+      )
+      continue
+    }
+    const matched = byRef ?? byVariable
+    if (matched !== undefined) {
+      if (claimed.has(matched.id)) {
+        addError(
+          errors,
+          'DUPLICATE_BASE_QUESTION_REFERENCE',
+          `$.questionnaire.questions[${index}]`,
+          'Multiple candidate questions identify the same local question'
+        )
+      }
+      claimed.add(matched.id)
+    }
+  }
+  return errors
 }
 
 function validateQuestionnaire(
@@ -430,7 +490,70 @@ function validateQuestionnaire(
   for (const conflict of detectConflicts(draft)) {
     addError(errors, 'CONDITION_RULE_CONFLICT', '$.questionnaire.conditionRules', conflict)
   }
+  validateRuleGraph(draft, errors)
   return errors
+}
+
+function validateRuleGraph(draft: QuestionnaireDef, errors: AIValidationError[]): void {
+  const edges = new Map<string, Set<string>>()
+  const actionsByTarget = new Map<string, Set<string>>()
+  const showTargets = new Set<string>()
+  for (const rule of draft.conditionRules) {
+    const sources = new Set([rule.sourceQuestionId, ...rule.conditions.map((item) => item.questionId)])
+    for (const target of rule.targetQuestionIds) {
+      const actions = actionsByTarget.get(target) ?? new Set<string>()
+      actions.add(rule.action)
+      actionsByTarget.set(target, actions)
+      if (rule.action === 'show') showTargets.add(target)
+      for (const source of sources) {
+        const targets = edges.get(source) ?? new Set<string>()
+        targets.add(target)
+        edges.set(source, targets)
+      }
+    }
+  }
+  for (const [target, actions] of actionsByTarget) {
+    if (actions.size > 1) {
+      addError(errors, 'CONDITION_ACTION_CONFLICT', '$.questionnaire.conditionRules', `Conflicting actions target ${target}`)
+    }
+  }
+  const visiting = new Set<string>()
+  const visited = new Set<string>()
+  const visit = (questionId: string): boolean => {
+    if (visiting.has(questionId)) return true
+    if (visited.has(questionId)) return false
+    visiting.add(questionId)
+    for (const target of edges.get(questionId) ?? []) {
+      if (visit(target)) return true
+    }
+    visiting.delete(questionId)
+    visited.add(questionId)
+    return false
+  }
+  if (draft.questions.some((question) => visit(question.id))) {
+    addError(errors, 'CONDITION_RULE_CYCLE', '$.questionnaire.conditionRules', 'Conditional rules contain a cycle')
+  }
+  const reachable = new Set(draft.questions.filter((question) => !showTargets.has(question.id)).map((question) => question.id))
+  let changed = true
+  while (changed) {
+    changed = false
+    for (const rule of draft.conditionRules.filter((item) => item.action === 'show')) {
+      const conditionIds = rule.conditions.map((condition) => condition.questionId)
+      const triggerReachable = rule.logic === 'AND'
+        ? conditionIds.every((id) => reachable.has(id))
+        : conditionIds.some((id) => reachable.has(id))
+      if (!triggerReachable) continue
+      for (const target of rule.targetQuestionIds) {
+        if (!reachable.has(target)) {
+          reachable.add(target)
+          changed = true
+        }
+      }
+    }
+  }
+  if ([...showTargets].some((target) => !reachable.has(target))) {
+    addError(errors, 'UNREACHABLE_SHOW_CHAIN', '$.questionnaire.conditionRules', 'Show-controlled questions have no reachable root')
+  }
 }
 
 function validateConstraint(
@@ -556,7 +679,10 @@ export function runQuestionnaireHarness(
 ): QuestionnaireHarnessResult {
   const parsed = parseEnvelope(responseText)
   if (parsed.value === undefined) return { ok: false, errors: parsed.errors }
-  const draft = normalizeQuestionnaire(parsed.value.questionnaire as JsonObject, base)
+  const candidate = parsed.value.questionnaire as JsonObject
+  const referenceErrors = validateStableQuestionReferences(candidate, base)
+  if (referenceErrors.length > 0) return { ok: false, errors: referenceErrors }
+  const draft = normalizeQuestionnaire(candidate, base)
   const errors = validateQuestionnaire(draft, protectedDerivedVariableNames)
   if (errors.length > 0) return { ok: false, errors }
   const emptyBase: QuestionnaireDef = { name: '', questions: [], conditionRules: [], keyQuestionIds: [] }
@@ -580,6 +706,7 @@ export function validateQuestionnaireDraft(
   if (!isObject(draft)) {
     return { ok: false, errors: [{ code: 'INVALID_DRAFT', path: '$.draft', message: 'Draft must be an object' }] }
   }
+  inspectCandidate(draft, '$.draft', errors)
   if (Object.prototype.hasOwnProperty.call(draft, 'derivedVariables')) {
     addError(errors, 'FORBIDDEN_FIELD', '$.draft.derivedVariables', 'Derived variables are forbidden')
   }
@@ -610,60 +737,172 @@ export function getAiVersionStamp(): AiVersionStamp {
   }
 }
 
+const V1_STAMP = Object.freeze(getAiVersionStamp())
+const V1_REGISTRY_ENTRY: AIRegistryEntry = Object.freeze({
+  versionStamp: V1_STAMP,
+  systemPrompt: QUESTIONNAIRE_SYSTEM_PROMPT,
+  schemaVersion: QUESTIONNAIRE_SCHEMA_VERSION,
+  runHarness: runQuestionnaireHarness
+})
+const AI_REGISTRY = new Map([[JSON.stringify(V1_STAMP), V1_REGISTRY_ENTRY]])
+
+export function resolveAIRegistryEntry(stamp: AiVersionStamp): AIRegistryEntry {
+  const entry = AI_REGISTRY.get(JSON.stringify({
+    promptId: stamp.promptId,
+    promptVersion: stamp.promptVersion,
+    promptHash: stamp.promptHash,
+    harnessVersion: stamp.harnessVersion,
+    schemaVersion: stamp.schemaVersion
+  }))
+  if (entry === undefined) throw new Error('AI_VERSION_NOT_REGISTERED')
+  return entry
+}
+
+export function migrateAISessionVersion(from: AiVersionStamp, to: AiVersionStamp): never {
+  const major = (version: string): number => Number.parseInt(version.split('.')[0] ?? '', 10)
+  const crossesMajor = major(from.promptVersion) !== major(to.promptVersion) ||
+    major(from.harnessVersion) !== major(to.harnessVersion) ||
+    from.schemaVersion !== to.schemaVersion
+  throw new Error(crossesMajor
+    ? 'AI_MAJOR_VERSION_MIGRATION_REQUIRED'
+    : 'AI_VERSION_MIGRATION_REQUIRED')
+}
+
 export function stripDerivedVariables(questionnaire: QuestionnaireDef): QuestionnaireDef {
-  const allowed = clone(questionnaire)
-  delete allowed.derivedVariables
-  return allowed
+  if (!isObject(questionnaire)) throw new Error('AI_QUESTIONNAIRE_DTO_INVALID')
+  for (const key of Object.keys(questionnaire)) {
+    if (!QUESTIONNAIRE_ATTACHMENT_FIELDS.has(key)) throw new Error('AI_QUESTIONNAIRE_DTO_INVALID')
+  }
+  const candidate = {
+    name: questionnaire.name,
+    ...(questionnaire.description === undefined ? {} : { description: questionnaire.description }),
+    questions: questionnaire.questions,
+    conditionRules: questionnaire.conditionRules,
+    keyQuestionIds: questionnaire.keyQuestionIds
+  }
+  if (!validateQuestionnaireDraft(candidate).ok) throw new Error('AI_QUESTIONNAIRE_DTO_INVALID')
+  return {
+    name: candidate.name,
+    ...(candidate.description === undefined ? {} : { description: candidate.description }),
+    questions: candidate.questions.map((question) => ({
+      id: question.id,
+      content: question.content,
+      variableName: question.variableName,
+      type: question.type,
+      options: question.options.map((option) => ({ value: option.value, label: option.label })),
+      constraint: {
+        type: question.constraint.type,
+        ...(question.constraint.fixedLength === undefined ? {} : { fixedLength: question.constraint.fixedLength }),
+        ...(question.constraint.minValue === undefined ? {} : { minValue: question.constraint.minValue }),
+        ...(question.constraint.maxValue === undefined ? {} : { maxValue: question.constraint.maxValue }),
+        ...(question.constraint.step === undefined ? {} : { step: question.constraint.step }),
+        ...(question.constraint.regexPattern === undefined ? {} : { regexPattern: question.constraint.regexPattern }),
+        ...(question.constraint.regexFlags === undefined ? {} : { regexFlags: question.constraint.regexFlags })
+      },
+      ...(question.defaultValue === undefined ? {} : { defaultValue: question.defaultValue }),
+      isKey: question.isKey,
+      allowSkip: question.allowSkip,
+      ...(question.skipValue === undefined ? {} : { skipValue: question.skipValue }),
+      order: question.order
+    })),
+    conditionRules: candidate.conditionRules.map((rule) => ({
+      id: rule.id,
+      sourceQuestionId: rule.sourceQuestionId,
+      conditions: rule.conditions.map((condition) => ({
+        questionId: condition.questionId,
+        operator: condition.operator,
+        value: condition.value
+      })),
+      logic: rule.logic,
+      action: rule.action,
+      targetQuestionIds: [...rule.targetQuestionIds]
+    })),
+    keyQuestionIds: [...candidate.keyQuestionIds]
+  }
+}
+
+function canonicalizeUnknown(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonicalizeUnknown)
+  if (!isObject(value)) return value
+  return Object.fromEntries(Object.keys(value).sort().map((key) => [key, canonicalizeUnknown(value[key])]))
+}
+
+export function hashAIQuestionnaire(questionnaire: QuestionnaireDef): string {
+  return `sha256:${createHash('sha256')
+    .update(JSON.stringify(canonicalizeUnknown(stripDerivedVariables(questionnaire))))
+    .digest('hex')}`
 }
 
 export function buildQuestionnaireContext(
   session: AISessionData,
   activeArtifactDraft?: QuestionnaireDef,
   explicitAttachedQuestionnaire?: QuestionnaireDef,
-  maxCharacters = 60_000
+  maxCharacters = 60_000,
+  registryEntry: AIRegistryEntry = resolveAIRegistryEntry(session.manifest.versionStamp)
 ): Array<{ role: 'system' | 'user' | 'assistant'; content: string }> {
   const summary = typeof session.state.values.rollingSummary === 'string'
     ? session.state.values.rollingSummary
     : ''
-  const fixed: Array<{ role: 'system' | 'user' | 'assistant'; content: string }> = [
-    { role: 'system', content: QUESTIONNAIRE_SYSTEM_PROMPT }
+  const required: Array<{ role: 'system' | 'user' | 'assistant'; content: string }> = [
+    { role: 'system', content: registryEntry.systemPrompt }
   ]
-  if (summary.length > 0) fixed.push({ role: 'system', content: `Rolling summary:\n${summary}` })
   if (activeArtifactDraft !== undefined) {
-    fixed.push({ role: 'system', content: `Active draft artifact:\n${JSON.stringify(stripDerivedVariables(activeArtifactDraft))}` })
+    required.push({ role: 'system', content: `Active draft artifact:\n${JSON.stringify(stripDerivedVariables(activeArtifactDraft))}` })
   }
   if (explicitAttachedQuestionnaire !== undefined) {
-    fixed.push({ role: 'system', content: `Explicitly attached questionnaire:\n${JSON.stringify(stripDerivedVariables(explicitAttachedQuestionnaire))}` })
+    required.push({ role: 'system', content: `Explicitly attached questionnaire:\n${JSON.stringify(stripDerivedVariables(explicitAttachedQuestionnaire))}` })
   }
-  if (fixed.reduce((sum, message) => sum + message.content.length, 0) > maxCharacters) {
-    throw new Error('AI_CONTEXT_TOO_LARGE')
+  const turns: Array<Array<{ role: 'user' | 'assistant'; content: string }>> = []
+  let turn: Array<{ role: 'user' | 'assistant'; content: string }> | undefined
+  for (const message of session.conversation.messages) {
+    if (message.role === 'user') {
+      if (turn !== undefined) turns.push(turn)
+      turn = [{ role: 'user', content: message.content }]
+    } else if (turn !== undefined && (message.role === 'assistant' || message.role === 'tool')) {
+      turn.push({
+        role: 'assistant',
+        content: message.role === 'tool' ? `[tool]\n${message.content}` : message.content
+      })
+    }
   }
-  const budget = Math.max(0, maxCharacters - fixed.reduce((sum, message) => sum + message.content.length, 0))
-  const recent: Array<{ role: 'user' | 'assistant'; content: string }> = []
-  let used = 0
-  for (const message of [...session.conversation.messages].reverse()) {
-    if (message.role !== 'user' && message.role !== 'assistant') continue
-    if (used + message.content.length > budget) break
-    recent.unshift({ role: message.role, content: message.content })
-    used += message.content.length
+  if (turn !== undefined) turns.push(turn)
+  const currentTurn = turns.at(-1)
+  if (currentTurn === undefined) throw new Error('AI_CONTEXT_MISSING_CURRENT_USER')
+  const lengthOf = (messages: ReadonlyArray<{ content: string }>): number =>
+    messages.reduce((sum, message) => sum + message.content.length, 0)
+  let used = lengthOf(required) + lengthOf(currentTurn)
+  if (used > maxCharacters) throw new Error('AI_CONTEXT_TOO_LARGE')
+  const optionalFixed: Array<{ role: 'system'; content: string }> = []
+  if (summary.length > 0) {
+    const summaryMessage = { role: 'system' as const, content: `Rolling summary:\n${summary}` }
+    if (used + summaryMessage.content.length <= maxCharacters) {
+      optionalFixed.push(summaryMessage)
+      used += summaryMessage.content.length
+    }
   }
-  return [...fixed, ...recent]
+  const recentTurns: typeof turns = []
+  for (const previousTurn of turns.slice(0, -1).reverse()) {
+    const turnLength = lengthOf(previousTurn)
+    if (used + turnLength > maxCharacters) break
+    recentTurns.unshift(previousTurn)
+    used += turnLength
+  }
+  return [...required, ...optionalFixed, ...recentTurns.flat(), ...currentTurn]
 }
 
 export function buildAIContentCacheKey(input: {
-  projectName: string
-  projectCreatedAt: string
+  projectId: string
   sessionId: string
   promptHash: string
   schemaVersion: number
   baseUrl: string
   model: string
 }): string {
-  const projectId = createHash('sha256')
-    .update(`${input.projectCreatedAt}\0${input.projectName}`)
-    .digest('hex')
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(input.projectId)) {
+    throw new Error('INVALID_PROJECT_ID')
+  }
   return createHash('sha256').update(JSON.stringify({
-    projectId,
+    projectId: input.projectId,
     sessionId: input.sessionId,
     promptHash: input.promptHash,
     schemaVersion: input.schemaVersion,

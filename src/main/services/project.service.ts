@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto'
 import { existsSync, mkdirSync, readFileSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
 
@@ -29,6 +30,21 @@ const HASH_HEX_LEN = 64
 const SALT_OFFSET = 28
 const HASH_OFFSET = SALT_OFFSET + SALT_HEX_LEN
 const HEADER_SIZE = HASH_OFFSET + HASH_HEX_LEN
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
+
+export function ensureProjectId(
+  project: ProjectData,
+  createId: () => string = randomUUID
+): boolean {
+  if (project.meta.projectId !== undefined) {
+    if (!UUID_PATTERN.test(project.meta.projectId)) throw new Error('INVALID_PROJECT_ID')
+    return false
+  }
+  const projectId = createId()
+  if (!UUID_PATTERN.test(projectId)) throw new Error('INVALID_PROJECT_ID')
+  project.meta = { ...project.meta, projectId }
+  return true
+}
 
 function writeHeader(opts: {
   payloadLength: number
@@ -111,7 +127,9 @@ export function createProject(
   const encryptionKey = deriveKey(password, saltBuf)
 
   const now = new Date().toISOString()
-  const meta: ProjectMeta = { name, folderPath, createdAt: now, lastModifiedAt: now }
+  const meta: ProjectMeta = {
+    projectId: randomUUID(), name, folderPath, createdAt: now, lastModifiedAt: now
+  }
   const data: ProjectData = {
     meta,
     questionnaire: { name, questions: [], conditionRules: [], keyQuestionIds: [] }

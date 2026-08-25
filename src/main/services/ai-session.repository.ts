@@ -636,12 +636,39 @@ export class AISessionRepository {
   }
 
   clearAllTempOnStartup(): AIMutationResult<number> {
+    return this.recoverInterruptedRuns()
+  }
+
+  recoverInterruptedRuns(): AIMutationResult<number> {
     let removed = 0
     for (const session of Object.values(this.sessions())) {
       const runCount = Object.keys(session.temp.runs).length
-      if (runCount > 0) {
-        session.temp.runs = {}
-        removed += runCount
+      const interruptedRunIds = new Set([
+        ...Object.values(session.state.runs)
+          .filter((run) => run.status === 'running')
+          .map((run) => run.runId),
+        ...(session.state.activeRunId === undefined ? [] : [session.state.activeRunId])
+      ])
+      const interrupted = interruptedRunIds.size > 0 || session.state.status === 'running'
+      if (runCount > 0 || interrupted) {
+        const completedAt = this.now()
+        for (const runId of interruptedRunIds) {
+          const run = session.state.runs[runId]
+          if (run?.status === 'running') {
+            session.state.runs[runId] = {
+              ...run,
+              status: 'failed',
+              completedAt,
+              errorCode: 'AI_RUN_INTERRUPTED'
+            }
+          }
+        }
+        if (runCount > 0) session.temp.runs = {}
+        if (interrupted) {
+          delete session.state.activeRunId
+          session.state.status = 'failed'
+        }
+        removed += runCount + (interrupted ? Math.max(interruptedRunIds.size, 1) : 0)
         this.touch(session)
       }
     }

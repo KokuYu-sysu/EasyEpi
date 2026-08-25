@@ -31,6 +31,7 @@ export interface AIChatCompletionRequest {
   signal?: AbortSignal
   /** False means this provider/model was already proven not to support JSON schema. */
   responseFormatSupported?: boolean
+  schemaVersion?: number
 }
 
 export interface AIChatCompletionResult {
@@ -42,6 +43,7 @@ export interface OpenAICompatibleClientOptions {
   fetch?: typeof fetch
   timeoutMs?: number
   maxResponseBytes?: number
+  maxErrorResponseBytes?: number
 }
 
 const QUESTIONNAIRE_SCHEMA = {
@@ -182,7 +184,7 @@ async function boundedText(response: Response, maxBytes: number): Promise<string
 }
 
 function unsupportedResponseFormat(status: number, text: string): boolean {
-  if (status < 400 || status >= 500) return false
+  if (status !== 400 && status !== 422) return false
   const normalized = text.toLowerCase()
   return (normalized.includes('response_format') || normalized.includes('json_schema')) &&
     ['unsupported', 'not support', 'unknown', 'unrecognized', 'invalid parameter'].some((term) => normalized.includes(term))
@@ -220,6 +222,7 @@ export function createOpenAICompatibleClient(
   const fetcher = options.fetch ?? fetch
   const timeoutMs = options.timeoutMs ?? 60_000
   const maxResponseBytes = options.maxResponseBytes ?? 2_000_000
+  const maxErrorResponseBytes = options.maxErrorResponseBytes ?? 32_000
 
   async function requestOnce(
     request: AIChatCompletionRequest,
@@ -260,7 +263,13 @@ export function createOpenAICompatibleClient(
         }),
         signal: controller.signal
       })
-      return { response, text: await boundedText(response, maxResponseBytes) }
+      if (!response.ok && response.status !== 400 && response.status !== 422) {
+        throw statusError(response.status)
+      }
+      return {
+        response,
+        text: await boundedText(response, response.ok ? maxResponseBytes : maxErrorResponseBytes)
+      }
     } catch (error) {
       if (error instanceof AIClientError) throw error
       if (request.signal?.aborted === true) throw new AIClientError('AI_CANCELLED')
@@ -280,6 +289,7 @@ export function createOpenAICompatibleClient(
       } catch {
         throw new Error('INVALID_AI_CONFIG')
       }
+      if ((request.schemaVersion ?? 1) !== 1) throw new Error('AI_SCHEMA_NOT_REGISTERED')
       const safeRequest: AIChatCompletionRequest = {
         ...request,
         baseUrl: validated.baseUrl,

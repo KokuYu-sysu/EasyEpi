@@ -23,7 +23,8 @@ import {
   decryptProjectData,
   verifyAndDeriveKey,
   getProjectFilePath,
-  saveProjectToPath
+  saveProjectToPath,
+  ensureProjectId
 } from '../services/project.service'
 import { recoverProjectRekeyTransaction } from '../services/project-rekey.service'
 import { loadRecords, resolveProjectDataFilePath } from '../services/record.service'
@@ -61,9 +62,15 @@ function clearRecoveredAITemp(
   projectFilePath: string,
   key: Buffer,
   saltHex: string,
-  hashHex: string
+  hashHex: string,
+  preferredProjectId?: string
 ): void {
-  if (!new AISessionRepository(project).clearAllTempOnStartup().mutated) return
+  const migratedId = ensureProjectId(
+    project,
+    preferredProjectId === undefined ? undefined : () => preferredProjectId
+  )
+  const recoveredAI = new AISessionRepository(project).recoverInterruptedRuns().mutated
+  if (!migratedId && !recoveredAI) return
   saveProjectToPath(
     projectFilePath,
     project,
@@ -280,6 +287,7 @@ export function registerProjectIpc(
         state.currentFilePath,
         state.currentProject.meta.name
       )
+      const currentProjectId = state.currentProject.meta.projectId
       let restoredProject: ProjectData | undefined
       const success = restoreFromBackup(request.backupPath, state.currentFilePath, {
         dataFilePath,
@@ -303,7 +311,8 @@ export function registerProjectIpc(
             path,
             key,
             state.currentSaltHex,
-            state.currentHashHex
+            state.currentHashHex,
+            currentProjectId
           )
           restoredProject = candidate
         }
