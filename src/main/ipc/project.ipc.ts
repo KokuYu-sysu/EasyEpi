@@ -79,7 +79,8 @@ export function registerProjectIpc(
   ipcMain: IpcMainLike,
   state: ProjectIpcState,
   packagedRendererUrl: string,
-  developmentOrigin?: string
+  developmentOrigin?: string,
+  invalidateAdminSession: () => void = () => undefined
 ): () => void {
   let stopPeriodicBackups: () => void = () => undefined
 
@@ -100,6 +101,7 @@ export function registerProjectIpc(
   ipcMain.handle(PROJECT_CREATE_CHANNEL, async (event: IpcInvokeEventLike, rawRequest: unknown) => {
     assertTrustedSender(event, packagedRendererUrl, developmentOrigin)
     const request = parseProjectCreateRequest(rawRequest)
+    invalidateAdminSession()
 
     try {
       const result = createProject(request.folderPath, request.name, request.password)
@@ -129,6 +131,7 @@ export function registerProjectIpc(
   ipcMain.handle(PROJECT_OPEN_CHANNEL, async (event: IpcInvokeEventLike, rawRequest: unknown) => {
     assertTrustedSender(event, packagedRendererUrl, developmentOrigin)
     const request = parseProjectOpenRequest(rawRequest)
+    invalidateAdminSession()
 
     try {
       // Recover an interrupted password-change transaction before reading either file.
@@ -280,6 +283,7 @@ export function registerProjectIpc(
 
   ipcMain.handle(PROJECT_CLOSE_CHANNEL, async (event: IpcInvokeEventLike) => {
     assertTrustedSender(event, packagedRendererUrl, developmentOrigin)
+    invalidateAdminSession()
     state.currentProject = null
     state.currentFilePath = null
     state.currentSaltHex = ''

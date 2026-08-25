@@ -1,6 +1,7 @@
 import { createHashRouter, type RouteObject } from 'react-router-dom'
 
 import { AppShell } from './AppShell'
+import { AdminRouteGuard } from './AdminRouteGuard'
 import type { AppRouteHandle } from './route-metadata'
 import { ComponentGalleryPage } from '@renderer/pages/ComponentGalleryPage'
 import { AdminLoginPage } from '@renderer/pages/AdminLoginPage'
@@ -31,10 +32,10 @@ export const PRODUCTION_ROUTES: ProductionRouteDefinition[] = [
   { path: '/entry', handle: { title: '单题录入', description: '以一题一屏方式完成现场录入。' } },
   { path: '/work-session', handle: { title: '工作循环', description: '查看调查工作的标准循环。' } },
   { path: '/admin/login', handle: { title: '管理员验证', description: '使用当前项目密码进入数据管理后台。' } },
-  { path: '/admin/data', handle: { title: '数据管理', description: '查看、编辑、删除和导出当前项目的加密记录。' } },
-  { path: '/admin/baseline', handle: { title: '基线表', description: '生成分组描述统计与统计检验。' } },
+  { path: '/admin/data', handle: { title: '数据管理', description: '查看、编辑、删除和导出当前项目的加密记录。', requiresAdmin: true } },
+  { path: '/admin/baseline', handle: { title: '基线表', description: '生成分组描述统计与统计检验。', requiresAdmin: true } },
   { path: '/admin/double-entry', handle: { title: '双录入验证', description: '导入次录入 CSV 并与当前数据逐字段比对。' } },
-  { path: '/derived', handle: { title: '衍生变量', description: '配置由已有字段计算的变量。' } }
+  { path: '/derived', handle: { title: '衍生变量', description: '配置由已有字段计算的变量。', requiresAdmin: true } }
 ]
 
 const implementedRouteElements: Record<string, React.ReactElement> = {
@@ -58,7 +59,9 @@ export function createAppRoutes({ isDevelopment }: CreateAppRouterOptions): Rout
   const productionRoutes: RouteObject[] = PRODUCTION_ROUTES.map((route) => ({
     path: route.path,
     handle: route.handle,
-    element: implementedRouteElements[route.path]
+    element: route.handle.requiresAdmin ? (
+      <AdminRouteGuard>{implementedRouteElements[route.path]}</AdminRouteGuard>
+    ) : implementedRouteElements[route.path]
   }))
   const developmentRoutes: RouteObject[] = isDevelopment
     ? [

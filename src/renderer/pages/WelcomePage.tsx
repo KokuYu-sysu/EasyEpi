@@ -4,6 +4,7 @@ import { Link, useNavigate } from 'react-router-dom'
 import { useCurrentRouteHandle } from '@renderer/app/route-metadata'
 import { MilestonePage } from '@renderer/components/common/MilestonePage'
 import { Badge, Button, Input, Modal, useToast } from '@renderer/components/ui'
+import { clearAdminSession, syncAdminSession } from '@renderer/stores/admin-session.store'
 
 const primaryLinkClasses =
   'inline-flex min-h-12 items-center justify-center rounded-[var(--radius-1)] bg-[var(--color-brand)] px-[var(--space-5)] py-[var(--space-3)] font-[var(--font-weight-semibold)] text-[var(--color-on-brand)]'
@@ -59,6 +60,7 @@ function NewProjectDialog() {
     if (!validate()) return
 
     setIsCreating(true)
+    clearAdminSession()
     try {
       const result = await window.easyEpi.project.create({
         name: name.trim(),
@@ -75,6 +77,7 @@ function NewProjectDialog() {
     } catch (err) {
       setErrors({ submit: (err as Error).message })
     } finally {
+      await syncAdminSession()
       setIsCreating(false)
     }
   }
@@ -196,6 +199,7 @@ function OpenProjectDialog() {
     if (!validate()) return
 
     setIsOpening(true)
+    clearAdminSession()
     try {
       const result = await window.easyEpi.project.open({ filePath, password })
       if (result.ok) {
@@ -208,6 +212,7 @@ function OpenProjectDialog() {
     } catch (err) {
       setErrors({ submit: (err as Error).message })
     } finally {
+      await syncAdminSession()
       setIsOpening(false)
     }
   }

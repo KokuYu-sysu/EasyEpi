@@ -14,13 +14,14 @@ import {
   TableProperties,
   Upload
 } from 'lucide-react'
-import { useRef, useState, type PropsWithChildren, type ReactNode } from 'react'
-import { Link, NavLink, Outlet } from 'react-router-dom'
+import { useEffect, useRef, useState, type PropsWithChildren, type ReactNode } from 'react'
+import { Link, NavLink, Outlet, useNavigate } from 'react-router-dom'
 
 import { Button, Tooltip } from '@renderer/components/ui'
 import { SettingsDialog } from '@renderer/components/common/SettingsDialog'
 import { BackupDialog } from '@renderer/components/common/BackupDialog'
 import { usePreferencesStore } from '@renderer/stores/preferences-store'
+import { syncAdminSession, useAdminSession } from '@renderer/stores/admin-session.store'
 import { useCurrentRouteHandle } from './route-metadata'
 
 export interface NavigationItem {
@@ -28,6 +29,7 @@ export interface NavigationItem {
   title: string
   description: string
   icon: ReactNode
+  requiresAdmin?: boolean
 }
 
 export const NAVIGATION_ITEMS: NavigationItem[] = [
@@ -37,9 +39,9 @@ export const NAVIGATION_ITEMS: NavigationItem[] = [
   { path: '/entry', title: '单题录入', description: '现场逐题录入', icon: <ListChecks /> },
   { path: '/work-session', title: '工作循环', description: '调查工作流程', icon: <RefreshCw /> },
   { path: '/admin/login', title: '管理员验证', description: '管理入口演示', icon: <LockKeyhole /> },
-  { path: '/admin/data', title: '数据管理', description: '查看合成记录', icon: <Database /> },
-  { path: '/admin/baseline', title: '基线表', description: '基线结构管理', icon: <TableProperties /> },
-  { path: '/derived', title: '衍生变量', description: '配置计算变量', icon: <Calculator /> }
+  { path: '/admin/data', title: '数据管理', description: '查看合成记录', icon: <Database />, requiresAdmin: true },
+  { path: '/admin/baseline', title: '基线表', description: '基线结构管理', icon: <TableProperties />, requiresAdmin: true },
+  { path: '/derived', title: '衍生变量', description: '配置计算变量', icon: <Calculator />, requiresAdmin: true }
 ]
 
 function NavigationLinks({
@@ -49,9 +51,14 @@ function NavigationLinks({
   collapsed?: boolean
   onNavigate?: () => void
 }) {
+  const authenticated = useAdminSession((state) => state.authenticated)
+  const navigationItems = authenticated
+    ? NAVIGATION_ITEMS
+    : NAVIGATION_ITEMS.filter((item) => !item.requiresAdmin)
+
   return (
     <ul className="m-0 grid list-none gap-[var(--space-1)] p-0">
-      {NAVIGATION_ITEMS.map((item) => (
+      {navigationItems.map((item) => (
         <li key={item.path}>
           <NavLink
             aria-label={item.title}
@@ -80,9 +87,13 @@ function NavigationLinks({
 
 export function AppShell({ children }: PropsWithChildren) {
   const routeHandle = useCurrentRouteHandle()
+  const navigate = useNavigate()
   const preferences = usePreferencesStore((state) => state.desired)
   const setPreferences = usePreferencesStore((state) => state.setPreferences)
   const [compactOpen, setCompactOpen] = useState(false)
+  const authenticated = useAdminSession((state) => state.authenticated)
+  const expiresAt = useAdminSession((state) => state.expiresAt)
+  const wasAuthenticated = useRef(authenticated)
   const mainContentRef = useRef<HTMLElement>(null)
   const currentTitle = routeHandle?.title ?? 'EasyEpi'
   const nextTheme =
@@ -91,6 +102,39 @@ export function AppShell({ children }: PropsWithChildren) {
       : preferences.theme === 'light'
         ? 'dark'
         : 'system'
+
+  useEffect(() => {
+    void syncAdminSession()
+  }, [])
+
+  useEffect(() => {
+    if (
+      wasAuthenticated.current &&
+      !authenticated &&
+      routeHandle?.requiresAdmin
+    ) {
+      navigate('/admin/login', { replace: true })
+    }
+    wasAuthenticated.current = authenticated
+  }, [authenticated, navigate, routeHandle?.requiresAdmin])
+
+  useEffect(() => {
+    if (!authenticated || expiresAt === null) return
+    const synchronizeAtExpiry = () => {
+      void syncAdminSession().then((valid) => {
+        if (!valid && routeHandle?.requiresAdmin) {
+          navigate('/admin/login', { replace: true })
+        }
+      })
+    }
+    const remaining = expiresAt - Date.now()
+    if (remaining <= 0) {
+      synchronizeAtExpiry()
+      return
+    }
+    const timer = window.setTimeout(synchronizeAtExpiry, remaining)
+    return () => window.clearTimeout(timer)
+  }, [authenticated, expiresAt, navigate, routeHandle?.requiresAdmin])
 
   return (
     <div className="min-h-screen bg-[var(--color-surface-canvas)] text-[var(--color-text-primary)]">
@@ -134,7 +178,7 @@ export function AppShell({ children }: PropsWithChildren) {
         <div className="min-w-0">
           <header className="flex min-h-16 flex-wrap items-center gap-[var(--space-2)] border-b border-[var(--color-border-default)] bg-[var(--color-surface-base)] px-[var(--space-4)] py-[var(--space-2)]">
             <div className="relative min-[1050px]:hidden">
-              <Tooltip content="打开导航菜单，显示全部九个页面入口">
+              <Tooltip content="打开导航菜单">
                 <Button
                   variant="ghost"
                   aria-label={compactOpen ? '关闭导航菜单' : '打开导航菜单'}

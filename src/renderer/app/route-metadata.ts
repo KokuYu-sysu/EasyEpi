@@ -3,6 +3,7 @@ import { useMatches, type UIMatch } from 'react-router-dom'
 export interface AppRouteHandle {
   title: string
   description?: string
+  requiresAdmin?: boolean
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -14,6 +15,9 @@ export function isAppRouteHandle(value: unknown): value is AppRouteHandle {
     return false
   }
   if (value.description !== undefined && typeof value.description !== 'string') {
+    return false
+  }
+  if (value.requiresAdmin !== undefined && typeof value.requiresAdmin !== 'boolean') {
     return false
   }
   return true

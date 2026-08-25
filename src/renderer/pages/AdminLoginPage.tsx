@@ -4,6 +4,7 @@ import { Link, useNavigate } from 'react-router-dom'
 import { useCurrentRouteHandle } from '@renderer/app/route-metadata'
 import { MilestonePage } from '@renderer/components/common/MilestonePage'
 import { Button, Input } from '@renderer/components/ui'
+import { clearAdminSession, syncAdminSession } from '@renderer/stores/admin-session.store'
 
 function loginErrorMessage(code: string | undefined): string {
   switch (code) {
@@ -30,8 +31,8 @@ export function AdminLoginPage() {
 
   useEffect(() => {
     let active = true
-    void window.easyEpi.admin.checkSession().then((result) => {
-      if (active && result.isAuthenticated) navigate('/admin/data', { replace: true })
+    void syncAdminSession().then((authenticated) => {
+      if (active && authenticated) navigate('/admin/data', { replace: true })
     }).catch(() => undefined)
     return () => { active = false }
   }, [navigate])
@@ -64,7 +65,12 @@ export function AdminLoginPage() {
       const result = await window.easyEpi.admin.login({ password })
       if (result.success) {
         setPassword('')
-        navigate('/admin/data', { replace: true })
+        clearAdminSession()
+        if (await syncAdminSession()) {
+          navigate('/admin/data', { replace: true })
+        } else {
+          setError('管理员会话状态同步失败，请重试。')
+        }
         return
       }
       if (result.lockoutUntil !== undefined) setLockoutUntil(result.lockoutUntil)

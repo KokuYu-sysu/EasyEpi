@@ -7,6 +7,7 @@ import { ExportDialog } from '@renderer/components/admin/ExportDialog'
 import { QualityDashboard } from '@renderer/components/admin/QualityDashboard'
 import { MilestonePage } from '@renderer/components/common/MilestonePage'
 import { Button, Input, Modal } from '@renderer/components/ui'
+import { clearAdminSession, syncAdminSession } from '@renderer/stores/admin-session.store'
 import type { QuestionDef, QuestionnaireDef } from '@shared/types/qnaire'
 import type { RecordData } from '@shared/types/record'
 
@@ -188,7 +189,9 @@ export function AdminDashboard() {
   }
 
   const logout = async () => {
+    clearAdminSession()
     await window.easyEpi.admin.logout().catch(() => undefined)
+    await syncAdminSession()
     navigate('/admin/login', { replace: true })
   }
 

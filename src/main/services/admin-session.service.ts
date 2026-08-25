@@ -96,6 +96,10 @@ export class AdminSessionService {
   }
 
   logout(): void {
+    this.invalidate()
+  }
+
+  invalidate(): void {
     this.clearAuthentication()
   }
 

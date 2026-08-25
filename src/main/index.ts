@@ -105,11 +105,13 @@ void app.whenReady().then(() => {
     developmentUrl
   )
   const projectState = createProjectIpcState()
+  const adminSessionService = new AdminSessionService(projectState)
   disposeProjectIpc = registerProjectIpc(
     ipcMain,
     projectState,
     packagedRendererUrl,
-    developmentUrl
+    developmentUrl,
+    () => adminSessionService.invalidate()
   )
   disposeQnaireIpc = registerQnaireIpc(
     ipcMain,
@@ -140,9 +142,9 @@ void app.whenReady().then(() => {
     ipcMain,
     projectState,
     packagedRendererUrl,
-    developmentUrl
+    developmentUrl,
+    () => adminSessionService.invalidate()
   )
-  const adminSessionService = new AdminSessionService(projectState)
   disposeAdminIpc = registerAdminIpcHandlers(
     ipcMain,
     projectState,

@@ -23,13 +23,15 @@ export function registerEpiDataIpcHandlers(
   ipcMain: IpcMainLike,
   projectState: ProjectIpcState,
   packagedRendererUrl: string,
-  developmentOrigin?: string
+  developmentOrigin?: string,
+  invalidateAdminSession: () => void = () => undefined
 ): () => void {
   const importService = new ImportService()
 
   ipcMain.handle(EPIDATA_IMPORT_CHANNEL, async (event, request) => {
     assertTrustedSender(event, packagedRendererUrl, developmentOrigin)
     const parsed = parseEpiDataImportRequest(request)
+    invalidateAdminSession()
     const onProgress = (progress: ImportProgress) => {
       event.sender?.send(EPIDATA_IMPORT_PROGRESS_CHANNEL, progress)
     }

@@ -1,6 +1,7 @@
 import { useState } from 'react'
 
 import { Button, Card, CardContent, CardHeader, CardTitle, Input, Progress, Select } from '@renderer/components/ui'
+import { clearAdminSession, syncAdminSession } from '@renderer/stores/admin-session.store'
 import type { ImportPreview as ImportPreviewType, ImportProgress } from '@shared/types/epidata'
 import type { QuestionDef, QuestionType } from '@shared/types/qnaire'
 
@@ -77,6 +78,7 @@ export function ImportWizard({ onComplete, onCancel }: ImportWizardProps) {
     if (!validateProjectSettings() || preview === undefined) return
     setStep('importing')
     setError(undefined)
+    clearAdminSession()
     window.easyEpi.epidata.onImportProgress(setImportProgress)
     try {
       const result = await window.easyEpi.epidata.import({
@@ -96,6 +98,7 @@ export function ImportWizard({ onComplete, onCancel }: ImportWizardProps) {
       thisFailAndReturn((caught as Error).message)
     } finally {
       window.easyEpi.epidata.offImportProgress()
+      await syncAdminSession()
     }
   }
 
