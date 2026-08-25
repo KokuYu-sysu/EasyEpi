@@ -1,6 +1,13 @@
 import type { QuestionnaireDef } from './qnaire'
 import type { AIAssistantProjectData } from '../ai-assistant-contract'
 
+export const UUID_V4_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
+
+export function isUUIDv4(value: unknown): value is string {
+  return typeof value === 'string' && UUID_V4_PATTERN.test(value)
+}
+
 export interface ProjectMeta {
   /** Stable identity; optional only while loading projects created before v0.8. */
   readonly projectId?: string

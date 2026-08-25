@@ -1,10 +1,12 @@
 import path from 'node:path'
+import { createHash } from 'node:crypto'
 
 import type {
   AIArtifact,
   AIArtifactApplyResult,
   AIArtifactPreview,
   AIArtifactPreviewResult,
+  AIArtifactSummary,
   AICancelResult,
   AIConfigIpcResult,
   AIConnectionTestResult,
@@ -14,9 +16,10 @@ import type {
   AISendResult,
   AISessionData,
   AISessionDeleteResult,
+  AISessionPage,
+  AISessionPageResult,
   AISessionListResult,
   AISessionMigrateResult,
-  AISessionPublic,
   AISessionResult
 } from '@shared/ai-assistant-contract'
 import {
@@ -30,6 +33,7 @@ import {
   AI_PRIVACY_ACCEPT_CHANNEL,
   AI_PRIVACY_NOTICE,
   AI_PRIVACY_STATUS_CHANNEL,
+  AI_SESSION_PAGE_MAX_UTF8_BYTES,
   AI_SEND_CHANNEL,
   AI_SESSION_CREATE_CHANNEL,
   AI_SESSION_DELETE_CHANNEL,
@@ -43,6 +47,7 @@ import {
   parseAIConfigUpdateRequest,
   parseAISendRequest,
   parseAISessionCreateRequest,
+  parseAISessionGetRequest,
   parseAISessionIdRequest,
   parseAISessionUpdateRequest
 } from '@shared/ai-assistant-contract'
@@ -50,7 +55,7 @@ import type { ProjectData } from '@shared/types/project'
 
 import { createBackup } from '../services/backup.service'
 import type { AIConfigService } from '../services/ai-config.service'
-import { getAiVersionStamp, validateStrictQuestionnaireDto } from '../services/ai-questionnaire.harness'
+import { getAiVersionStamp } from '../services/ai-questionnaire.harness'
 import {
   applyArtifact,
   createAIQuestionnaireOrchestrator,
@@ -71,6 +76,7 @@ import { assertTrustedSender, type IpcInvokeEventLike, type IpcMainLike } from '
 
 interface CapturedProject {
   project: ProjectData
+  projectId: string
   filePath: string
   key: Buffer
   saltHex: string
@@ -81,7 +87,8 @@ interface InFlightRequest {
   controller: AbortController
   project: ProjectData
   filePath: string
-  owner: unknown
+  settled: Promise<void>
+  settle(): void
 }
 
 export interface AIIpcDependencies {
@@ -93,6 +100,7 @@ export interface AIIpcDependencies {
 
 export interface AIIpcRegistration {
   cancelAll(): void
+  cancelAllAndSettle(): Promise<void>
   dispose(): void
 }
 
@@ -124,6 +132,7 @@ const ERROR_MESSAGES: Readonly<Record<string, string>> = {
   AI_ARTIFACT_DERIVED_CONFLICT: 'AI 结果与衍生变量冲突。',
   AI_ARTIFACT_APPLY_FAILED: '无法应用 AI 结果。',
   AI_PERSIST_FAILED: '无法保存 AI 对话。',
+  AI_SESSION_PAGE_TOO_LARGE: 'AI 对话分页内容过大。',
   AI_VERSION_MIGRATION_REQUIRED: '该对话需要先迁移。',
   AI_INTERNAL_ERROR: 'AI 操作失败。'
 }
@@ -147,12 +156,14 @@ function captureProject(state: ProjectIpcState): CapturedProject {
     throw new Error('AI_PROJECT_REQUIRED')
   }
   if (state.auth.encryptionKey === null || state.auth.encryptionKey.length === 0 ||
+    typeof state.currentProject.meta.projectId !== 'string' ||
     !path.isAbsolute(state.currentFilePath) || state.currentFilePath.includes('\0') ||
     !/^[0-9a-f]{64}$/i.test(state.currentSaltHex) || !/^[0-9a-f]{64}$/i.test(state.currentHashHex)) {
     throw new Error('AI_PROJECT_LOCKED')
   }
   return {
     project: state.currentProject,
+    projectId: state.currentProject.meta.projectId,
     filePath: state.currentFilePath,
     key: state.auth.encryptionKey,
     saltHex: state.currentSaltHex,
@@ -171,41 +182,116 @@ function restoreAssistant(project: ProjectData, snapshot: ProjectData['aiAssista
   else project.aiAssistant = snapshot
 }
 
-function callerOwner(event: IpcInvokeEventLike): unknown {
-  return event.sender?.id ?? event.sender ?? event.senderFrame?.url
+function callerOwner(event: IpcInvokeEventLike): string {
+  const senderId = event.sender?.id
+  if (!Number.isSafeInteger(senderId)) throw new Error('INVALID_AI_REQUEST')
+  return `webContents:${senderId}`
 }
 
-function toPublicSession(session: AISessionData): AISessionPublic {
-  const messages = session.conversation.messages
-    .filter((message) => message.role === 'user' || message.role === 'assistant')
-    .map(({ id, role, content, createdAt }) => ({ id, role: role as 'user' | 'assistant', content, createdAt }))
-  const userMessageIds = new Set(messages.filter((message) => message.role === 'user').map((message) => message.id))
-  const attachments = Object.values(session.conversation.attachments)
-    .filter((attachment) => attachment.kind === 'questionnaire' && userMessageIds.has(attachment.messageId))
-    .map((attachment) => ({
-      attachmentId: attachment.attachmentId,
-      messageId: attachment.messageId,
-      kind: 'questionnaire' as const,
-      createdAt: attachment.createdAt,
-      questionnaire: validateStrictQuestionnaireDto(attachment.value)
-    }))
-  const artifacts = Object.values(session.artifacts.byId)
-    .map(({ artifactId, operationId, kind, status, createdAt, updatedAt }) => ({
-      artifactId, operationId, kind, status, createdAt, updatedAt
-    }))
-    .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
+function inFlightKey(owner: string, projectId: string, requestId: string): string {
+  return JSON.stringify([owner, projectId, requestId])
+}
+
+function artifactSummary(artifact: AIArtifact): AIArtifactSummary {
+  const { artifactId, operationId, kind, status, createdAt, updatedAt } = artifact
+  return { artifactId, operationId, kind, status, createdAt, updatedAt }
+}
+
+function toPublicSessionPage(session: AISessionData, offset: number, limit: number): AISessionPage {
+  const candidates: AISessionData['conversation']['messages'] = []
+  let total = 0
+  for (const message of session.conversation.messages) {
+    if (message.role !== 'user' && message.role !== 'assistant') continue
+    if (total >= offset && candidates.length < limit) candidates.push(message)
+    total += 1
+  }
   const activeArtifactId = typeof session.state.values.activeArtifactId === 'string' &&
     session.artifacts.byId[session.state.values.activeArtifactId] !== undefined
     ? session.state.values.activeArtifactId
     : null
-  return {
+  const page: AISessionPage = {
     manifest: session.manifest,
-    messages,
-    attachments,
+    messages: [],
+    attachments: [],
     status: session.state.status,
     activeArtifactId,
-    artifacts
+    artifacts: activeArtifactId === null
+      ? []
+      : [artifactSummary(session.artifacts.byId[activeArtifactId]!)],
+    total,
+    nextOffset: null
   }
+  const fitsBudget = (): boolean => Buffer.byteLength(
+    JSON.stringify({ ok: true, session: page }),
+    'utf8'
+  ) <= AI_SESSION_PAGE_MAX_UTF8_BYTES
+  if (!fitsBudget()) throw new Error('AI_SESSION_PAGE_TOO_LARGE')
+
+  const candidateIds = new Set(
+    candidates.filter(({ role }) => role === 'user').map(({ id }) => id)
+  )
+  const attachmentsByMessage = new Map<string, AISessionPage['attachments']>()
+  let attachmentCount = 0
+  for (const attachmentId in session.conversation.attachments) {
+    const attachment = session.conversation.attachments[attachmentId]!
+    if (attachment.kind !== 'questionnaire' || !candidateIds.has(attachment.messageId)) continue
+    const summaries = attachmentsByMessage.get(attachment.messageId) ?? []
+    if (attachmentCount >= 100) break
+    summaries.push({
+      attachmentId: attachment.attachmentId,
+      messageId: attachment.messageId,
+      kind: 'questionnaire',
+      createdAt: attachment.createdAt
+    })
+    attachmentsByMessage.set(attachment.messageId, summaries)
+    attachmentCount += 1
+  }
+  for (const message of candidates) {
+    if (message.content.length > 100_000 || message.content.includes('\0')) {
+      throw new Error('AI_SESSION_PAGE_TOO_LARGE')
+    }
+    const previousAttachmentCount = page.attachments.length
+    page.messages.push({
+      id: message.id,
+      role: message.role as 'user' | 'assistant',
+      content: message.content,
+      createdAt: message.createdAt
+    })
+    page.attachments.push(...(attachmentsByMessage.get(message.id) ?? []).slice(
+      0,
+      100 - page.attachments.length
+    ))
+    page.nextOffset = offset + page.messages.length < total
+      ? offset + page.messages.length
+      : null
+    if (fitsBudget()) continue
+    page.messages.pop()
+    page.attachments.length = previousAttachmentCount
+    page.nextOffset = offset + page.messages.length < total
+      ? offset + page.messages.length
+      : null
+    break
+  }
+  if (page.messages.length === 0 && offset < total) {
+    throw new Error('AI_SESSION_PAGE_TOO_LARGE')
+  }
+
+  for (const artifactId in session.artifacts.byId) {
+    if (page.artifacts.length >= 100) break
+    if (artifactId === activeArtifactId) continue
+    const artifact = session.artifacts.byId[artifactId]!
+    page.artifacts.push(artifactSummary(artifact))
+    if (fitsBudget()) continue
+    page.artifacts.pop()
+    break
+  }
+  return page
+}
+
+function storedSession(project: ProjectData, sessionId: string): AISessionData | undefined {
+  if (project.aiAssistant === undefined) return undefined
+  if (project.aiAssistant.schemaVersion !== 1) throw new Error('AI_VERSION_MIGRATION_REQUIRED')
+  return project.aiAssistant.sessions[sessionId]
 }
 
 function toPublicQuestionnaireArtifact(
@@ -237,6 +323,8 @@ export function registerAIIpcHandlers(
   const backup = dependencies.createProjectBackup ?? createBackup
   const saveProject = dependencies.saveProject ?? saveProjectToPath
   const inFlight = new Map<string, InFlightRequest>()
+  let acceptingRequests = true
+  let settling: Promise<void> | undefined
 
   const trusted = (event: IpcInvokeEventLike): void => {
     assertTrustedSender(event, packagedRendererUrl, developmentOrigin)
@@ -339,7 +427,7 @@ export function registerAIIpcHandlers(
     try {
       const request = parseAISessionCreateRequest(rawRequest)
       const session = mutateSession((repository) => repository.create(getAiVersionStamp(), request.title))
-      return { ok: true, session: toPublicSession(session) } satisfies AISessionResult
+      return { ok: true, session: session.manifest } satisfies AISessionResult
     } catch (error) {
       return publicError(error)
     }
@@ -348,8 +436,7 @@ export function registerAIIpcHandlers(
   ipcMain.handle(AI_SESSION_LIST_CHANNEL, async (event) => {
     trusted(event)
     try {
-      const repository = new AISessionRepository(captureProject(state).project)
-      const sessions = repository.list().map(({ sessionId }) => toPublicSession(repository.get(sessionId)!))
+      const sessions = new AISessionRepository(captureProject(state).project).list().slice(0, 1_000)
       return { ok: true, sessions } satisfies AISessionListResult
     } catch (error) {
       return publicError(error)
@@ -359,10 +446,13 @@ export function registerAIIpcHandlers(
   ipcMain.handle(AI_SESSION_GET_CHANNEL, async (event, rawRequest) => {
     trusted(event)
     try {
-      const request = parseAISessionIdRequest(rawRequest)
-      const session = new AISessionRepository(captureProject(state).project).get(request.sessionId)
+      const request = parseAISessionGetRequest(rawRequest)
+      const session = storedSession(captureProject(state).project, request.sessionId)
       if (session === undefined) throw new Error('AI_SESSION_NOT_FOUND')
-      return { ok: true, session: toPublicSession(session) } satisfies AISessionResult
+      return {
+        ok: true,
+        session: toPublicSessionPage(session, request.offset, request.limit)
+      } satisfies AISessionPageResult
     } catch (error) {
       return publicError(error)
     }
@@ -373,7 +463,7 @@ export function registerAIIpcHandlers(
     try {
       const request = parseAISessionUpdateRequest(rawRequest)
       const session = mutateSession((repository) => repository.update(request.sessionId, { title: request.title }))
-      return { ok: true, session: toPublicSession(session) } satisfies AISessionResult
+      return { ok: true, session: session.manifest } satisfies AISessionResult
     } catch (error) {
       return publicError(error)
     }
@@ -409,7 +499,7 @@ export function registerAIIpcHandlers(
       return {
         ok: true,
         migrated: result.migrated,
-        session: toPublicSession(session)
+        session: session.manifest
       } satisfies AISessionMigrateResult
     } catch (error) {
       return publicError(error)
@@ -424,22 +514,27 @@ export function registerAIIpcHandlers(
     } catch (error) {
       return publicError(error)
     }
-    if (inFlight.has(request.requestId)) return publicError('AI_REQUEST_IN_PROGRESS')
-
     let captured: CapturedProject
+    let owner: string
     try {
       captured = captureProject(state)
+      owner = callerOwner(event)
     } catch (error) {
       return publicError(error)
     }
+    if (!acceptingRequests) return publicError('AI_REQUEST_IN_PROGRESS')
+    const key = inFlightKey(owner, captured.projectId, request.requestId)
+    if (inFlight.has(key)) return publicError('AI_REQUEST_IN_PROGRESS')
     const controller = new AbortController()
+    let settle!: () => void
     const entry: InFlightRequest = {
       controller,
       project: captured.project,
       filePath: captured.filePath,
-      owner: callerOwner(event)
+      settled: new Promise<void>((resolve) => { settle = resolve }),
+      settle: () => settle()
     }
-    inFlight.set(request.requestId, entry)
+    inFlight.set(key, entry)
     try {
       const privacy = await dependencies.configService.getPrivacyStatus()
       if (!privacy.accepted) throw new Error('AI_PRIVACY_NOTICE_REQUIRED')
@@ -463,7 +558,7 @@ export function registerAIIpcHandlers(
           ? { explicitAttachment: structuredClone(captured.project.questionnaire) }
           : {}),
         signal: controller.signal,
-        operationId: request.requestId
+        operationId: `ipc-${createHash('sha256').update(key).digest('hex')}`
       })
       if (!result.ok) return publicError(result.errorCode)
       const preview = previewQuestionnaireArtifact(
@@ -482,7 +577,8 @@ export function registerAIIpcHandlers(
     } catch (error) {
       return publicError(error)
     } finally {
-      if (inFlight.get(request.requestId) === entry) inFlight.delete(request.requestId)
+      if (inFlight.get(key) === entry) inFlight.delete(key)
+      entry.settle()
     }
   })
 
@@ -490,8 +586,11 @@ export function registerAIIpcHandlers(
     trusted(event)
     try {
       const request = parseAICancelRequest(rawRequest)
-      const entry = inFlight.get(request.requestId)
-      const cancelled = entry !== undefined && entry.owner === callerOwner(event) &&
+      const projectId = state.currentProject?.meta.projectId
+      const entry = projectId === undefined
+        ? undefined
+        : inFlight.get(inFlightKey(callerOwner(event), projectId, request.requestId))
+      const cancelled = entry !== undefined &&
         state.currentProject === entry.project && state.currentFilePath === entry.filePath
       if (cancelled) entry.controller.abort()
       return { ok: true, cancelled } satisfies AICancelResult
@@ -567,7 +666,20 @@ export function registerAIIpcHandlers(
     cancelAll: () => {
       for (const request of inFlight.values()) request.controller.abort()
     },
+    cancelAllAndSettle: () => {
+      if (settling !== undefined) return settling
+      acceptingRequests = false
+      const pending = [...inFlight.values()]
+      for (const request of pending) request.controller.abort()
+      settling = Promise.all(pending.map(({ settled }) => settled)).then(() => undefined)
+        .finally(() => {
+          acceptingRequests = true
+          settling = undefined
+        })
+      return settling
+    },
     dispose: () => {
+      acceptingRequests = false
       for (const request of inFlight.values()) request.controller.abort()
       inFlight.clear()
       for (const channel of channels) ipcMain.removeHandler(channel)

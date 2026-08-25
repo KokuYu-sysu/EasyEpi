@@ -182,21 +182,22 @@ describe('createDesktopApi', () => {
   })
 
   it('recursively rejects malformed or sensitive AI responses', async () => {
+    const manifest = {
+      sessionId: '123e4567-e89b-42d3-a456-426614174000',
+      title: 'AI',
+      versionStamp: {
+        promptId: 'assistant', promptVersion: '1', promptHash: 'hash',
+        harnessVersion: '1', schemaVersion: 1
+      },
+      createdAt: '2026-08-25T00:00:00.000Z',
+      updatedAt: '2026-08-25T00:00:00.000Z'
+    }
     const invoke = vi.fn()
       .mockResolvedValueOnce({ ok: true, accepted: 'yes', acceptedAt: null, notice: 'invalid' })
       .mockResolvedValueOnce({
         ok: true,
         session: {
-          manifest: {
-            sessionId: '123e4567-e89b-42d3-a456-426614174000',
-            title: 'AI',
-            versionStamp: {
-              promptId: 'assistant', promptVersion: '1', promptHash: 'hash',
-              harnessVersion: '1', schemaVersion: 1
-            },
-            createdAt: '2026-08-25T00:00:00.000Z',
-            updatedAt: '2026-08-25T00:00:00.000Z'
-          },
+          manifest,
           conversation: { messages: [], attachments: {} },
           state: { status: 'idle', runs: {}, values: { nested: { password: 'leak' } } },
           cache: { values: {} },
@@ -216,19 +217,34 @@ describe('createDesktopApi', () => {
       })
       .mockResolvedValueOnce({
         ok: true,
-        sessions: [{
-          manifest: {
-            sessionId: '123e4567-e89b-42d3-a456-426614174000',
-            title: 'AI',
-            versionStamp: {
-              promptId: 'assistant', promptVersion: '1', promptHash: 'hash',
-              harnessVersion: '1', schemaVersion: 1
-            },
-            createdAt: '2026-08-25T00:00:00.000Z',
-            updatedAt: '2026-08-25T00:00:00.000Z'
-          },
-          messages: [], attachments: [], status: 'running', activeArtifactId: null, artifacts: []
-        }]
+        sessions: [manifest]
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        session: {
+          manifest,
+          messages: [{
+            id: 'message-1', role: 'user', content: 'Create',
+            createdAt: '2026-08-25T00:00:00.000Z'
+          }],
+          attachments: [{
+            attachmentId: 'attachment-1', messageId: 'message-1', kind: 'questionnaire',
+            createdAt: '2026-08-25T00:00:00.000Z'
+          }],
+          status: 'running', activeArtifactId: null, artifacts: [], total: 1, nextOffset: null
+        }
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        session: {
+          manifest,
+          messages: Array.from({ length: 11 }, (_, index) => ({
+            id: `message-${index}`, role: 'assistant', content: 'x'.repeat(100_000),
+            createdAt: '2026-08-25T00:00:00.000Z'
+          })),
+          attachments: [], status: 'completed', activeArtifactId: null,
+          artifacts: [], total: 11, nextOffset: null
+        }
       })
     const api = createDesktopApi(invoke)
 
@@ -244,8 +260,21 @@ describe('createDesktopApi', () => {
     })).rejects.toThrow('INVALID_AI_RESPONSE')
     await expect(api.ai.session.list()).resolves.toMatchObject({
       ok: true,
-      sessions: [{ status: 'running', messages: [], attachments: [], artifacts: [] }]
+      sessions: [{ sessionId: manifest.sessionId, title: 'AI' }]
     })
+    await expect(api.ai.session.get({ sessionId: manifest.sessionId })).resolves.toMatchObject({
+      ok: true,
+      session: {
+        messages: [{ content: 'Create' }],
+        attachments: [{ attachmentId: 'attachment-1' }],
+        total: 1,
+        nextOffset: null
+      }
+    })
+    await expect(api.ai.session.get({ sessionId: manifest.sessionId, limit: 100 }))
+      .rejects.toThrow('INVALID_AI_RESPONSE')
+    await expect(api.ai.session.get({ sessionId: manifest.sessionId, limit: 101 }))
+      .rejects.toThrow('INVALID_AI_REQUEST')
   })
 
   it('exposes fixed export and baseline channels with renderer-side request validation', async () => {

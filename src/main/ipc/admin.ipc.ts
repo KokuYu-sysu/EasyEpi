@@ -36,6 +36,7 @@ export interface AdminIpcServices {
   changeProjectPassword?: (
     request: AdminChangePasswordRequest
   ) => Promise<AdminChangePasswordResult>
+  beforeChangePassword: () => Promise<void>
 }
 
 const SAFE_PASSWORD_CHANGE_ERRORS = new Set([
@@ -61,7 +62,7 @@ export function registerAdminIpcHandlers(
   packagedRendererUrl: string,
   developmentOrigin?: string
 ): () => void {
-  const { sessionService, dataService, changeProjectPassword } = services
+  const { sessionService, dataService, changeProjectPassword, beforeChangePassword } = services
 
   ipcMain.handle(
     ADMIN_LOGIN_CHANNEL,
@@ -100,6 +101,7 @@ export function registerAdminIpcHandlers(
       }
 
       try {
+        await beforeChangePassword()
         const result = await changeProjectPassword(request)
         if (result.success) sessionService.rebindAfterPasswordChange()
         return result

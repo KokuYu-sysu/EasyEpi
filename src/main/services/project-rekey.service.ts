@@ -226,6 +226,11 @@ export function changeProjectPassword(
   const { hash, salt } = hashPassword(newPassword)
   const newKey = deriveKey(newPassword, Buffer.from(salt, 'hex'))
   const timestamp = Date.now()
+  const nextProject = structuredClone(project)
+  nextProject.meta = {
+    ...nextProject.meta,
+    lastModifiedAt: new Date(timestamp).toISOString()
+  }
   const transactionId = randomUUID()
   const resolvedDataPath = resolveProjectDataFilePath(projectPath, project.meta.name)
   const dataPath = existsSync(resolvedDataPath) ? resolvedDataPath : undefined
@@ -233,7 +238,7 @@ export function changeProjectPassword(
     transactionFile(
       projectPath,
       transactionId,
-      createProjectFileContents(project, newKey, salt, hash, timestamp)
+      createProjectFileContents(nextProject, newKey, salt, hash, timestamp)
     )
   ]
   if (dataPath !== undefined) {
@@ -252,10 +257,7 @@ export function changeProjectPassword(
     dependencies.remove ?? ((path) => rmSync(path, { force: true }))
   )
 
-  state.currentProject = {
-    ...project,
-    meta: { ...project.meta, lastModifiedAt: new Date(timestamp).toISOString() }
-  }
+  state.currentProject = nextProject
   state.currentSaltHex = salt
   state.currentHashHex = hash
   state.auth.encryptionKey = newKey

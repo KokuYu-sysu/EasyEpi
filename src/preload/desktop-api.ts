@@ -145,9 +145,11 @@ import {
   parseAISendResponse,
   parseAISessionCreateRequest,
   parseAISessionDeleteResponse,
+  parseAISessionGetRequest,
   parseAISessionIdRequest,
   parseAISessionListResponse,
   parseAISessionMigrateResponse,
+  parseAISessionPageResponse,
   parseAISessionResponse,
   parseAISessionUpdateRequest,
   type AIArtifactApplyRequest,
@@ -163,9 +165,11 @@ import {
   type AISendResult,
   type AISessionCreateRequest,
   type AISessionDeleteResult,
+  type AISessionGetRequest,
   type AISessionIdRequest,
   type AISessionListResult,
   type AISessionMigrateResult,
+  type AISessionPageResult,
   type AISessionResult,
   type AISessionUpdateRequest,
   type AIArtifactRequest
@@ -255,7 +259,7 @@ export interface DesktopInvoke {
   (channel: typeof AI_PRIVACY_ACCEPT_CHANNEL): Promise<unknown>
   (channel: typeof AI_SESSION_CREATE_CHANNEL, request: AISessionCreateRequest): Promise<unknown>
   (channel: typeof AI_SESSION_LIST_CHANNEL): Promise<unknown>
-  (channel: typeof AI_SESSION_GET_CHANNEL, request: AISessionIdRequest): Promise<unknown>
+  (channel: typeof AI_SESSION_GET_CHANNEL, request: Required<AISessionGetRequest>): Promise<unknown>
   (channel: typeof AI_SESSION_UPDATE_CHANNEL, request: AISessionUpdateRequest): Promise<unknown>
   (channel: typeof AI_SESSION_DELETE_CHANNEL, request: AISessionIdRequest): Promise<unknown>
   (channel: typeof AI_SESSION_MIGRATE_CHANNEL, request: AISessionIdRequest): Promise<unknown>
@@ -510,9 +514,9 @@ export function createDesktopApi(invoke: DesktopInvoke): DesktopApi {
         await invoke(AI_SESSION_LIST_CHANNEL),
         parseAISessionListResponse
       ),
-      get: async (request: AISessionIdRequest) => parsePublicAIResult<AISessionResult>(
-        await invoke(AI_SESSION_GET_CHANNEL, parseAISessionIdRequest(request)),
-        parseAISessionResponse
+      get: async (request: AISessionGetRequest) => parsePublicAIResult<AISessionPageResult>(
+        await invoke(AI_SESSION_GET_CHANNEL, parseAISessionGetRequest(request)),
+        parseAISessionPageResponse
       ),
       update: async (request: AISessionUpdateRequest) => parsePublicAIResult<AISessionResult>(
         await invoke(AI_SESSION_UPDATE_CHANNEL, parseAISessionUpdateRequest(request)),

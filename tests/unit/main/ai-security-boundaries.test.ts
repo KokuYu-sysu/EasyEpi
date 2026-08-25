@@ -18,7 +18,10 @@ import type { ProjectData } from '@shared/types/project'
 import {
   AI_CANCEL_CHANNEL,
   AI_SEND_CHANNEL,
-  AI_SESSION_CREATE_CHANNEL
+  AI_SESSION_PAGE_MAX_UTF8_BYTES,
+  AI_SESSION_CREATE_CHANNEL,
+  AI_SESSION_GET_CHANNEL,
+  AI_SESSION_LIST_CHANNEL
 } from '@shared/ai-assistant-contract'
 import { registerAIIpcHandlers } from '@main/ipc/ai.ipc'
 import { createProjectIpcState } from '@main/ipc/project.ipc'
@@ -37,6 +40,7 @@ const versionStamp: AiVersionStamp = {
 function createProjectData(): ProjectData {
   return {
     meta: {
+      projectId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
       name: 'security-test',
       folderPath: 'virtual-project',
       createdAt: '2026-08-25T00:00:00.000Z',
@@ -154,11 +158,60 @@ describe('AI IPC privacy boundary', () => {
     const created = await handlers.get(AI_SESSION_CREATE_CHANNEL)!(event, { title: 'Public' })
     expect(created).toMatchObject({
       ok: true,
-      session: { messages: [], attachments: [], status: 'idle', activeArtifactId: null, artifacts: [] }
+      session: { title: 'Public' }
     })
     expect((created as { session: object }).session).not.toHaveProperty('cache')
     expect((created as { session: object }).session).not.toHaveProperty('temp')
     expect((created as { session: object }).session).not.toHaveProperty('state')
+    const createdSessionId = (created as { session: { sessionId: string } }).session.sessionId
+    const repository = new AISessionRepository(state.currentProject)
+    repository.appendMessage(createdSessionId, {
+      id: 'message-1', role: 'user', content: 'Create', createdAt: '2026-08-25T00:00:00.000Z'
+    })
+    repository.upsertAttachment(createdSessionId, {
+      attachmentId: 'attachment-1', messageId: 'message-1', kind: 'questionnaire',
+      createdAt: '2026-08-25T00:00:00.000Z',
+      value: { name: 'private', questions: [], conditionRules: [], keyQuestionIds: [] }
+    })
+    repository.appendMessage(createdSessionId, {
+      id: 'message-2', role: 'assistant', content: 'Done', createdAt: '2026-08-25T00:00:01.000Z'
+    })
+    const listed = await handlers.get(AI_SESSION_LIST_CHANNEL)!(event)
+    expect(listed).toMatchObject({
+      ok: true,
+      sessions: [{ sessionId: createdSessionId, title: 'Public' }]
+    })
+    expect((listed as { sessions: object[] }).sessions[0]).not.toHaveProperty('messages')
+    await expect(handlers.get(AI_SESSION_GET_CHANNEL)!(event, {
+      sessionId: createdSessionId,
+      offset: 0,
+      limit: 1
+    })).resolves.toMatchObject({
+      ok: true,
+      session: {
+        messages: [{ id: 'message-1', content: 'Create' }],
+        attachments: [{ attachmentId: 'attachment-1', messageId: 'message-1' }],
+        artifacts: [], total: 2, nextOffset: 1
+      }
+    })
+    const page = await handlers.get(AI_SESSION_GET_CHANNEL)!(event, {
+      sessionId: createdSessionId, offset: 0, limit: 1
+    })
+    expect(JSON.stringify(page)).not.toContain('private')
+    for (let index = 0; index < 11; index += 1) {
+      repository.appendMessage(createdSessionId, {
+        id: `large-${index}`, role: 'assistant', content: 'x'.repeat(100_000),
+        createdAt: '2026-08-25T00:00:02.000Z'
+      })
+    }
+    const boundedPage = await handlers.get(AI_SESSION_GET_CHANNEL)!(event, {
+      sessionId: createdSessionId, offset: 0, limit: 100
+    })
+    expect(Buffer.byteLength(JSON.stringify(boundedPage), 'utf8'))
+      .toBeLessThanOrEqual(AI_SESSION_PAGE_MAX_UTF8_BYTES)
+    expect(boundedPage).toMatchObject({ ok: true, session: { total: 13 } })
+    expect((boundedPage as { session: { nextOffset: number | null } }).session.nextOffset)
+      .not.toBeNull()
 
     const result = await handlers.get(AI_SEND_CHANNEL)!(event, {
       requestId: 'request-1',
@@ -176,7 +229,7 @@ describe('AI IPC privacy boundary', () => {
     registration.dispose()
   })
 
-  it('reserves request ids before config reads and keeps cancellation reliable', async () => {
+  it('isolates request ids by caller and waits for cancellation settlement', async () => {
     const handlers = new Map<string, (event: IpcInvokeEventLike, ...args: unknown[]) => Promise<unknown>>()
     const ipcMain: IpcMainLike = {
       handle: (channel, handler) => handlers.set(channel, handler),
@@ -190,7 +243,7 @@ describe('AI IPC privacy boundary', () => {
       get: async () => ({ ok: true, config: { baseUrl: '', model: '', hasApiKey: false, maskedApiKey: null } } as const),
       update: async () => ({ ok: false, code: 'INVALID_AI_CONFIG' } as const),
       clear: async () => ({ ok: false, code: 'AI_CONFIG_SAVE_FAILED' } as const),
-      getPlaintextForMain: () => configPending,
+      getPlaintextForMain: vi.fn(() => configPending),
       getPrivacyStatus: async () => ({ accepted: true, acceptedAt: '2026-08-25T00:00:00.000Z' }),
       acceptPrivacy: async () => ({ accepted: true, acceptedAt: '2026-08-25T00:00:00.000Z' } as const)
     } satisfies AIConfigService
@@ -210,6 +263,10 @@ describe('AI IPC privacy boundary', () => {
       senderFrame: { url: 'file:///app/index.html' },
       sender: { id: 7, send: () => undefined }
     }
+    const otherEvent = {
+      senderFrame: { url: 'file:///app/index.html' },
+      sender: { id: 8, send: () => undefined }
+    }
     const request = {
       requestId: 'reserved-request', sessionId, content: 'Create',
       includeCurrentQuestionnaire: false
@@ -219,11 +276,22 @@ describe('AI IPC privacy boundary', () => {
     await expect(handlers.get(AI_SEND_CHANNEL)!(event, request)).resolves.toMatchObject({
       ok: false, errorCode: 'AI_REQUEST_IN_PROGRESS'
     })
+    const otherCaller = handlers.get(AI_SEND_CHANNEL)!(otherEvent, request)
+    await vi.waitFor(() => expect(configService.getPlaintextForMain).toHaveBeenCalledTimes(2))
     await expect(handlers.get(AI_CANCEL_CHANNEL)!(event, {
       requestId: request.requestId
     })).resolves.toEqual({ ok: true, cancelled: true })
+    await expect(handlers.get(AI_CANCEL_CHANNEL)!(otherEvent, {
+      requestId: request.requestId
+    })).resolves.toEqual({ ok: true, cancelled: true })
+    let settled = false
+    const settling = registration.cancelAllAndSettle().then(() => { settled = true })
+    await Promise.resolve()
+    expect(settled).toBe(false)
     resolveConfig({ baseUrl: 'https://example.test/v1', model: 'model' })
+    await settling
     await expect(first).resolves.toMatchObject({ ok: false, errorCode: 'AI_CANCELLED' })
+    await expect(otherCaller).resolves.toMatchObject({ ok: false, errorCode: 'AI_CANCELLED' })
     registration.dispose()
   })
 })

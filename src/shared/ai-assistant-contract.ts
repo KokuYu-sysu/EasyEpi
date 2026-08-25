@@ -5,6 +5,7 @@ import {
   type QuestionnaireDef
 } from './types/qnaire'
 import { isDerivedResultType } from './types/derived'
+import { isUUIDv4 } from './types/project'
 
 export type AIJsonValue =
   | string
@@ -160,12 +161,11 @@ export interface AIPublicMessage {
   createdAt: string
 }
 
-export interface AIPublicQuestionnaireAttachment {
+export interface AIPublicAttachmentSummary {
   attachmentId: string
   messageId: string
   kind: 'questionnaire'
   createdAt: string
-  questionnaire: QuestionnaireDef
 }
 
 export interface AIArtifactSummary {
@@ -177,14 +177,18 @@ export interface AIArtifactSummary {
   updatedAt: string
 }
 
-export interface AISessionPublic {
+export interface AISessionPage {
   manifest: AISessionManifest
   messages: AIPublicMessage[]
-  attachments: AIPublicQuestionnaireAttachment[]
+  attachments: AIPublicAttachmentSummary[]
   status: AISessionStatus
   activeArtifactId: string | null
   artifacts: AIArtifactSummary[]
+  total: number
+  nextOffset: number | null
 }
+
+export const AI_SESSION_PAGE_MAX_UTF8_BYTES = 1_048_576
 
 export type AISessionListItem = AISessionManifest
 
@@ -237,6 +241,11 @@ export interface AISessionCreateRequest {
 
 export interface AISessionIdRequest {
   sessionId: string
+}
+
+export interface AISessionGetRequest extends AISessionIdRequest {
+  offset?: number
+  limit?: number
 }
 
 export interface AISessionUpdateRequest {
@@ -307,11 +316,12 @@ export type AIConnectionTestResult = { ok: true } | AIErrorResult
 export type AIPrivacyStatusResult =
   | { ok: true; accepted: boolean; acceptedAt: string | null; notice: typeof AI_PRIVACY_NOTICE }
   | AIErrorResult
-export type AISessionResult = { ok: true; session: AISessionPublic } | AIErrorResult
-export type AISessionListResult = { ok: true; sessions: AISessionPublic[] } | AIErrorResult
+export type AISessionResult = { ok: true; session: AISessionListItem } | AIErrorResult
+export type AISessionPageResult = { ok: true; session: AISessionPage } | AIErrorResult
+export type AISessionListResult = { ok: true; sessions: AISessionListItem[] } | AIErrorResult
 export type AISessionDeleteResult = { ok: true; deleted: boolean } | AIErrorResult
 export type AISessionMigrateResult =
-  | { ok: true; migrated: boolean; session: AISessionPublic }
+  | { ok: true; migrated: boolean; session: AISessionListItem }
   | AIErrorResult
 export type AISendResult =
   | { ok: true; requestId: string; artifact: AIQuestionnaireArtifactPreviewDto; attempts: number }
@@ -381,6 +391,22 @@ export function parseAISessionIdRequest(value: unknown): AISessionIdRequest {
   const input = requestObject(value)
   exactKeys(input, ['sessionId'])
   return { sessionId: safeString(input.sessionId, 36, SESSION_ID_PATTERN) }
+}
+
+export function parseAISessionGetRequest(value: unknown): Required<AISessionGetRequest> {
+  const input = requestObject(value)
+  exactKeys(input, ['sessionId'], ['offset', 'limit'])
+  const offset = input.offset ?? 0
+  const limit = input.limit ?? 50
+  if (!Number.isSafeInteger(offset) || Number(offset) < 0 ||
+    !Number.isSafeInteger(limit) || Number(limit) < 1 || Number(limit) > 100) {
+    throw new Error('INVALID_AI_REQUEST')
+  }
+  return {
+    sessionId: safeString(input.sessionId, 36, SESSION_ID_PATTERN),
+    offset: Number(offset),
+    limit: Number(limit)
+  }
 }
 
 export function parseAISessionUpdateRequest(value: unknown): AISessionUpdateRequest {
@@ -697,7 +723,7 @@ function assertArtifactPreview(value: unknown): void {
   if (validation.success !== true || !Array.isArray(validation.errors) || validation.errors.length !== 0) {
     invalidResponse()
   }
-  responseId(input.baseQuestionnaireRevision, SESSION_ID_PATTERN)
+  if (!isUUIDv4(input.baseQuestionnaireRevision)) invalidResponse()
   if (!/^sha256:[a-f0-9]{64}$/.test(responseString(input.baseQuestionnaireHash, 71))) {
     invalidResponse()
   }
@@ -731,38 +757,40 @@ function assertManifest(value: unknown): void {
   responseTimestamp(input.updatedAt)
 }
 
-function assertSession(value: unknown): void {
+function assertSessionPage(value: unknown): void {
   const input = responseKeys(
     value,
-    ['manifest', 'messages', 'attachments', 'status', 'activeArtifactId', 'artifacts']
+    [
+      'manifest', 'messages', 'attachments', 'status', 'activeArtifactId', 'artifacts',
+      'total', 'nextOffset'
+    ]
   )
   assertManifest(input.manifest)
-  if (!Array.isArray(input.messages) || input.messages.length > 5_000) invalidResponse()
+  if (!Array.isArray(input.messages) || input.messages.length > 100) invalidResponse()
   const userMessageIds = new Set<string>()
   for (const message of input.messages) {
     const item = responseKeys(message, ['id', 'role', 'content', 'createdAt'])
     responseId(item.id)
     if (item.role !== 'user' && item.role !== 'assistant') invalidResponse()
-    responseString(item.content, MAX_RESPONSE_STRING, true)
+    responseString(item.content, 100_000, true)
     responseTimestamp(item.createdAt)
     if (item.role === 'user') userMessageIds.add(String(item.id))
   }
-  if (!Array.isArray(input.attachments) || input.attachments.length > 5_000) invalidResponse()
+  if (!Array.isArray(input.attachments) || input.attachments.length > 100) invalidResponse()
   for (const attachment of input.attachments) {
     const item = responseKeys(
       attachment,
-      ['attachmentId', 'messageId', 'kind', 'createdAt', 'questionnaire']
+      ['attachmentId', 'messageId', 'kind', 'createdAt']
     )
     responseId(item.attachmentId)
     if (!userMessageIds.has(responseId(item.messageId))) invalidResponse()
     if (item.kind !== 'questionnaire') invalidResponse()
     responseTimestamp(item.createdAt)
-    assertQuestionnaire(item.questionnaire, false)
   }
   if (!['idle', 'running', 'completed', 'failed', 'cancelled'].includes(String(input.status))) {
     invalidResponse()
   }
-  if (!Array.isArray(input.artifacts) || input.artifacts.length > 5_000) invalidResponse()
+  if (!Array.isArray(input.artifacts) || input.artifacts.length > 100) invalidResponse()
   const artifactIds = new Set<string>()
   for (const artifact of input.artifacts) {
     assertArtifactSummary(artifact)
@@ -770,6 +798,12 @@ function assertSession(value: unknown): void {
   }
   if (input.activeArtifactId !== null && !artifactIds.has(responseId(input.activeArtifactId))) {
     invalidResponse()
+  }
+  const total = responseNumber(input.total, true)
+  if (total < input.messages.length || !Number.isSafeInteger(total)) invalidResponse()
+  if (input.nextOffset !== null) {
+    const nextOffset = responseNumber(input.nextOffset, true)
+    if (nextOffset < 1 || nextOffset > total) invalidResponse()
   }
 }
 
@@ -819,13 +853,22 @@ export function parseAIPrivacyStatusResponse(value: unknown): AIPrivacyStatusRes
 }
 
 export function parseAISessionResponse(value: unknown): AISessionResult {
-  return parseKnownResponse<AISessionResult>(value, ['session'], (result) => assertSession(result.session))
+  return parseKnownResponse<AISessionResult>(value, ['session'], (result) => assertManifest(result.session))
+}
+
+export function parseAISessionPageResponse(value: unknown): AISessionPageResult {
+  return parseKnownResponse<AISessionPageResult>(value, ['session'], (result) => {
+    assertSessionPage(result.session)
+    if (new TextEncoder().encode(JSON.stringify(result)).byteLength > AI_SESSION_PAGE_MAX_UTF8_BYTES) {
+      invalidResponse()
+    }
+  })
 }
 
 export function parseAISessionListResponse(value: unknown): AISessionListResult {
   return parseKnownResponse<AISessionListResult>(value, ['sessions'], (result) => {
     if (!Array.isArray(result.sessions) || result.sessions.length > 1_000) invalidResponse()
-    for (const session of result.sessions) assertSession(session)
+    for (const session of result.sessions) assertManifest(session)
   })
 }
 
@@ -838,7 +881,7 @@ export function parseAISessionDeleteResponse(value: unknown): AISessionDeleteRes
 export function parseAISessionMigrateResponse(value: unknown): AISessionMigrateResult {
   return parseKnownResponse<AISessionMigrateResult>(value, ['migrated', 'session'], (result) => {
     if (typeof result.migrated !== 'boolean') invalidResponse()
-    assertSession(result.session)
+    assertManifest(result.session)
   })
 }
 

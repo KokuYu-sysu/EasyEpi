@@ -69,9 +69,11 @@ import type {
   AISendResult,
   AISessionCreateRequest,
   AISessionDeleteResult,
+  AISessionGetRequest,
   AISessionIdRequest,
   AISessionListResult,
   AISessionMigrateResult,
+  AISessionPageResult,
   AISessionResult,
   AISessionUpdateRequest,
   AIArtifactRequest
@@ -104,7 +106,7 @@ export interface DesktopApi {
     session: {
       create(request?: AISessionCreateRequest): Promise<AISessionResult>
       list(): Promise<AISessionListResult>
-      get(request: AISessionIdRequest): Promise<AISessionResult>
+      get(request: AISessionGetRequest): Promise<AISessionPageResult>
       update(request: AISessionUpdateRequest): Promise<AISessionResult>
       delete(request: AISessionIdRequest): Promise<AISessionDeleteResult>
       migrate(request: AISessionIdRequest): Promise<AISessionMigrateResult>

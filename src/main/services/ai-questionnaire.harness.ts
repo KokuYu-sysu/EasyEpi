@@ -7,6 +7,7 @@ import type {
   AISessionData
 } from '@shared/ai-assistant-contract'
 import { DERIVED_VARIABLE_NAME_PATTERN } from '@shared/types/derived'
+import { isUUIDv4 } from '@shared/types/project'
 import {
   isConditionOperator,
   isConstraintType,
@@ -116,7 +117,6 @@ const RULE_FIELDS = new Set([
 ])
 const CONDITION_FIELDS = new Set(['questionId', 'operator', 'value'])
 const ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/
-const REVISION_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
 const MAX_MODEL_TEXT_LENGTH = 2_000_000
 const MAX_SINGLE_STRING_LENGTH = 20_000
 const MAX_QUESTIONS = 500
@@ -1130,8 +1130,7 @@ export function validateQuestionnaireArtifact(
     artifact.value.assistantMessage.trim().length === 0 ||
     artifact.value.assistantMessage.length > 20_000 ||
     typeof artifact.value.rollingSummary !== 'string' || artifact.value.rollingSummary.length > 20_000 ||
-    typeof artifact.value.baseQuestionnaireRevision !== 'string' ||
-    !REVISION_PATTERN.test(artifact.value.baseQuestionnaireRevision) ||
+    !isUUIDv4(artifact.value.baseQuestionnaireRevision) ||
     typeof artifact.value.baseQuestionnaireHash !== 'string' ||
     !/^sha256:[a-f0-9]{64}$/.test(artifact.value.baseQuestionnaireHash) ||
     !isObject(artifact.value.validation) ||

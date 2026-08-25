@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
 
 import type { ProjectData, ProjectMeta } from '@shared/types/project'
-import { PROJECT_MAGIC, PROJECT_VERSION } from '@shared/types/project'
+import { isUUIDv4, PROJECT_MAGIC, PROJECT_VERSION } from '@shared/types/project'
 
 import { encrypt, decrypt, deriveKey, hashPassword, verifyPassword } from './crypto.service'
 import { atomicWriteFile } from './record.service'
@@ -50,10 +50,7 @@ export function ensureQuestionnaireRevision(
   project: ProjectData,
   createId: () => string = randomUUID
 ): boolean {
-  if (project.questionnaireRevision !== undefined) {
-    if (!UUID_PATTERN.test(project.questionnaireRevision)) throw new Error('INVALID_QUESTIONNAIRE_REVISION')
-    return false
-  }
+  if (isUUIDv4(project.questionnaireRevision)) return false
   refreshQuestionnaireRevision(project, createId)
   return true
 }
@@ -63,7 +60,7 @@ export function refreshQuestionnaireRevision(
   createId: () => string = randomUUID
 ): string {
   const revision = createId()
-  if (!UUID_PATTERN.test(revision)) throw new Error('INVALID_QUESTIONNAIRE_REVISION')
+  if (!isUUIDv4(revision)) throw new Error('INVALID_QUESTIONNAIRE_REVISION')
   project.questionnaireRevision = revision
   return revision
 }
@@ -155,15 +152,14 @@ export function createProject(
   const encryptionKey = deriveKey(password, saltBuf)
 
   const now = new Date().toISOString()
-  const questionnaireRevision = randomUUID()
   const meta: ProjectMeta = {
     projectId: randomUUID(), name, folderPath, createdAt: now, lastModifiedAt: now
   }
   const data: ProjectData = {
     meta,
-    questionnaireRevision,
     questionnaire: { name, questions: [], conditionRules: [], keyQuestionIds: [] }
   }
+  const questionnaireRevision = refreshQuestionnaireRevision(data)
 
   saveProject(folderPath, name, data, encryptionKey, salt, hash)
   return { meta, encryptionKey, passwordHash: hash, salt, questionnaireRevision }

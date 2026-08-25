@@ -25,6 +25,7 @@ import {
 import type { IpcInvokeEventLike, IpcMainLike } from '../../../src/main/ipc/types'
 import { createBackup, getBackups } from '../../../src/main/services/backup.service'
 import { AISessionRepository } from '../../../src/main/services/ai-session.repository'
+import { isUUIDv4 } from '../../../src/shared/types/project'
 import {
   createProject,
   decryptProjectData,
@@ -207,7 +208,7 @@ describe('Project IPC recovery safety', () => {
     const created = createProject(folder, 'study', 'study-password')
     const originalPath = getProjectFilePath(folder, 'study')
     const project = decryptProjectData(originalPath, created.encryptionKey)
-    delete (project as unknown as { questionnaireRevision?: string }).questionnaireRevision
+    project.questionnaireRevision = '11111111-1111-1111-8111-111111111111'
     const repository = new AISessionRepository(
       project,
       () => '123e4567-e89b-42d3-a456-426614174000'
@@ -264,8 +265,8 @@ describe('Project IPC recovery safety', () => {
       decryptProjectData(movedPath, created.encryptionKey)
         .aiAssistant!.sessions[session.manifest.sessionId]!.temp.runs
     ).toEqual({})
-    expect(decryptProjectData(movedPath, created.encryptionKey).questionnaireRevision)
-      .toMatch(/^[0-9a-f-]{36}$/)
+    expect(isUUIDv4(decryptProjectData(movedPath, created.encryptionKey).questionnaireRevision))
+      .toBe(true)
     expect(existsSync(originalPath)).toBe(false)
   })
 })

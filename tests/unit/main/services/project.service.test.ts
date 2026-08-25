@@ -7,10 +7,12 @@ import { afterEach, describe, expect, it } from 'vitest'
 import {
   createProject,
   decryptProjectData,
+  ensureQuestionnaireRevision,
   getProjectFilePath,
   readProjectHeader,
   verifyAndDeriveKey
 } from '../../../../src/main/services/project.service'
+import { isUUIDv4, type ProjectData } from '../../../../src/shared/types/project'
 
 describe('ProjectService project file round trip', () => {
   const folders: string[] = []
@@ -48,5 +50,25 @@ describe('ProjectService project file round trip', () => {
     expect(() => createProject(folder, 'existing', 'second-password')).toThrow(
       'PROJECT_ALREADY_EXISTS'
     )
+  })
+
+  it('migrates missing and non-v4 questionnaire revisions to UUID v4', () => {
+    const project = {
+      meta: {
+        name: 'legacy', folderPath: 'D:/legacy',
+        createdAt: new Date(0).toISOString(), lastModifiedAt: new Date(0).toISOString()
+      },
+      questionnaire: { name: 'legacy', questions: [], conditionRules: [], keyQuestionIds: [] }
+    } as ProjectData
+    expect(ensureQuestionnaireRevision(
+      project,
+      () => 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+    )).toBe(true)
+    project.questionnaireRevision = '11111111-1111-1111-8111-111111111111'
+    expect(ensureQuestionnaireRevision(
+      project,
+      () => 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
+    )).toBe(true)
+    expect(isUUIDv4(project.questionnaireRevision)).toBe(true)
   })
 })

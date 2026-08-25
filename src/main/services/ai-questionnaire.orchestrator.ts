@@ -3,7 +3,7 @@ import path from 'node:path'
 
 import type { AIArtifact, AIJsonValue, AiVersionStamp, AISessionData } from '@shared/ai-assistant-contract'
 import type { QuestionnaireDef } from '@shared/types/qnaire'
-import type { ProjectData } from '@shared/types/project'
+import { isUUIDv4, type ProjectData } from '@shared/types/project'
 
 import type { AIMainConfig } from './ai-config.service'
 import {
@@ -243,7 +243,7 @@ export function createAIQuestionnaireOrchestrator(
         const resolvedEntry = resolveAIRegistryEntry(versionStamp)
         if (resolvedEntry.compatibility !== 'supported') throw new Error('AI_VERSION_MIGRATION_REQUIRED')
         registryEntry = resolvedEntry
-        if (request.project.questionnaireRevision === undefined) {
+        if (!isUUIDv4(request.project.questionnaireRevision)) {
           throw new Error('AI_ARTIFACT_STALE')
         }
         baseQuestionnaireRevision = request.project.questionnaireRevision

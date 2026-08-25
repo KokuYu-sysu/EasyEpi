@@ -76,6 +76,10 @@ describe('changeProjectPassword', () => {
 
   it('re-encrypts project data, records, and draft with the new password', () => {
     const oldKey = Buffer.from(state.auth.encryptionKey!)
+    const oldProject = state.currentProject!
+    const oldQuestionnaire = oldProject.questionnaire
+    oldProject.aiAssistant = { schemaVersion: 1, sessions: {} }
+    const oldAssistant = oldProject.aiAssistant
     const result = changeProjectPassword(state, 'old-password', 'new-password-123')
     expect(result.success).toBe(true)
 
@@ -94,6 +98,9 @@ describe('changeProjectPassword', () => {
     expect(() => loadRecords(dataPath, oldKey)).toThrow()
     expect(state.auth.encryptionKey).toEqual(newKey)
     expect(state.currentSaltHex).toBe(header.saltHex)
+    expect(state.currentProject).not.toBe(oldProject)
+    expect(state.currentProject?.questionnaire).not.toBe(oldQuestionnaire)
+    expect(state.currentProject?.aiAssistant).not.toBe(oldAssistant)
   })
 
   it('rejects a wrong old password without changing either file or state', () => {

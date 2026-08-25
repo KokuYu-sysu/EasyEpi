@@ -60,6 +60,7 @@ function setup() {
     projectState.auth.encryptionKey = Buffer.alloc(32, 2)
     return { success: true }
   })
+  const beforeChangePassword = vi.fn(async () => undefined)
   const handlers = new Map<string, Handler>()
   const ipcMain = {
     handle: vi.fn((channel: string, handler: Handler) => handlers.set(channel, handler)),
@@ -68,7 +69,7 @@ function setup() {
   const dispose = registerAdminIpcHandlers(
     ipcMain,
     projectState,
-    { sessionService, dataService, changeProjectPassword },
+    { sessionService, dataService, changeProjectPassword, beforeChangePassword },
     packagedRendererUrl
   )
   return {
@@ -78,6 +79,7 @@ function setup() {
     sessionService,
     dataService,
     changeProjectPassword,
+    beforeChangePassword,
     advance(milliseconds: number) {
       now += milliseconds
     }
@@ -153,7 +155,7 @@ describe('admin IPC', () => {
   })
 
   it('verifies the old project password before rotating encrypted files and preserves the session', async () => {
-    const { handlers, changeProjectPassword } = setup()
+    const { handlers, changeProjectPassword, beforeChangePassword } = setup()
     await handlers.get(ADMIN_LOGIN_CHANNEL)!(trustedEvent, { password: 'project-password' })
     const changePassword = handlers.get(ADMIN_CHANGE_PASSWORD_CHANNEL)!
 
@@ -172,9 +174,23 @@ describe('admin IPC', () => {
       oldPassword: 'project-password',
       newPassword: 'new-password'
     })
+    expect(beforeChangePassword.mock.invocationCallOrder[0])
+      .toBeLessThan(changeProjectPassword.mock.invocationCallOrder[0]!)
     await expect(handlers.get(ADMIN_CHECK_SESSION_CHANNEL)!(trustedEvent)).resolves.toMatchObject({
       isAuthenticated: true
     })
+  })
+
+  it('does not start rekey when pending AI requests fail to settle', async () => {
+    const { handlers, changeProjectPassword, beforeChangePassword } = setup()
+    await handlers.get(ADMIN_LOGIN_CHANNEL)!(trustedEvent, { password: 'project-password' })
+    beforeChangePassword.mockRejectedValueOnce(new Error('settlement failed'))
+
+    await expect(handlers.get(ADMIN_CHANGE_PASSWORD_CHANNEL)!(trustedEvent, {
+      oldPassword: 'project-password',
+      newPassword: 'new-password'
+    })).resolves.toEqual({ success: false, error: 'PASSWORD_CHANGE_FAILED' })
+    expect(changeProjectPassword).not.toHaveBeenCalled()
   })
 
   it('returns a stable password error instead of exposing password-service exceptions', async () => {

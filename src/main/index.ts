@@ -164,6 +164,7 @@ void app.whenReady().then(() => {
     {
       sessionService: adminSessionService,
       dataService: new DataService(projectState),
+      beforeChangePassword: aiRegistration.cancelAllAndSettle,
       changeProjectPassword: async ({ oldPassword, newPassword }) =>
         changeProjectPassword(projectState, oldPassword, newPassword)
     },
