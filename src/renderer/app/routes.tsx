@@ -34,7 +34,7 @@ export const PRODUCTION_ROUTES: ProductionRouteDefinition[] = [
   { path: '/admin/login', handle: { title: '管理员验证', description: '使用当前项目密码进入数据管理后台。' } },
   { path: '/admin/data', handle: { title: '数据管理', description: '查看、编辑、删除和导出当前项目的加密记录。', requiresAdmin: true } },
   { path: '/admin/baseline', handle: { title: '基线表', description: '生成分组描述统计与统计检验。', requiresAdmin: true } },
-  { path: '/admin/double-entry', handle: { title: '双录入验证', description: '导入次录入 CSV 并与当前数据逐字段比对。' } },
+  { path: '/admin/double-entry', handle: { title: '双录入验证', description: '导入次录入 CSV 并与当前数据逐字段比对。', requiresAdmin: true } },
   { path: '/derived', handle: { title: '衍生变量', description: '配置由已有字段计算的变量。', requiresAdmin: true } }
 ]
 

@@ -30,6 +30,7 @@ function createApi(): DesktopApi {
       open: vi.fn(),
       save: vi.fn(),
       close: vi.fn(),
+      onClosed: vi.fn(() => () => undefined),
       backup: vi.fn(),
       listBackups: vi.fn(),
       restore: vi.fn()
@@ -72,7 +73,10 @@ function createApi(): DesktopApi {
     admin: {
       login: vi.fn(),
       logout: vi.fn(),
-      checkSession: vi.fn(),
+      checkSession: vi.fn().mockResolvedValue({
+        isAuthenticated: true,
+        expiresAt: Date.now() + 30 * 60 * 1000
+      }),
       changePassword: vi.fn(),
       getRecords: vi.fn(),
       updateRecord: vi.fn(),
