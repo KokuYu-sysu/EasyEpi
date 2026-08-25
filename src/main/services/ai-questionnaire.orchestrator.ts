@@ -60,6 +60,20 @@ export type AISendTurnResult =
   | { ok: false; errorCode: string; validationErrors?: AIValidationError[] }
 
 const OPERATION_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/
+const MAX_CONTEXT_CHARACTERS = 60_000
+const MAX_REPAIR_INSTRUCTION_BYTES = 8_000
+const PROJECT_AI_QUEUES = new WeakMap<ProjectData, Promise<void>>()
+
+function withProjectAIQueue<T>(project: ProjectData, task: () => Promise<T> | T): Promise<T> {
+  const previous = PROJECT_AI_QUEUES.get(project) ?? Promise.resolve()
+  const result = previous.catch(() => undefined).then(task)
+  const tail = result.then(() => undefined, () => undefined)
+  PROJECT_AI_QUEUES.set(project, tail)
+  void tail.then(() => {
+    if (PROJECT_AI_QUEUES.get(project) === tail) PROJECT_AI_QUEUES.delete(project)
+  })
+  return result
+}
 
 function jsonObject(value: unknown): value is Record<string, AIJsonValue> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -93,14 +107,21 @@ async function mutateAndPersist(
   reason: AIPersistReason,
   mutate: () => void
 ): Promise<void> {
-  const snapshot = project.aiAssistant === undefined ? undefined : structuredClone(project.aiAssistant)
-  mutate()
-  try {
-    await persistProject(project, reason)
-  } catch {
-    restoreAssistant(project, snapshot)
-    throw new Error('AI_PERSIST_FAILED')
-  }
+  await withProjectAIQueue(project, async () => {
+    const snapshot = project.aiAssistant === undefined ? undefined : structuredClone(project.aiAssistant)
+    try {
+      mutate()
+    } catch (error) {
+      restoreAssistant(project, snapshot)
+      throw error
+    }
+    try {
+      await persistProject(project, reason)
+    } catch {
+      restoreAssistant(project, snapshot)
+      throw new Error('AI_PERSIST_FAILED')
+    }
+  })
 }
 
 function safeErrorCode(error: unknown): string {
@@ -123,6 +144,18 @@ function signalAborted(signal?: AbortSignal): boolean {
 function responseCapability(value: AIJsonValue | undefined): boolean | undefined {
   if (!jsonObject(value) || typeof value.supported !== 'boolean') return undefined
   return value.supported
+}
+
+function repairInstruction(errors: readonly AIValidationError[]): string {
+  const prefix = 'The candidate was rejected by the local harness. Return a corrected full JSON envelope. Validation errors:\n'
+  const selected: Array<{ code: string; path: string; message: string }> = []
+  const encoder = new TextEncoder()
+  for (const error of errors) {
+    const next = [...selected, { code: error.code, path: error.path, message: error.message.slice(0, 200) }]
+    if (encoder.encode(`${prefix}${JSON.stringify(next)}`).byteLength > MAX_REPAIR_INSTRUCTION_BYTES) break
+    selected.push(next.at(-1)!)
+  }
+  return `${prefix}${JSON.stringify(selected)}`
 }
 
 function sameVersionStamp(left: AiVersionStamp, right: AiVersionStamp): boolean {
@@ -183,9 +216,6 @@ export function createAIQuestionnaireOrchestrator(
           return { ok: false, errorCode: safeErrorCode(error) }
         }
       }
-      if (session.state.activeRunId !== undefined || session.state.status === 'running') {
-        return { ok: false, errorCode: 'AI_RUN_ALREADY_ACTIVE' }
-      }
       let userText: string
       try {
         userText = validateUserText(request.userText)
@@ -200,6 +230,7 @@ export function createAIQuestionnaireOrchestrator(
       let baseQuestionnaireHash: string
       let explicitAttachment: QuestionnaireDef | undefined
       let activeDraft: QuestionnaireDef | undefined
+      let activeArtifactId: string | undefined
       let capabilityKey: string
       const protectedDerivedNames = (request.project.questionnaire.derivedVariables ?? [])
         .map((item) => item.variableName)
@@ -219,7 +250,7 @@ export function createAIQuestionnaireOrchestrator(
             throw new Error('AI_ARTIFACT_STALE')
           }
         }
-        const activeArtifactId = typeof session.state.values.activeArtifactId === 'string'
+        activeArtifactId = typeof session.state.values.activeArtifactId === 'string'
           ? session.state.values.activeArtifactId
           : undefined
         if (activeArtifactId !== undefined) {
@@ -255,6 +286,19 @@ export function createAIQuestionnaireOrchestrator(
       const startedAt = now()
       try {
         await mutateAndPersist(request.project, dependencies.persistProject, 'run-started', () => {
+          const lockedSession = repository.get(request.sessionId)
+          if (lockedSession === undefined) throw new Error('AI_SESSION_NOT_FOUND')
+          if (lockedSession.state.activeRunId !== undefined || lockedSession.state.status === 'running') {
+            throw new Error('AI_RUN_ALREADY_ACTIVE')
+          }
+          if (lockedSession.state.runs[runId] !== undefined) throw new Error('AI_RUN_ID_CONFLICT')
+          const lockedActiveArtifactId = typeof lockedSession.state.values.activeArtifactId === 'string'
+            ? lockedSession.state.values.activeArtifactId
+            : undefined
+          if (lockedActiveArtifactId !== activeArtifactId ||
+            hashAIQuestionnaire(request.project.questionnaire) !== baseQuestionnaireHash) {
+            throw new Error('AI_ARTIFACT_STALE')
+          }
           repository.upsertRun(request.sessionId, { runId, status: 'running', startedAt, versionStamp })
           repository.appendMessage(request.sessionId, {
             id: messageId,
@@ -289,24 +333,21 @@ export function createAIQuestionnaireOrchestrator(
       const base = activeDraft ?? (explicitAttachment === undefined
         ? { name: '', questions: [], conditionRules: [], keyQuestionIds: [] }
         : explicitAttachment)
-      let messages: ReturnType<typeof buildQuestionnaireContext> = []
-      try {
-        messages = buildQuestionnaireContext(
-          runningSession,
-          activeDraft,
-          explicitAttachment,
-          60_000,
-          registryEntry
-        )
-      } catch (error) {
-        errorCode = safeErrorCode(error)
-      }
       let capability = responseCapability(runningSession.cache.values[capabilityKey])
       let lastErrors: AIValidationError[] | undefined
+      let repair: string | undefined
       let attempts = 0
       let resultValue: QuestionnaireArtifactValue | undefined
       for (attempts = 1; attempts <= 3 && errorCode === undefined; attempts += 1) {
         try {
+          const messages = buildQuestionnaireContext(
+            runningSession,
+            activeDraft,
+            explicitAttachment,
+            MAX_CONTEXT_CHARACTERS - (repair?.length ?? 0),
+            registryEntry
+          )
+          if (repair !== undefined) messages.push({ role: 'system', content: repair })
           const completion = await client.complete({
             ...request.config,
             messages,
@@ -316,11 +357,13 @@ export function createAIQuestionnaireOrchestrator(
           })
           if (signalAborted(request.signal)) throw new AIClientError('AI_CANCELLED')
           capability = completion.responseFormatSupported
-          repository.writeVirtual(
-            `session://${request.sessionId}/cache/values/${capabilityKey}`,
-            { supported: capability },
-            request.sessionId
-          )
+          await withProjectAIQueue(request.project, () => {
+            repository.writeVirtual(
+              `session://${request.sessionId}/cache/values/${capabilityKey}`,
+              { supported: completion.responseFormatSupported },
+              request.sessionId
+            )
+          })
           const harness = registryEntry.runHarness(completion.content, base, protectedDerivedNames)
           if (harness.ok) {
             resultValue = {
@@ -336,10 +379,7 @@ export function createAIQuestionnaireOrchestrator(
             errorCode = 'AI_HARNESS_VALIDATION_FAILED'
             break
           }
-          messages.push({
-            role: 'system',
-            content: `The candidate was rejected by the local harness. Return a corrected full JSON envelope. Validation errors:\n${JSON.stringify(harness.errors)}`
-          })
+          repair = repairInstruction(harness.errors)
           await mutateAndPersist(request.project, dependencies.persistProject, 'repair-requested', () => {
             repository.setRunTemp(request.sessionId, {
               runId,
@@ -363,6 +403,9 @@ export function createAIQuestionnaireOrchestrator(
           let artifact: AIArtifact | undefined
           const completedAt = now()
           await mutateAndPersist(request.project, dependencies.persistProject, 'run-completed', () => {
+            if (hashAIQuestionnaire(request.project.questionnaire) !== baseQuestionnaireHash) {
+              throw new Error('AI_ARTIFACT_STALE')
+            }
             repository.appendMessage(request.sessionId, {
               id: createId(),
               role: 'assistant',
@@ -422,7 +465,7 @@ export function createAIQuestionnaireOrchestrator(
           repository.cleanupRunTemp(request.sessionId, runId)
         })
       } catch {
-        repository.recoverInterruptedRuns()
+        await withProjectAIQueue(request.project, () => repository.recoverInterruptedRuns())
         return { ok: false, errorCode: 'AI_PERSIST_FAILED', ...(lastErrors === undefined ? {} : { validationErrors: lastErrors }) }
       }
       return { ok: false, errorCode: finalCode, ...(lastErrors === undefined ? {} : { validationErrors: lastErrors }) }
@@ -470,56 +513,58 @@ export async function applyArtifact(
   if (!path.isAbsolute(request.currentProjectPath) || request.currentProjectPath.includes('\0')) {
     throw new Error('INVALID_CURRENT_PROJECT_PATH')
   }
-  const repository = new AISessionRepository(request.project)
-  const session = repository.get(request.sessionId)
-  if (session === undefined) throw new Error('AI_SESSION_NOT_FOUND')
-  const operationId = request.operationId ?? request.artifactId
-  if (!OPERATION_ID_PATTERN.test(operationId)) {
-    throw new Error('INVALID_AI_APPLY_OPERATION')
-  }
-  const appliedArtifacts = jsonObject(session.state.values.appliedArtifacts)
-    ? session.state.values.appliedArtifacts
-    : {}
-  const appliedOperations = jsonObject(session.state.values.appliedOperations)
-    ? session.state.values.appliedOperations
-    : {}
-  if (appliedArtifacts[request.artifactId] !== undefined) {
-    return { applied: false, questionnaire: structuredClone(request.project.questionnaire) }
-  }
-  if (appliedOperations[operationId] !== undefined && appliedOperations[operationId] !== request.artifactId) {
-    throw new Error('AI_APPLY_OPERATION_CONFLICT')
-  }
-  const value = previewQuestionnaireArtifact(request.project, request.sessionId, request.artifactId)
-  if (value === undefined) throw new Error('AI_ARTIFACT_NOT_APPLICABLE')
-  const questionnaireSnapshot = structuredClone(request.project.questionnaire)
-  const metaSnapshot = structuredClone(request.project.meta)
-  const assistantSnapshot = request.project.aiAssistant === undefined
-    ? undefined
-    : structuredClone(request.project.aiAssistant)
-  const derivedVariables = questionnaireSnapshot.derivedVariables
-  const nextQuestionnaire: QuestionnaireDef = {
-    ...structuredClone(value.draft),
-    ...(derivedVariables === undefined ? {} : { derivedVariables })
-  }
-  if (!new DerivedService().validateDerivedVariables(nextQuestionnaire).ok) {
-    throw new Error('AI_ARTIFACT_DERIVED_CONFLICT')
-  }
-  await request.backup(questionnaireSnapshot, request.currentProjectPath, request.artifactId)
-  try {
-    request.project.questionnaire = nextQuestionnaire
-    repository.updateState(request.sessionId, {
-      values: {
-        ...session.state.values,
-        appliedArtifacts: { ...appliedArtifacts, [request.artifactId]: operationId },
-        appliedOperations: { ...appliedOperations, [operationId]: request.artifactId }
-      }
-    })
-    await request.saveAtomic(request.project, request.currentProjectPath)
-    return { applied: true, questionnaire: structuredClone(nextQuestionnaire) }
-  } catch {
-    request.project.questionnaire = questionnaireSnapshot
-    request.project.meta = metaSnapshot
-    restoreAssistant(request.project, assistantSnapshot)
-    throw new Error('AI_ARTIFACT_APPLY_FAILED')
-  }
+  return withProjectAIQueue(request.project, async () => {
+    const repository = new AISessionRepository(request.project)
+    const session = repository.get(request.sessionId)
+    if (session === undefined) throw new Error('AI_SESSION_NOT_FOUND')
+    const operationId = request.operationId ?? request.artifactId
+    if (!OPERATION_ID_PATTERN.test(operationId)) {
+      throw new Error('INVALID_AI_APPLY_OPERATION')
+    }
+    const appliedArtifacts = jsonObject(session.state.values.appliedArtifacts)
+      ? session.state.values.appliedArtifacts
+      : {}
+    const appliedOperations = jsonObject(session.state.values.appliedOperations)
+      ? session.state.values.appliedOperations
+      : {}
+    if (appliedArtifacts[request.artifactId] !== undefined) {
+      return { applied: false, questionnaire: structuredClone(request.project.questionnaire) }
+    }
+    if (appliedOperations[operationId] !== undefined && appliedOperations[operationId] !== request.artifactId) {
+      throw new Error('AI_APPLY_OPERATION_CONFLICT')
+    }
+    const value = previewQuestionnaireArtifact(request.project, request.sessionId, request.artifactId)
+    if (value === undefined) throw new Error('AI_ARTIFACT_NOT_APPLICABLE')
+    const questionnaireSnapshot = structuredClone(request.project.questionnaire)
+    const metaSnapshot = structuredClone(request.project.meta)
+    const assistantSnapshot = request.project.aiAssistant === undefined
+      ? undefined
+      : structuredClone(request.project.aiAssistant)
+    const derivedVariables = questionnaireSnapshot.derivedVariables
+    const nextQuestionnaire: QuestionnaireDef = {
+      ...structuredClone(value.draft),
+      ...(derivedVariables === undefined ? {} : { derivedVariables })
+    }
+    if (!new DerivedService().validateDerivedVariables(nextQuestionnaire).ok) {
+      throw new Error('AI_ARTIFACT_DERIVED_CONFLICT')
+    }
+    await request.backup(questionnaireSnapshot, request.currentProjectPath, request.artifactId)
+    try {
+      request.project.questionnaire = nextQuestionnaire
+      repository.updateState(request.sessionId, {
+        values: {
+          ...session.state.values,
+          appliedArtifacts: { ...appliedArtifacts, [request.artifactId]: operationId },
+          appliedOperations: { ...appliedOperations, [operationId]: request.artifactId }
+        }
+      })
+      await request.saveAtomic(request.project, request.currentProjectPath)
+      return { applied: true, questionnaire: structuredClone(nextQuestionnaire) }
+    } catch {
+      request.project.questionnaire = questionnaireSnapshot
+      request.project.meta = metaSnapshot
+      restoreAssistant(request.project, assistantSnapshot)
+      throw new Error('AI_ARTIFACT_APPLY_FAILED')
+    }
+  })
 }

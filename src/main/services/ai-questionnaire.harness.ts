@@ -23,14 +23,22 @@ import {
 import { detectConflicts } from './qnaire.service'
 
 export const AI_PROMPT_ID = 'easyepi-questionnaire-assistant'
-export const AI_PROMPT_VERSION = '1.0.0'
+export const AI_PROMPT_VERSION = '1.1.0'
 export const HARNESS_VERSION = '1.1.0'
 export const QUESTIONNAIRE_SCHEMA_VERSION = 1
 
-export const QUESTIONNAIRE_SYSTEM_PROMPT = `You are EasyEpi's questionnaire drafting assistant.
+const QUESTIONNAIRE_SYSTEM_PROMPT_V1_0_0 = `You are EasyEpi's questionnaire drafting assistant.
 You may create or revise only: questionnaire name and description; questions; question types; options; variable names; order; required/allowSkip behavior; skip/default values; constraints; key-question flags; and conditional rules.
 Never request, infer, read, or emit derived variables, responses, baseline data, administrator data, files, passwords, credentials, or filesystem paths. Never output a project file or instructions to modify one.
 Return exactly one strict JSON object with keys assistantMessage, rollingSummary, and questionnaire. The questionnaire candidate may contain only name, description, questions, conditionRules, and keyQuestionIds. Each question may contain only id, content, variableName, type, options, constraint, defaultValue, isKey, allowSkip, skipValue, and order. Each rule may contain only id, sourceQuestionId, conditions, logic, action, and targetQuestionIds. Do not use markdown except that a single JSON fence is tolerated by the local parser.`
+
+const QUESTIONNAIRE_SYSTEM_PROMPT_V1_1_0 = `You are EasyEpi's questionnaire drafting assistant.
+You may create or revise only: questionnaire name and description; questions; question types; options; variable names; order; required/allowSkip behavior; skip/default values; constraints; key-question flags; and conditional rules.
+Never create, remove, or modify a regex constraint. An existing regex constraint may only be copied with exactly the same regexPattern and regexFlags.
+Never request, infer, read, or emit derived variables, responses, baseline data, administrator data, files, passwords, credentials, or filesystem paths. Never output a project file or instructions to modify one.
+Return exactly one strict JSON object with keys assistantMessage, rollingSummary, and questionnaire. The questionnaire candidate may contain only name, description, questions, conditionRules, and keyQuestionIds. Each question may contain only id, content, variableName, type, options, constraint, defaultValue, isKey, allowSkip, skipValue, and order. Each rule may contain only id, sourceQuestionId, conditions, logic, action, and targetQuestionIds. Do not use markdown except that a single JSON fence is tolerated by the local parser.`
+
+export const QUESTIONNAIRE_SYSTEM_PROMPT = QUESTIONNAIRE_SYSTEM_PROMPT_V1_1_0
 
 export interface AIValidationError {
   code: string
@@ -110,6 +118,14 @@ const RULE_FIELDS = new Set([
 const CONDITION_FIELDS = new Set(['questionId', 'operator', 'value'])
 const ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/
 const MAX_MODEL_TEXT_LENGTH = 2_000_000
+const MAX_SINGLE_STRING_LENGTH = 20_000
+const MAX_QUESTIONS = 500
+const MAX_OPTIONS_PER_QUESTION = 500
+const MAX_RULES = 1_000
+const MAX_CONDITIONS_PER_RULE = 100
+const MAX_TARGETS_PER_RULE = 500
+const MAX_CANDIDATE_NODES = 50_000
+const MAX_VALIDATION_ERRORS = 100
 
 function isObject(value: unknown): value is JsonObject {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return false
@@ -123,7 +139,7 @@ function addError(
   path: string,
   message: string
 ): void {
-  errors.push({ code, path, message })
+  if (errors.length < MAX_VALIDATION_ERRORS) errors.push({ code, path, message })
 }
 
 function rejectUnknownFields(
@@ -148,6 +164,66 @@ function stripJsonFence(text: string): string {
   return match?.[1] ?? trimmed
 }
 
+function validateCandidateLimits(value: unknown): AIValidationError[] {
+  const errors: AIValidationError[] = []
+  const questionnaire = isObject(value) && isObject(value.questionnaire)
+    ? value.questionnaire
+    : isObject(value) ? value : undefined
+  if (questionnaire !== undefined) {
+    const questions = Array.isArray(questionnaire.questions) ? questionnaire.questions : []
+    const rules = Array.isArray(questionnaire.conditionRules) ? questionnaire.conditionRules : []
+    if (questions.length > MAX_QUESTIONS) {
+      addError(errors, 'AI_CANDIDATE_LIMIT_EXCEEDED', '$.questionnaire.questions', 'Too many questions')
+    }
+    if (rules.length > MAX_RULES) {
+      addError(errors, 'AI_CANDIDATE_LIMIT_EXCEEDED', '$.questionnaire.conditionRules', 'Too many rules')
+    }
+    if (Array.isArray(questionnaire.keyQuestionIds) && questionnaire.keyQuestionIds.length > MAX_QUESTIONS) {
+      addError(errors, 'AI_CANDIDATE_LIMIT_EXCEEDED', '$.questionnaire.keyQuestionIds', 'Too many key questions')
+    }
+    for (const [index, question] of questions.slice(0, MAX_QUESTIONS).entries()) {
+      if (isObject(question) && Array.isArray(question.options) &&
+        question.options.length > MAX_OPTIONS_PER_QUESTION) {
+        addError(errors, 'AI_CANDIDATE_LIMIT_EXCEEDED', `$.questionnaire.questions[${index}].options`, 'Too many options')
+      }
+    }
+    for (const [index, rule] of rules.slice(0, MAX_RULES).entries()) {
+      if (!isObject(rule)) continue
+      if (Array.isArray(rule.conditions) && rule.conditions.length > MAX_CONDITIONS_PER_RULE) {
+        addError(errors, 'AI_CANDIDATE_LIMIT_EXCEEDED', `$.questionnaire.conditionRules[${index}].conditions`, 'Too many conditions')
+      }
+      if (Array.isArray(rule.targetQuestionIds) && rule.targetQuestionIds.length > MAX_TARGETS_PER_RULE) {
+        addError(errors, 'AI_CANDIDATE_LIMIT_EXCEEDED', `$.questionnaire.conditionRules[${index}].targetQuestionIds`, 'Too many targets')
+      }
+    }
+  }
+  if (errors.length > 0) return errors
+
+  const stack: unknown[] = [value]
+  let nodes = 0
+  while (stack.length > 0) {
+    const current = stack.pop()
+    nodes += 1
+    if (nodes > MAX_CANDIDATE_NODES) {
+      addError(errors, 'AI_CANDIDATE_LIMIT_EXCEEDED', '$', 'Candidate is too complex')
+      return errors
+    }
+    if (typeof current === 'string' && current.length > MAX_SINGLE_STRING_LENGTH) {
+      addError(errors, 'AI_CANDIDATE_LIMIT_EXCEEDED', '$', 'Candidate contains an oversized string')
+      return errors
+    }
+    const children = Array.isArray(current)
+      ? current
+      : isObject(current) ? Object.values(current) : []
+    if (nodes + stack.length + children.length > MAX_CANDIDATE_NODES) {
+      addError(errors, 'AI_CANDIDATE_LIMIT_EXCEEDED', '$', 'Candidate is too complex')
+      return errors
+    }
+    stack.push(...children)
+  }
+  return errors
+}
+
 function parseEnvelope(text: string): { value?: JsonObject; errors: AIValidationError[] } {
   const errors: AIValidationError[] = []
   if (typeof text !== 'string' || text.length === 0 || text.length > MAX_MODEL_TEXT_LENGTH) {
@@ -161,6 +237,8 @@ function parseEnvelope(text: string): { value?: JsonObject; errors: AIValidation
     addError(errors, 'INVALID_JSON', '$', 'Response must be strict JSON')
     return { errors }
   }
+  const limitErrors = validateCandidateLimits(parsed)
+  if (limitErrors.length > 0) return { errors: limitErrors }
   if (!rejectUnknownFields(parsed, ENVELOPE_FIELDS, '$', errors)) return { errors }
   if (typeof parsed.assistantMessage !== 'string' || parsed.assistantMessage.trim().length === 0) {
     addError(errors, 'INVALID_ASSISTANT_MESSAGE', '$.assistantMessage', 'Message must be non-empty')
@@ -439,6 +517,48 @@ function validateStableQuestionReferences(
   return errors
 }
 
+function validateRegexChanges(
+  base: QuestionnaireDef | undefined,
+  draft: QuestionnaireDef
+): AIValidationError[] {
+  const errors: AIValidationError[] = []
+  const baseById = new Map(base?.questions.map((question) => [question.id, question]))
+  const draftById = new Map(draft.questions.map((question) => [question.id, question]))
+  const reported = new Set<string>()
+  const sameRegex = (left: ConstraintDef, right: ConstraintDef): boolean =>
+    left.type === 'regex' && right.type === 'regex' &&
+    left.regexPattern === right.regexPattern && left.regexFlags === right.regexFlags &&
+    left.fixedLength === right.fixedLength && left.minValue === right.minValue &&
+    left.maxValue === right.maxValue && left.step === right.step
+  for (const [index, question] of draft.questions.entries()) {
+    const original = baseById.get(question.id)
+    const touchesRegex = question.constraint.type === 'regex' ||
+      question.constraint.regexPattern !== undefined || question.constraint.regexFlags !== undefined
+    if (touchesRegex && (original === undefined || !sameRegex(original.constraint, question.constraint))) {
+      reported.add(question.id)
+      addError(
+        errors,
+        'AI_REGEX_GENERATION_NOT_ALLOWED',
+        `$.questionnaire.questions[${index}].constraint`,
+        'Regex constraints may only be preserved unchanged from the base questionnaire'
+      )
+    }
+  }
+  for (const original of base?.questions ?? []) {
+    if (original.constraint.type !== 'regex' || reported.has(original.id)) continue
+    const candidate = draftById.get(original.id)
+    if (candidate === undefined || !sameRegex(original.constraint, candidate.constraint)) {
+      addError(
+        errors,
+        'AI_REGEX_GENERATION_NOT_ALLOWED',
+        '$.questionnaire.questions',
+        'Existing regex constraints may not be removed or modified'
+      )
+    }
+  }
+  return errors
+}
+
 function validateQuestionnaire(
   draft: QuestionnaireDef,
   protectedDerivedVariableNames: readonly string[]
@@ -529,20 +649,26 @@ function validateRuleGraph(draft: QuestionnaireDef, errors: AIValidationError[])
       addError(errors, 'CONDITION_ACTION_CONFLICT', '$.questionnaire.conditionRules', `Conflicting actions target ${target}`)
     }
   }
-  const visiting = new Set<string>()
-  const visited = new Set<string>()
-  const visit = (questionId: string): boolean => {
-    if (visiting.has(questionId)) return true
-    if (visited.has(questionId)) return false
-    visiting.add(questionId)
-    for (const target of edges.get(questionId) ?? []) {
-      if (visit(target)) return true
+  const indegree = new Map(draft.questions.map((question) => [question.id, 0]))
+  for (const [source, targets] of edges) {
+    if (!indegree.has(source)) continue
+    for (const target of targets) {
+      if (indegree.has(target)) indegree.set(target, (indegree.get(target) ?? 0) + 1)
     }
-    visiting.delete(questionId)
-    visited.add(questionId)
-    return false
   }
-  if (draft.questions.some((question) => visit(question.id))) {
+  const pending = [...indegree].filter(([, count]) => count === 0).map(([id]) => id)
+  let processed = 0
+  while (pending.length > 0) {
+    const source = pending.pop()!
+    processed += 1
+    for (const target of edges.get(source) ?? []) {
+      if (!indegree.has(target)) continue
+      const next = (indegree.get(target) ?? 0) - 1
+      indegree.set(target, next)
+      if (next === 0) pending.push(target)
+    }
+  }
+  if (processed !== indegree.size) {
     addError(errors, 'CONDITION_RULE_CYCLE', '$.questionnaire.conditionRules', 'Conditional rules contain a cycle')
   }
   const reachable = new Set(draft.questions.filter((question) => !showTargets.has(question.id)).map((question) => question.id))
@@ -695,6 +821,8 @@ export function runQuestionnaireHarness(
   const referenceErrors = validateStableQuestionReferences(candidate, base)
   if (referenceErrors.length > 0) return { ok: false, errors: referenceErrors }
   const draft = normalizeQuestionnaire(candidate, base)
+  const regexErrors = validateRegexChanges(base, draft)
+  if (regexErrors.length > 0) return { ok: false, errors: regexErrors }
   const errors = validateQuestionnaire(draft, protectedDerivedVariableNames)
   if (errors.length > 0) return { ok: false, errors }
   const emptyBase: QuestionnaireDef = { name: '', questions: [], conditionRules: [], keyQuestionIds: [] }
@@ -718,6 +846,8 @@ export function validateQuestionnaireDraft(
   if (!isObject(draft)) {
     return { ok: false, errors: [{ code: 'INVALID_DRAFT', path: '$.draft', message: 'Draft must be an object' }] }
   }
+  const limitErrors = validateCandidateLimits(draft)
+  if (limitErrors.length > 0) return { ok: false, errors: limitErrors }
   inspectCandidate(draft, '$.draft', errors)
   if (Object.prototype.hasOwnProperty.call(draft, 'derivedVariables')) {
     addError(errors, 'FORBIDDEN_FIELD', '$.draft.derivedVariables', 'Derived variables are forbidden')
@@ -732,7 +862,10 @@ export function validateQuestionnaireDraft(
     return { ok: false, errors }
   }
   try {
-    errors.push(...validateQuestionnaire(draft as unknown as QuestionnaireDef, protectedDerivedVariableNames))
+    for (const error of validateQuestionnaire(
+      draft as unknown as QuestionnaireDef,
+      protectedDerivedVariableNames
+    )) addError(errors, error.code, error.path, error.message)
   } catch {
     addError(errors, 'INVALID_DRAFT', '$.draft', 'Draft contains invalid values')
   }
@@ -743,33 +876,42 @@ export function getAiVersionStamp(): AiVersionStamp {
   return {
     promptId: AI_PROMPT_ID,
     promptVersion: AI_PROMPT_VERSION,
-    promptHash: `sha256:${createHash('sha256').update(QUESTIONNAIRE_SYSTEM_PROMPT).digest('hex')}`,
+    promptHash: `sha256:${createHash('sha256').update(QUESTIONNAIRE_SYSTEM_PROMPT_V1_1_0).digest('hex')}`,
     harnessVersion: HARNESS_VERSION,
     schemaVersion: QUESTIONNAIRE_SCHEMA_VERSION
   }
 }
 
-const HISTORICAL_V1_SYSTEM_PROMPT = QUESTIONNAIRE_SYSTEM_PROMPT
 const historicalV1Stamp: AiVersionStamp = Object.freeze({
   promptId: AI_PROMPT_ID,
-  promptVersion: AI_PROMPT_VERSION,
-  promptHash: `sha256:${createHash('sha256').update(HISTORICAL_V1_SYSTEM_PROMPT).digest('hex')}`,
+  promptVersion: '1.0.0',
+  promptHash: `sha256:${createHash('sha256').update(QUESTIONNAIRE_SYSTEM_PROMPT_V1_0_0).digest('hex')}`,
   harnessVersion: '1.0.0',
   schemaVersion: QUESTIONNAIRE_SCHEMA_VERSION
+})
+const legacyHarnessV1_1Stamp: AiVersionStamp = Object.freeze({
+  ...historicalV1Stamp,
+  harnessVersion: '1.1.0'
 })
 const currentV1Stamp: AiVersionStamp = Object.freeze(getAiVersionStamp())
 const historicalV1RegistryEntry: AIRegistryEntry = Object.freeze({
   versionStamp: historicalV1Stamp,
-  systemPrompt: HISTORICAL_V1_SYSTEM_PROMPT,
+  systemPrompt: QUESTIONNAIRE_SYSTEM_PROMPT_V1_0_0,
   schemaVersion: QUESTIONNAIRE_SCHEMA_VERSION,
   compatibility: 'requires-migration'
 })
 const currentV1RegistryEntry: AIRegistryEntry = Object.freeze({
   versionStamp: currentV1Stamp,
-  systemPrompt: QUESTIONNAIRE_SYSTEM_PROMPT,
+  systemPrompt: QUESTIONNAIRE_SYSTEM_PROMPT_V1_1_0,
   schemaVersion: QUESTIONNAIRE_SCHEMA_VERSION,
   compatibility: 'supported',
   runHarness: runQuestionnaireHarness
+})
+const legacyHarnessV1_1RegistryEntry: AIRegistryEntry = Object.freeze({
+  versionStamp: legacyHarnessV1_1Stamp,
+  systemPrompt: QUESTIONNAIRE_SYSTEM_PROMPT_V1_0_0,
+  schemaVersion: QUESTIONNAIRE_SCHEMA_VERSION,
+  compatibility: 'requires-migration'
 })
 
 function versionRegistryKey(stamp: AiVersionStamp): string {
@@ -784,6 +926,7 @@ function versionRegistryKey(stamp: AiVersionStamp): string {
 
 const AI_REGISTRY = new Map<string, AIRegistryEntry>([
   [versionRegistryKey(historicalV1Stamp), historicalV1RegistryEntry],
+  [versionRegistryKey(legacyHarnessV1_1Stamp), legacyHarnessV1_1RegistryEntry],
   [versionRegistryKey(currentV1Stamp), currentV1RegistryEntry]
 ])
 
@@ -881,6 +1024,7 @@ export function validateStrictQuestionnaireDto(
   value: unknown,
   protectedDerivedVariableNames: readonly string[] = []
 ): QuestionnaireDef {
+  if (validateCandidateLimits(value).length > 0) throw new Error('AI_ARTIFACT_INVALID')
   if (!isObject(value) || !hasExactKeys(
     value,
     ['name', 'questions', 'conditionRules', 'keyQuestionIds'],
@@ -994,6 +1138,9 @@ export function validateQuestionnaireArtifact(
   }
   const baseQuestionnaire = validateStrictQuestionnaireDto(artifact.value.baseQuestionnaire)
   const draft = validateStrictQuestionnaireDto(artifact.value.draft, protectedDerivedVariableNames)
+  if (validateRegexChanges(baseQuestionnaire, draft).length > 0) {
+    throw new Error('AI_ARTIFACT_INVALID')
+  }
   if (hashAIQuestionnaire(baseQuestionnaire) !== artifact.value.baseQuestionnaireHash) {
     throw new Error('AI_ARTIFACT_INVALID')
   }

@@ -68,7 +68,21 @@ describe('AI questionnaire orchestrator', () => {
     expect(new AISessionRepository(firstProject).get(sessionId)?.temp.runs).toEqual({})
 
     const retryProject = project()
-    const alwaysInvalid = vi.fn().mockResolvedValue({ content: '{"bad":true}', responseFormatSupported: true })
+    const requestLengths: number[] = []
+    const invalidContent = JSON.stringify({
+      assistantMessage: 'invalid', rollingSummary: '',
+      questionnaire: {
+        name: 'Study', conditionRules: [], keyQuestionIds: [],
+        questions: Array.from({ length: 500 }, (_, order) => ({
+          content: '', variableName: '', type: 'free_text', options: [],
+          constraint: { type: 'none' }, isKey: false, allowSkip: false, order
+        }))
+      }
+    })
+    const alwaysInvalid = vi.fn().mockImplementation((request: { messages: Array<{ content: string }> }) => {
+      requestLengths.push(request.messages.reduce((sum, message) => sum + message.content.length, 0))
+      return Promise.resolve({ content: invalidContent, responseFormatSupported: true })
+    })
     const retried = await createAIQuestionnaireOrchestrator({
       persistProject: vi.fn(),
       client: { complete: alwaysInvalid }
@@ -80,6 +94,8 @@ describe('AI questionnaire orchestrator', () => {
     })
     expect(retried).toMatchObject({ ok: false, errorCode: 'AI_HARNESS_VALIDATION_FAILED' })
     expect(alwaysInvalid).toHaveBeenCalledTimes(3)
+    expect(Math.max(...requestLengths)).toBeLessThanOrEqual(60_000)
+    if (!retried.ok) expect(retried.validationErrors?.length).toBeLessThanOrEqual(100)
     expect(new AISessionRepository(retryProject).get(sessionId)).toMatchObject({
       state: { status: 'failed' },
       temp: { runs: {} }
@@ -123,20 +139,77 @@ describe('AI questionnaire orchestrator', () => {
     expect(generated.ok).toBe(true)
     if (!generated.ok) return
     const calls: string[] = []
+    let releaseBackup!: () => void
+    let backupStarted!: () => void
+    const started = new Promise<void>((resolve) => { backupStarted = resolve })
     const request = {
       project: value,
       sessionId,
       artifactId: generated.artifact.artifactId,
       currentProjectPath: 'D:\\study.easyepi',
-      backup: vi.fn(() => { calls.push('backup') }),
+      backup: vi.fn(() => {
+        calls.push('backup')
+        if (calls.length === 1) {
+          backupStarted()
+          return new Promise<void>((resolve) => { releaseBackup = resolve })
+        }
+      }),
       saveAtomic: vi.fn(() => { calls.push('save') })
     }
-    expect(await applyArtifact(request)).toMatchObject({ applied: true })
-    expect(await applyArtifact(request)).toMatchObject({ applied: false })
+    const firstApply = applyArtifact(request)
+    await started
+    const secondApply = applyArtifact(request)
+    releaseBackup()
+    expect(await Promise.all([firstApply, secondApply])).toEqual([
+      expect.objectContaining({ applied: true }),
+      expect.objectContaining({ applied: false })
+    ])
     expect(calls).toEqual(['backup', 'save'])
     expect(value.questionnaire.derivedVariables).toEqual([
       expect.objectContaining({ variableName: 'bmi' })
     ])
+  })
+
+  it('serializes failed run persistence with a later artifact apply', async () => {
+    const value = project()
+    const generated = await createAIQuestionnaireOrchestrator({
+      persistProject: vi.fn(),
+      client: { complete: vi.fn().mockResolvedValue({ content: validCompletion(), responseFormatSupported: true }) }
+    }).sendTurn({
+      project: value, sessionId, userText: 'Create',
+      config: { baseUrl: 'https://example.test/v1', model: 'model' }
+    })
+    expect(generated.ok).toBe(true)
+    if (!generated.ok) return
+
+    let rejectPersist!: (error: Error) => void
+    let persistStarted!: () => void
+    const started = new Promise<void>((resolve) => { persistStarted = resolve })
+    const send = createAIQuestionnaireOrchestrator({
+      persistProject: vi.fn((_project, reason) => {
+        if (reason !== 'run-started') return
+        persistStarted()
+        return new Promise<void>((_resolve, reject) => { rejectPersist = reject })
+      }),
+      client: { complete: vi.fn() }
+    }).sendTurn({
+      project: value, sessionId, userText: 'Refine',
+      config: { baseUrl: 'https://example.test/v1', model: 'model' }
+    })
+    await started
+    const backup = vi.fn()
+    const apply = applyArtifact({
+      project: value, sessionId, artifactId: generated.artifact.artifactId,
+      currentProjectPath: 'D:\\study.easyepi', backup, saveAtomic: vi.fn()
+    })
+    await Promise.resolve()
+    expect(backup).not.toHaveBeenCalled()
+    rejectPersist(new Error('disk unavailable'))
+    await expect(send).resolves.toMatchObject({ ok: false, errorCode: 'AI_PERSIST_FAILED' })
+    await expect(apply).resolves.toMatchObject({ applied: true })
+    expect(new AISessionRepository(value).get(sessionId)?.state.values.appliedArtifacts).toMatchObject({
+      [generated.artifact.artifactId]: generated.artifact.artifactId
+    })
   })
 
   it('rejects stale and structurally forged artifacts before preview or apply', async () => {
@@ -222,7 +295,12 @@ describe('AI questionnaire orchestrator', () => {
   })
 
   it('explicitly migrates historical sessions with an audit trail', async () => {
-    const historical = { ...getAiVersionStamp(), harnessVersion: '1.0.0' }
+    const historical = {
+      ...getAiVersionStamp(),
+      promptVersion: '1.0.0',
+      promptHash: 'sha256:5bb44f2a0062a001aaeaef8fd1b0b7e46183a41c5b34e01df7542121b8de0b0d',
+      harnessVersion: '1.0.0'
+    }
     const value = project(historical)
     const repository = new AISessionRepository(value)
     const persistProject = vi.fn()
@@ -302,11 +380,13 @@ describe('AI questionnaire orchestrator', () => {
 
   it('maps decisive HTTP statuses without consuming provider error bodies', async () => {
     let bodyRead = false
+    const cancel = vi.fn()
     const response = {
       ok: false,
       status: 401,
       headers: new Headers(),
       body: {
+        cancel,
         getReader() {
           bodyRead = true
           throw new Error('body must not be read')
@@ -318,5 +398,19 @@ describe('AI questionnaire orchestrator', () => {
       baseUrl: 'https://example.test/v1', model: 'model', apiKey: 'secret', messages: []
     })).rejects.toMatchObject({ code: 'AI_AUTH_ERROR' })
     expect(bodyRead).toBe(false)
+    expect(cancel).toHaveBeenCalledOnce()
+
+    const oversizedCancel = vi.fn()
+    const oversized = createOpenAICompatibleClient({
+      maxResponseBytes: 10,
+      fetch: vi.fn().mockResolvedValue({
+        ok: true, status: 200, headers: new Headers({ 'content-length': '11' }),
+        body: { cancel: oversizedCancel }
+      } as unknown as Response)
+    })
+    await expect(oversized.complete({
+      baseUrl: 'https://example.test/v1', model: 'model', messages: []
+    })).rejects.toMatchObject({ code: 'AI_RESPONSE_TOO_LARGE' })
+    expect(oversizedCancel).toHaveBeenCalledOnce()
   })
 })

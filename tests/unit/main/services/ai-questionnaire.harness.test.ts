@@ -11,7 +11,7 @@ import {
 import type { AISessionData } from '@shared/ai-assistant-contract'
 import type { QuestionnaireDef } from '@shared/types/qnaire'
 
-function envelope(questionnaire: Record<string, unknown>): string {
+function envelope(questionnaire: unknown): string {
   return JSON.stringify({
     assistantMessage: 'Draft ready',
     rollingSummary: 'Created a draft',
@@ -22,7 +22,12 @@ function envelope(questionnaire: Record<string, unknown>): string {
 describe('questionnaire harness trust boundary', () => {
   it('resolves immutable registered versions and rejects unknown hashes', () => {
     const current = getAiVersionStamp()
-    const historical = { ...current, harnessVersion: '1.0.0' }
+    const historical = {
+      ...current,
+      promptVersion: '1.0.0',
+      promptHash: 'sha256:5bb44f2a0062a001aaeaef8fd1b0b7e46183a41c5b34e01df7542121b8de0b0d',
+      harnessVersion: '1.0.0'
+    }
     expect(resolveAIRegistryEntry(current)).toMatchObject({
       versionStamp: getAiVersionStamp()
     })
@@ -233,5 +238,40 @@ describe('questionnaire harness trust boundary', () => {
     if (!result.ok) expect(result.errors.map((error) => error.code)).toEqual(expect.arrayContaining([
       'CONDITION_RULE_CYCLE', 'UNREACHABLE_SHOW_CHAIN', 'CONDITION_ACTION_CONFLICT'
     ]))
+  })
+
+  it('forbids generated regex constraints and rejects oversized candidates', () => {
+    const regexQuestion: QuestionnaireDef['questions'][number] = {
+      id: 'local-code', content: 'Code', variableName: 'code', type: 'free_text', options: [],
+      constraint: { type: 'regex', regexPattern: '^[A-Z]+$', regexFlags: '' },
+      isKey: false, allowSkip: false, order: 0
+    }
+    const regexCandidate: QuestionnaireDef = {
+      name: 'Study', questions: [regexQuestion], conditionRules: [], keyQuestionIds: []
+    }
+    expect(runQuestionnaireHarness(envelope(regexCandidate))).toMatchObject({
+      ok: false,
+      errors: [{ code: 'AI_REGEX_GENERATION_NOT_ALLOWED' }]
+    })
+    const base = structuredClone(regexCandidate)
+    expect(runQuestionnaireHarness(envelope(regexCandidate), base).ok).toBe(true)
+    const modified = structuredClone(regexCandidate)
+    modified.questions[0]!.constraint.regexPattern = '^.*$'
+    expect(runQuestionnaireHarness(envelope(modified), base)).toMatchObject({
+      ok: false,
+      errors: [{ code: 'AI_REGEX_GENERATION_NOT_ALLOWED' }]
+    })
+
+    const oversized = runQuestionnaireHarness(envelope({
+      name: 'Study', conditionRules: [], keyQuestionIds: [],
+      questions: Array.from({ length: 501 }, (_, order) => ({
+        content: `Question ${order}`, variableName: `q_${order}`, type: 'free_text',
+        options: [], constraint: { type: 'none' }, isKey: false, allowSkip: false, order
+      }))
+    }))
+    expect(oversized).toMatchObject({
+      ok: false,
+      errors: [{ code: 'AI_CANDIDATE_LIMIT_EXCEEDED' }]
+    })
   })
 })

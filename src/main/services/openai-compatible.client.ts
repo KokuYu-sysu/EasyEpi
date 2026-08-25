@@ -88,6 +88,7 @@ const QUESTIONNAIRE_SCHEMA = {
               },
               constraint: {
                 type: 'object',
+                description: 'Never create, remove, or modify regex constraints. Only copy an existing regexPattern and regexFlags exactly.',
                 additionalProperties: false,
                 required: ['type', 'fixedLength', 'minValue', 'maxValue', 'step', 'regexPattern', 'regexFlags'],
                 properties: {
@@ -99,8 +100,14 @@ const QUESTIONNAIRE_SCHEMA = {
                   minValue: { type: ['number', 'null'] },
                   maxValue: { type: ['number', 'null'] },
                   step: { type: ['number', 'null'] },
-                  regexPattern: { type: ['string', 'null'] },
-                  regexFlags: { type: ['string', 'null'] }
+                  regexPattern: {
+                    type: ['string', 'null'],
+                    description: 'Must be null unless copied unchanged from the base questionnaire.'
+                  },
+                  regexFlags: {
+                    type: ['string', 'null'],
+                    description: 'Must be null unless copied unchanged from the base questionnaire.'
+                  }
                 }
               },
               defaultValue: { type: ['string', 'null'] },
@@ -153,24 +160,50 @@ function endpoint(baseUrl: string): string {
   return normalized.endsWith('/chat/completions') ? normalized : `${normalized}/chat/completions`
 }
 
+async function cancelResponseBody(response: Response): Promise<void> {
+  try {
+    await response.body?.cancel()
+  } catch {
+    // Preserve the stable status/size error when a provider rejects cancellation.
+  }
+}
+
 async function boundedText(response: Response, maxBytes: number): Promise<string> {
   const length = response.headers.get('content-length')
-  if (length !== null && Number(length) > maxBytes) throw new AIClientError('AI_RESPONSE_TOO_LARGE')
+  if (length !== null && Number(length) > maxBytes) {
+    await cancelResponseBody(response)
+    throw new AIClientError('AI_RESPONSE_TOO_LARGE')
+  }
   if (response.body === null) return ''
   const reader = response.body.getReader()
   const chunks: Uint8Array[] = []
   let size = 0
+  let bodyCancelled = false
   try {
     for (;;) {
       const result = await reader.read()
       if (result.done) break
       size += result.value.byteLength
       if (size > maxBytes) {
-        await reader.cancel()
+        bodyCancelled = true
+        try {
+          await reader.cancel()
+        } catch {
+          // Preserve the response-size error.
+        }
         throw new AIClientError('AI_RESPONSE_TOO_LARGE')
       }
       chunks.push(result.value)
     }
+  } catch (error) {
+    if (!bodyCancelled) {
+      try {
+        await reader.cancel()
+      } catch {
+        // Preserve the original bounded-read error.
+      }
+    }
+    throw error
   } finally {
     reader.releaseLock()
   }
@@ -264,6 +297,7 @@ export function createOpenAICompatibleClient(
         signal: controller.signal
       })
       if (!response.ok && response.status !== 400 && response.status !== 422) {
+        await cancelResponseBody(response)
         throw statusError(response.status)
       }
       return {
