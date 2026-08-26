@@ -95,6 +95,86 @@ describe('AI configuration security boundary', () => {
     expect(message).not.toContain(apiKey)
   })
 
+  it.each([undefined, ''])(
+    'clears a saved API key when the normalized provider URL changes and the new key is %s',
+    async (apiKey) => {
+      const directory = mkdtempSync(join(tmpdir(), 'easyepi-ai-config-origin-'))
+      try {
+        const service = createAIConfigService(directory, {
+          isEncryptionAvailable: () => true,
+          encryptString: (value) => Buffer.from(value),
+          decryptString: (value) => value.toString()
+        })
+        await service.update({
+          baseUrl: 'https://first.example/v1/',
+          model: 'model-a',
+          apiKey: 'first-secret'
+        })
+
+        const result = await service.update({
+          baseUrl: 'https://second.example/v1/',
+          model: 'model-a',
+          ...(apiKey === undefined ? {} : { apiKey })
+        })
+
+        expect(result).toMatchObject({
+          ok: true,
+          config: {
+            baseUrl: 'https://second.example/v1',
+            hasApiKey: false,
+            maskedApiKey: null
+          }
+        })
+        await expect(service.getPlaintextForMain()).resolves.toEqual({
+          baseUrl: 'https://second.example/v1',
+          model: 'model-a'
+        })
+      } finally {
+        rmSync(directory, { recursive: true, force: true })
+      }
+    }
+  )
+
+  it('retains a saved key for the same normalized URL and replaces it when a new key is supplied', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'easyepi-ai-config-key-update-'))
+    try {
+      const service = createAIConfigService(directory, {
+        isEncryptionAvailable: () => true,
+        encryptString: (value) => Buffer.from(value),
+        decryptString: (value) => value.toString()
+      })
+      await service.update({
+        baseUrl: 'https://first.example/v1',
+        model: 'model-a',
+        apiKey: 'first-secret'
+      })
+
+      await service.update({
+        baseUrl: 'https://first.example/v1/',
+        model: 'model-b',
+        apiKey: ''
+      })
+      await expect(service.getPlaintextForMain()).resolves.toEqual({
+        baseUrl: 'https://first.example/v1',
+        model: 'model-b',
+        apiKey: 'first-secret'
+      })
+
+      await service.update({
+        baseUrl: 'https://second.example/v1',
+        model: 'model-b',
+        apiKey: 'second-secret'
+      })
+      await expect(service.getPlaintextForMain()).resolves.toEqual({
+        baseUrl: 'https://second.example/v1',
+        model: 'model-b',
+        apiKey: 'second-secret'
+      })
+    } finally {
+      rmSync(directory, { recursive: true, force: true })
+    }
+  })
+
   it('preserves application privacy consent when provider config is cleared', async () => {
     const directory = mkdtempSync(join(tmpdir(), 'easyepi-ai-config-'))
     try {

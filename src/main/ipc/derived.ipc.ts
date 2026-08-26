@@ -21,6 +21,7 @@ import {
 } from '@shared/derived-contract'
 import type { FormulaError } from '@shared/derived'
 
+import type { AdminSessionService } from '../services/admin-session.service'
 import { DerivedService } from '../services/derived/derived.service'
 import { refreshQuestionnaireRevision } from '../services/project.service'
 import type { ProjectIpcState } from './project.ipc'
@@ -30,9 +31,14 @@ type DerivedCrudResult =
   | { ok: true; derivedVariables: DerivedVariableDef[] }
   | { ok: false; errors?: FormulaError[] }
 
+export interface DerivedIpcServices {
+  sessionService: Pick<AdminSessionService, 'authorize'>
+}
+
 export function registerDerivedIpc(
   ipcMain: IpcMainLike,
   state: ProjectIpcState,
+  services: DerivedIpcServices,
   packagedRendererUrl: string,
   developmentOrigin?: string
 ): () => void {
@@ -58,11 +64,13 @@ export function registerDerivedIpc(
 
   ipcMain.handle(DERIVED_GET_ALL_CHANNEL, async (event: IpcInvokeEventLike) => {
     assertTrustedSender(event, packagedRendererUrl, developmentOrigin)
+    services.sessionService.authorize()
     return list()
   })
 
   ipcMain.handle(DERIVED_VALIDATE_CHANNEL, async (event: IpcInvokeEventLike, rawRequest: unknown) => {
     assertTrustedSender(event, packagedRendererUrl, developmentOrigin)
+    services.sessionService.authorize()
     const request = parseDerivedValidateRequest(rawRequest)
     const validation = new DerivedService().validateFormula(request.formula, getQnaire())
     return {
@@ -75,6 +83,7 @@ export function registerDerivedIpc(
 
   ipcMain.handle(DERIVED_PREVIEW_CHANNEL, async (event: IpcInvokeEventLike, rawRequest: unknown) => {
     assertTrustedSender(event, packagedRendererUrl, developmentOrigin)
+    services.sessionService.authorize()
     const request = parseDerivedPreviewRequest(rawRequest)
     return new DerivedService().previewResult(
       request.formula,
@@ -85,6 +94,7 @@ export function registerDerivedIpc(
 
   ipcMain.handle(DERIVED_ADD_CHANNEL, async (event: IpcInvokeEventLike, rawRequest: unknown) => {
     assertTrustedSender(event, packagedRendererUrl, developmentOrigin)
+    services.sessionService.authorize()
     const request = parseDerivedAddRequest(rawRequest)
     const result = DerivedService.addDerivedVariable(getQnaire(), request.variable)
     if (!result.ok) return { ok: false, errors: result.errors } satisfies DerivedCrudResult
@@ -93,6 +103,7 @@ export function registerDerivedIpc(
 
   ipcMain.handle(DERIVED_UPDATE_CHANNEL, async (event: IpcInvokeEventLike, rawRequest: unknown) => {
     assertTrustedSender(event, packagedRendererUrl, developmentOrigin)
+    services.sessionService.authorize()
     const request = parseDerivedUpdateRequest(rawRequest)
     const result = DerivedService.updateDerivedVariable(getQnaire(), request.id, request.patch)
     if (!result.ok) return { ok: false, errors: result.errors } satisfies DerivedCrudResult
@@ -101,6 +112,7 @@ export function registerDerivedIpc(
 
   ipcMain.handle(DERIVED_DELETE_CHANNEL, async (event: IpcInvokeEventLike, rawRequest: unknown) => {
     assertTrustedSender(event, packagedRendererUrl, developmentOrigin)
+    services.sessionService.authorize()
     const request = parseDerivedDeleteRequest(rawRequest)
     const result = DerivedService.deleteDerivedVariable(getQnaire(), request.id)
     if (!result.ok) return { ok: false, errors: result.errors } satisfies DerivedCrudResult
@@ -109,6 +121,7 @@ export function registerDerivedIpc(
 
   ipcMain.handle(DERIVED_REORDER_CHANNEL, async (event: IpcInvokeEventLike, rawRequest: unknown) => {
     assertTrustedSender(event, packagedRendererUrl, developmentOrigin)
+    services.sessionService.authorize()
     const request = parseDerivedReorderRequest(rawRequest)
     return mutate(DerivedService.reorderDerivedVariables(getQnaire(), request.ids))
   })

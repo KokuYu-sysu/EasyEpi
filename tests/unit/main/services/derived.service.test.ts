@@ -1,6 +1,13 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 
+import { registerDerivedIpc } from '@main/ipc/derived.ipc'
+import { createProjectIpcState } from '@main/ipc/project.ipc'
 import { DerivedService } from '@main/services/derived/derived.service'
+import {
+  ALL_DERIVED_CHANNELS,
+  DERIVED_GET_ALL_CHANNEL
+} from '@shared/derived-contract'
+import type { IpcInvokeEventLike } from '@main/ipc/types'
 import type { QuestionnaireDef } from '@shared/types/qnaire'
 import type { DerivedVariableDef } from '@shared/types/derived'
 
@@ -449,5 +456,69 @@ describe('DerivedService.validateDerivedVariables', () => {
     }
     const result = new DerivedService().validateDerivedVariables(qnaire)
     expect(result.ok).toBe(true)
+  })
+})
+
+describe('derived IPC authorization', () => {
+  const packagedRendererUrl = 'file:///D:/EasyEpi/out/renderer/index.html'
+  const trustedEvent = { senderFrame: { url: packagedRendererUrl } }
+
+  function setup(authorize: () => { isAuthenticated: true }) {
+    const state = createProjectIpcState()
+    state.currentProject = {
+      meta: {
+        name: 'study',
+        folderPath: 'D:/study',
+        createdAt: '2026-01-01T00:00:00.000Z',
+        lastModifiedAt: '2026-01-01T00:00:00.000Z'
+      },
+      questionnaire: baseQnaire()
+    }
+    const handlers = new Map<
+      string,
+      (event: IpcInvokeEventLike, request?: unknown) => Promise<unknown>
+    >()
+    const sessionService = { authorize: vi.fn(authorize) }
+    registerDerivedIpc(
+      {
+        handle: (channel, handler) => handlers.set(channel, handler),
+        removeHandler: () => undefined
+      },
+      state,
+      { sessionService },
+      packagedRendererUrl
+    )
+    return { handlers, sessionService, state }
+  }
+
+  it('rejects every derived operation before parsing or reading when the admin session is absent', async () => {
+    const { handlers, sessionService, state } = setup(() => {
+      throw new Error('ADMIN_SESSION_REQUIRED')
+    })
+    const before = structuredClone(state.currentProject!.questionnaire)
+
+    for (const channel of ALL_DERIVED_CHANNELS) {
+      await expect(handlers.get(channel)!(trustedEvent)).rejects.toThrow(
+        'ADMIN_SESSION_REQUIRED'
+      )
+    }
+
+    expect(sessionService.authorize).toHaveBeenCalledTimes(ALL_DERIVED_CHANNELS.length)
+    expect(state.currentProject!.questionnaire).toEqual(before)
+  })
+
+  it('lists derived variables after sender trust and admin authorization succeed', async () => {
+    const { handlers, sessionService } = setup(() => ({ isAuthenticated: true }))
+
+    await expect(handlers.get(DERIVED_GET_ALL_CHANNEL)!(trustedEvent)).resolves.toEqual({
+      ok: true,
+      derivedVariables: []
+    })
+    expect(sessionService.authorize).toHaveBeenCalledOnce()
+
+    await expect(handlers.get(DERIVED_GET_ALL_CHANNEL)!({
+      senderFrame: { url: 'https://attacker.invalid' }
+    })).rejects.toThrow('UNTRUSTED_IPC_SENDER')
+    expect(sessionService.authorize).toHaveBeenCalledOnce()
   })
 })

@@ -12,7 +12,11 @@ import {
 } from '@renderer/stores/preferences-store'
 import { DEFAULT_PREFERENCES, type PreferencesV1 } from '@shared/preferences-contract'
 
-function renderShell(path = '/entry', currentTitle = '录入页元数据标题') {
+function renderShell(
+  path = '/entry',
+  currentTitle = '录入页元数据标题',
+  aiConfig = { baseUrl: '', model: '', hasApiKey: false, maskedApiKey: null as string | null }
+) {
   const configUpdate = vi.fn()
   Object.defineProperty(window, 'easyEpi', {
     configurable: true,
@@ -30,7 +34,7 @@ function renderShell(path = '/entry', currentTitle = '录入页元数据标题')
         config: {
           get: vi.fn().mockResolvedValue({
             ok: true,
-            config: { baseUrl: '', model: '', hasApiKey: false, maskedApiKey: null }
+            config: aiConfig
           }),
           update: configUpdate,
           clear: vi.fn(),
@@ -161,6 +165,38 @@ describe('AppShell', () => {
       }
     })
     expect(await screen.findByText('AI 服务配置已保存。')).toBeVisible()
+  })
+
+  it('requires a fresh API key after the provider URL changes', async () => {
+    const user = userEvent.setup()
+    const { configUpdate } = renderShell('/entry', '录入页元数据标题', {
+      baseUrl: 'https://first.example/v1',
+      model: 'model-a',
+      hasApiKey: true,
+      maskedApiKey: '••••••••'
+    })
+    configUpdate.mockResolvedValue({
+      ok: true,
+      config: {
+        baseUrl: 'https://second.example/v1',
+        model: 'model-a',
+        hasApiKey: false,
+        maskedApiKey: null
+      }
+    })
+
+    await user.click(screen.getByRole('button', { name: '打开设置' }))
+    const baseUrl = await screen.findByRole('textbox', { name: 'Base URL' })
+    await user.clear(baseUrl)
+    await user.type(baseUrl, 'https://second.example/v1')
+
+    expect(screen.getByText('服务地址变化后需重新输入 API Key')).toBeVisible()
+    await user.click(screen.getByRole('button', { name: '保存' }))
+    await waitFor(() => expect(configUpdate).toHaveBeenCalledWith({
+      baseUrl: 'https://second.example/v1',
+      model: 'model-a'
+    }))
+    expect(await screen.findByText('未配置 API Key。')).toBeVisible()
   })
 
   it('keeps all destinations in a labelled compact navigation menu', async () => {

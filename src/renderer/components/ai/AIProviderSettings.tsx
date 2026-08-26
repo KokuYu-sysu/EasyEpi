@@ -22,6 +22,7 @@ export function AIProviderSettings() {
   const [dirty, setDirty] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [status, setStatus] = useState<string | null>(null)
+  const baseUrlChanged = baseUrl.trim() !== saved.baseUrl
 
   const adopt = useCallback((config: AIProviderConfigView) => {
     setSaved(config)
@@ -157,12 +158,23 @@ export function AIProviderSettings() {
             label="API Key"
             type="password"
             value={apiKey}
-            placeholder={saved.hasApiKey ? '已安全保存；留空将保留原 Key' : '请输入 API Key'}
+            placeholder={saved.hasApiKey && !baseUrlChanged
+              ? '已安全保存；留空将保留原 Key'
+              : '请输入 API Key'}
             autoComplete="new-password"
             disabled={busy}
             hint="为保护凭据，已保存的 Key 不会回显。"
             onChange={(event) => { setApiKey(event.target.value); markDirty() }}
           />
+          {baseUrlChanged ? (
+            <p role="status" className="m-0 text-[length:var(--font-size-sm)] text-[var(--color-warning)]">
+              服务地址变化后需重新输入 API Key
+            </p>
+          ) : !saved.hasApiKey ? (
+            <p className="m-0 text-[length:var(--font-size-sm)] text-[var(--color-text-secondary)]">
+              未配置 API Key。
+            </p>
+          ) : null}
           {error ? <p role="alert" className="m-0 text-[var(--color-danger)]">{error}</p> : null}
           {status ? <p role="status" className="m-0 text-[var(--color-success)]">{status}</p> : null}
           <div className="flex flex-wrap justify-end gap-[var(--space-2)]">

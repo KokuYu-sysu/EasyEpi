@@ -266,7 +266,9 @@ export function createAIConfigService(
       let privacyNoticeVersion: number | undefined
       try {
         const current = await readStored()
-        encryptedApiKey = current.encryptedApiKey
+        encryptedApiKey = validated.baseUrl === current.baseUrl
+          ? current.encryptedApiKey
+          : undefined
         privacyAcceptedAt = current.privacyAcceptedAt
         privacyNoticeVersion = current.privacyNoticeVersion
       } catch {
@@ -275,9 +277,7 @@ export function createAIConfigService(
 
       if (validated.apiKey !== undefined) {
         const key = validated.apiKey?.trim() ?? ''
-        if (key.length === 0) {
-          encryptedApiKey = undefined
-        } else {
+        if (key.length > 0) {
           let storage: AISecureStorage
           try {
             storage = await secureStorage()

@@ -134,6 +134,7 @@ void app.whenReady().then(() => {
   disposeDerivedIpc = registerDerivedIpc(
     ipcMain,
     projectState,
+    { sessionService: adminSessionService },
     packagedRendererUrl,
     developmentUrl
   )
