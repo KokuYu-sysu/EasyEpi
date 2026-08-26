@@ -1,5 +1,5 @@
 import * as R from '@radix-ui/react-dialog'
-import { type ReactElement, type ReactNode } from 'react'
+import { type ReactElement, type ReactNode, type RefObject } from 'react'
 export interface ModalProps {
   /** Custom triggers must forward their ref and received event/ARIA props. */
   trigger?: ReactElement
@@ -10,8 +10,17 @@ export interface ModalProps {
   defaultOpen?: boolean
   onOpenChange?: (v: boolean) => void
   className?: string
+  restoreFocusRef?: RefObject<HTMLElement>
 }
-export function Modal({ trigger, title, description, children, className, ...props }: ModalProps) {
+export function Modal({
+  trigger,
+  title,
+  description,
+  children,
+  className,
+  restoreFocusRef,
+  ...props
+}: ModalProps) {
   return (
     <R.Root {...props}>
       {trigger ? <R.Trigger asChild>{trigger}</R.Trigger> : null}
@@ -19,6 +28,12 @@ export function Modal({ trigger, title, description, children, className, ...pro
         <R.Overlay className="fixed inset-0 z-[var(--z-3)] bg-[var(--color-surface-overlay)]" />
         <R.Content
           tabIndex={-1}
+          onCloseAutoFocus={(event) => {
+            if (trigger === undefined && restoreFocusRef?.current) {
+              event.preventDefault()
+              restoreFocusRef.current.focus()
+            }
+          }}
           className={[
             'fixed left-1/2 top-1/2 z-[var(--z-4)] w-[min(32rem,calc(100%-2rem))] -translate-x-1/2 -translate-y-1/2 rounded-[var(--radius-2)] bg-[var(--color-surface-raised)] p-[var(--space-5)] shadow-[var(--shadow-z4)]',
             className

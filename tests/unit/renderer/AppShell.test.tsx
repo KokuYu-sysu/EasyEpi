@@ -13,6 +13,7 @@ import {
 import { DEFAULT_PREFERENCES, type PreferencesV1 } from '@shared/preferences-contract'
 
 function renderShell(path = '/entry', currentTitle = '录入页元数据标题') {
+  const configUpdate = vi.fn()
   Object.defineProperty(window, 'easyEpi', {
     configurable: true,
     value: {
@@ -31,7 +32,7 @@ function renderShell(path = '/entry', currentTitle = '录入页元数据标题')
             ok: true,
             config: { baseUrl: '', model: '', hasApiKey: false, maskedApiKey: null }
           }),
-          update: vi.fn(),
+          update: configUpdate,
           clear: vi.fn(),
           testConnection: vi.fn()
         }
@@ -72,7 +73,7 @@ function renderShell(path = '/entry', currentTitle = '录入页元数据标题')
       </ToastProvider>
     </PreferencesProvider>
   )
-  return { store, update }
+  return { store, update, configUpdate }
 }
 
 describe('AppShell', () => {
@@ -107,7 +108,7 @@ describe('AppShell', () => {
 
   it('persists sidebar, theme, large-text, and settings choices through the store', async () => {
     const user = userEvent.setup()
-    const { store, update } = renderShell()
+    const { store, update, configUpdate } = renderShell()
     await waitFor(() => expect(store.getState().status).toBe('ready'))
 
     await user.click(screen.getByRole('button', { name: '收起侧栏' }))
@@ -137,6 +138,29 @@ describe('AppShell', () => {
     await waitFor(() =>
       expect(update).toHaveBeenCalledWith(expect.objectContaining({ theme: 'dark' }))
     )
+
+    let resolveConfigUpdate!: (value: {
+      ok: true
+      config: { baseUrl: string; model: string; hasApiKey: boolean; maskedApiKey: string }
+    }) => void
+    configUpdate.mockReturnValue(new Promise((resolve) => { resolveConfigUpdate = resolve }))
+    await user.type(screen.getByRole('textbox', { name: 'Base URL' }), 'https://example.test/v1')
+    await user.type(screen.getByRole('textbox', { name: '模型名称' }), 'model-a')
+    await user.type(screen.getByLabelText('API Key'), 'secret-value')
+    await user.click(screen.getByRole('button', { name: '保存' }))
+    expect(screen.getByRole('textbox', { name: 'Base URL' })).toBeDisabled()
+    expect(screen.getByRole('textbox', { name: '模型名称' })).toBeDisabled()
+    expect(screen.getByLabelText('API Key')).toBeDisabled()
+    resolveConfigUpdate({
+      ok: true,
+      config: {
+        baseUrl: 'https://example.test/v1',
+        model: 'model-a',
+        hasApiKey: true,
+        maskedApiKey: '••••••••'
+      }
+    })
+    expect(await screen.findByText('AI 服务配置已保存。')).toBeVisible()
   })
 
   it('keeps all destinations in a labelled compact navigation menu', async () => {

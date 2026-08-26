@@ -12,11 +12,7 @@ const EMPTY_CONFIG: AIProviderConfigView = {
   maskedApiKey: null
 }
 
-export interface AIProviderSettingsProps {
-  onConfigChange?: (config: AIProviderConfigView) => void
-}
-
-export function AIProviderSettings({ onConfigChange }: AIProviderSettingsProps) {
+export function AIProviderSettings() {
   const [saved, setSaved] = useState<AIProviderConfigView>(EMPTY_CONFIG)
   const [baseUrl, setBaseUrl] = useState('')
   const [model, setModel] = useState('')
@@ -33,8 +29,7 @@ export function AIProviderSettings({ onConfigChange }: AIProviderSettingsProps) 
     setModel(config.model)
     setApiKey('')
     setDirty(false)
-    onConfigChange?.(config)
-  }, [onConfigChange])
+  }, [])
 
   useEffect(() => {
     let active = true
@@ -147,6 +142,7 @@ export function AIProviderSettings({ onConfigChange }: AIProviderSettingsProps) 
             value={baseUrl}
             placeholder="https://api.example.com/v1"
             autoComplete="url"
+            disabled={busy}
             onChange={(event) => { setBaseUrl(event.target.value); markDirty() }}
           />
           <Input
@@ -154,6 +150,7 @@ export function AIProviderSettings({ onConfigChange }: AIProviderSettingsProps) 
             value={model}
             placeholder="model-name"
             autoComplete="off"
+            disabled={busy}
             onChange={(event) => { setModel(event.target.value); markDirty() }}
           />
           <Input
@@ -162,6 +159,7 @@ export function AIProviderSettings({ onConfigChange }: AIProviderSettingsProps) 
             value={apiKey}
             placeholder={saved.hasApiKey ? '已安全保存；留空将保留原 Key' : '请输入 API Key'}
             autoComplete="new-password"
+            disabled={busy}
             hint="为保护凭据，已保存的 Key 不会回显。"
             onChange={(event) => { setApiKey(event.target.value); markDirty() }}
           />

@@ -1,5 +1,6 @@
 import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+import { useRef, useState } from 'react'
 import { ConfirmDialog, Modal, ToastProvider, Tooltip, useToast } from '@renderer/components/ui'
 
 function ToastDemo() {
@@ -31,16 +32,35 @@ test('modal and confirm manage safe focus', async () => {
   expect(screen.getByRole('button', { name: '取消' })).toHaveFocus()
 })
 
-test('controlled modal does not require a trigger', () => {
+function ControlledModalDemo() {
+  const [open, setOpen] = useState(true)
+  const restoreRef = useRef<HTMLButtonElement>(null)
+  return (
+    <>
+      <button ref={restoreRef}>编辑器</button>
+      <Modal
+        open={open}
+        onOpenChange={setOpen}
+        restoreFocusRef={restoreRef}
+        title="受控对话框"
+        description="由外部状态控制"
+      >
+        内容
+      </Modal>
+    </>
+  )
+}
+
+test('controlled modal does not require a trigger and restores explicit focus', async () => {
+  const user = userEvent.setup()
   render(
-    <Modal open title="受控对话框" description="由外部状态控制">
-      内容
-    </Modal>
+    <ControlledModalDemo />
   )
 
   expect(screen.getByRole('dialog', { name: '受控对话框' })).toBeVisible()
-  expect(screen.getAllByRole('button')).toHaveLength(1)
   expect(screen.getByRole('button', { name: '关闭对话框' })).toBeVisible()
+  await user.click(screen.getByRole('button', { name: '关闭对话框' }))
+  expect(screen.getByRole('button', { name: '编辑器' })).toHaveFocus()
 })
 
 test('tooltip and toast provide supplemental status', async () => {

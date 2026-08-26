@@ -46,6 +46,7 @@ import {
 } from '@shared/types/qnaire'
 
 const PAGE_SIZE = 50
+const ATTACHMENT_BATCH_SIZE = 20
 
 interface QuestionnaireAttachmentPreview {
   snapshot: Omit<QuestionnaireDef, 'derivedVariables'>
@@ -57,6 +58,11 @@ interface ActiveArtifact {
   artifactId: string
   operationId: string
   preview: AIArtifactPreview
+}
+
+interface ArtifactApplicability {
+  artifactId: string
+  applicable: boolean
 }
 
 interface PendingSendIntent {
@@ -172,13 +178,20 @@ function mergeAttachments(...groups: AIPublicAttachmentSummary[][]): AIPublicAtt
   return [...byId.values()]
 }
 
+function isTerminalArtifactError(code: string | undefined): boolean {
+  return code === 'AI_ARTIFACT_STALE' || code === 'AI_ARTIFACT_NOT_APPLICABLE' ||
+    code === 'AI_ARTIFACT_DERIVED_CONFLICT'
+}
+
 function ArtifactPreviewCard({
   artifact,
   applying,
+  requiresRegeneration,
   onApply
 }: {
   artifact: ActiveArtifact
   applying: boolean
+  requiresRegeneration: boolean
   onApply(): void
 }) {
   const { preview } = artifact
@@ -193,7 +206,9 @@ function ArtifactPreviewCard({
             {preview.rollingSummary}
           </p>
         </div>
-        <Badge variant="success">本地校验通过</Badge>
+        <Badge variant={requiresRegeneration ? 'warning' : 'success'}>
+          {requiresRegeneration ? '需重新生成' : '本地校验通过'}
+        </Badge>
       </CardHeader>
       <CardContent className="grid gap-[var(--space-4)]">
         <p className="m-0 rounded-[var(--radius-1)] bg-[var(--color-brand-soft)] p-[var(--space-3)]">
@@ -235,9 +250,14 @@ function ArtifactPreviewCard({
             <p className="mb-0 text-[length:var(--font-size-sm)]">修改：{preview.diff.questions.modified.map(({ variableName, fields }) => `${variableName}（${fields.join('、')}）`).join('；')}</p>
           ) : null}
         </section>
+        {requiresRegeneration ? (
+          <p role="status" className="m-0 rounded-[var(--radius-1)] bg-[var(--color-warning-soft)] p-[var(--space-3)]">
+            正式问卷或草稿状态已变化，需重新生成后才能应用。
+          </p>
+        ) : null}
         <div className="flex justify-end">
           <ConfirmDialog
-            trigger={<Button loading={applying}>应用到正式问卷</Button>}
+            trigger={<Button loading={applying} disabled={applying || requiresRegeneration}>应用到正式问卷</Button>}
             title="应用 AI 问卷草稿"
             description="应用前会自动创建项目备份，并保留现有衍生变量。确定将此草稿应用到正式问卷吗？"
             confirmLabel="确认应用"
@@ -274,16 +294,28 @@ export function AIQuestionnairePage() {
   const [includeCurrentQuestionnaire, setIncludeCurrentQuestionnaire] = useState(false)
   const [confirmedAttachmentFingerprint, setConfirmedAttachmentFingerprint] = useState<string | null>(null)
   const [activeArtifact, setActiveArtifact] = useState<ActiveArtifact | null>(null)
+  const [artifactApplicability, setArtifactApplicability] = useState<ArtifactApplicability | null>(null)
+  const [visibleQuestionCount, setVisibleQuestionCount] = useState(ATTACHMENT_BATCH_SIZE)
+  const [visibleRuleCount, setVisibleRuleCount] = useState(ATTACHMENT_BATCH_SIZE)
   const [renameOpen, setRenameOpen] = useState(false)
   const [renameTitle, setRenameTitle] = useState('')
   const [announcement, setAnnouncement] = useState('')
   const generationRef = useRef(0)
   const configRequestRef = useRef(0)
+  const artifactPreviewRequestRef = useRef(0)
+  const artifactPreviewTargetRef = useRef<{
+    token: number
+    sessionId: string
+    artifactId: string
+    operationId: string
+  } | null>(null)
   const activeSessionIdRef = useRef<string | null>(null)
+  const activeArtifactRef = useRef<ActiveArtifact | null>(null)
   const mountedRef = useRef(true)
   const pendingSendRef = useRef<PendingSendIntent | null>(null)
   const privacyBusyRef = useRef(false)
   const activeRequestIdRef = useRef<string | null>(null)
+  const textareaRef = useRef<HTMLTextAreaElement>(null)
   const toast = useToast()
 
   const refreshAIConfig = useCallback(async () => {
@@ -302,6 +334,22 @@ export function AIQuestionnairePage() {
     mountedRef.current && generationRef.current === generation &&
     (sessionId === undefined || activeSessionIdRef.current === sessionId), [])
 
+  const commitActiveArtifact = useCallback((artifact: ActiveArtifact | null) => {
+    activeArtifactRef.current = artifact
+    setActiveArtifact(artifact)
+  }, [])
+
+  const invalidateArtifactPreview = useCallback(() => {
+    artifactPreviewRequestRef.current += 1
+    artifactPreviewTargetRef.current = null
+  }, [])
+
+  const focusTextarea = useCallback((generation: number, sessionId: string) => {
+    void Promise.resolve().then(() => {
+      if (isCurrent(generation, sessionId)) textareaRef.current?.focus({ preventScroll: true })
+    })
+  }, [isCurrent])
+
   const setPrivacyBusySynchronized = useCallback((busy: boolean) => {
     privacyBusyRef.current = busy
     setPrivacyBusy(busy)
@@ -318,11 +366,15 @@ export function AIQuestionnairePage() {
     setSessionPage(null)
     setMessages([])
     setMessageOffset(0)
-    setActiveArtifact(null)
+    invalidateArtifactPreview()
+    commitActiveArtifact(null)
+    setArtifactApplicability(null)
     setIncludeCurrentQuestionnaire(false)
     setConfirmedAttachmentFingerprint(null)
     setAttachmentPreview(null)
     setAttachmentNotice(null)
+    setVisibleQuestionCount(ATTACHMENT_BATCH_SIZE)
+    setVisibleRuleCount(ATTACHMENT_BATCH_SIZE)
     setAttachmentOpen(false)
     setAttachmentLoading(false)
     setDraft('')
@@ -338,7 +390,7 @@ export function AIQuestionnairePage() {
     setPrivacyOpen(false)
     setRenameOpen(false)
     setRenameTitle('')
-  }, [])
+  }, [commitActiveArtifact, invalidateArtifactPreview])
 
   const activateSession = useCallback((sessionId: string | null) => {
     if (activeSessionIdRef.current === sessionId) return
@@ -422,15 +474,36 @@ export function AIQuestionnairePage() {
     operationId: string,
     generation = generationRef.current
   ) => {
+    const token = ++artifactPreviewRequestRef.current
+    const target = { token, sessionId, artifactId, operationId }
+    artifactPreviewTargetRef.current = target
+    if (activeArtifactRef.current?.artifactId !== artifactId) {
+      setArtifactApplicability({ artifactId, applicable: true })
+    }
+    const targetIsCurrent = () => {
+      const current = artifactPreviewTargetRef.current
+      return isCurrent(generation, sessionId) && current?.token === token &&
+        current.sessionId === sessionId && current.artifactId === artifactId &&
+        current.operationId === operationId
+    }
     try {
       const result = await window.easyEpi.ai.artifact.preview({ sessionId, artifactId })
-      if (!isCurrent(generation, sessionId)) return
-      if (result.ok) setActiveArtifact({ sessionId, artifactId, operationId, preview: result.preview })
-      else handleFailure(result.errorCode, '无法读取 AI 草稿。')
+      if (!targetIsCurrent()) return
+      if (result.ok) {
+        commitActiveArtifact({ sessionId, artifactId, operationId, preview: result.preview })
+        setArtifactApplicability({ artifactId, applicable: true })
+      } else {
+        const current = activeArtifactRef.current
+        if (isTerminalArtifactError(result.errorCode) && current?.sessionId === sessionId &&
+          current.artifactId === artifactId && current.operationId === operationId) {
+          setArtifactApplicability({ artifactId, applicable: false })
+        }
+        handleFailure(result.errorCode, '无法读取 AI 草稿。')
+      }
     } catch {
-      if (isCurrent(generation, sessionId)) setError('无法读取 AI 草稿。')
+      if (targetIsCurrent()) setError('无法读取 AI 草稿。')
     }
-  }, [handleFailure, isCurrent])
+  }, [commitActiveArtifact, handleFailure, isCurrent])
 
   const loadLatestSession = useCallback(async (
     sessionId: string,
@@ -463,7 +536,9 @@ export function AIQuestionnairePage() {
       setMessages(result.messages)
       setMessageOffset(offset)
       if (result.activeArtifactId === null) {
-        setActiveArtifact(null)
+        invalidateArtifactPreview()
+        commitActiveArtifact(null)
+        setArtifactApplicability(null)
       } else {
         const summary = result.artifacts.find(({ artifactId }) => artifactId === result.activeArtifactId)
         if (summary !== undefined && summary.status === 'completed') {
@@ -475,7 +550,7 @@ export function AIQuestionnairePage() {
     } finally {
       if (isCurrent(generation, sessionId)) setLoading(false)
     }
-  }, [fetchSessionRange, handleFailure, isCurrent, loadArtifact])
+  }, [commitActiveArtifact, fetchSessionRange, handleFailure, invalidateArtifactPreview, isCurrent, loadArtifact])
 
   const loadSessions = useCallback(async (
     preferredSessionId?: string,
@@ -531,6 +606,7 @@ export function AIQuestionnairePage() {
   }, [activeSessionId, loadLatestSession])
 
   const createSession = async () => {
+    if (sending || applying) return
     const generation = generationRef.current
     setError(null)
     try {
@@ -547,6 +623,7 @@ export function AIQuestionnairePage() {
   const saveRename = async () => {
     const sessionId = activeSessionIdRef.current
     const generation = generationRef.current
+    if (sending || applying) return
     if (sessionId === null || renameTitle.trim().length === 0) {
       setError('请输入对话名称。')
       return
@@ -569,7 +646,7 @@ export function AIQuestionnairePage() {
   const deleteSession = async () => {
     const sessionId = activeSessionIdRef.current
     const generation = generationRef.current
-    if (sessionId === null) return
+    if (sessionId === null || sending || applying) return
     try {
       const result = await window.easyEpi.ai.session.delete({ sessionId })
       if (!isCurrent(generation, sessionId)) return
@@ -615,7 +692,7 @@ export function AIQuestionnairePage() {
   const previewQuestionnaireAttachment = async () => {
     const sessionId = activeSessionIdRef.current
     const generation = generationRef.current
-    if (sessionId === null) return
+    if (sessionId === null || sending || applying) return
     setAttachmentLoading(true)
     setError(null)
     try {
@@ -623,6 +700,8 @@ export function AIQuestionnairePage() {
       if (!isCurrent(generation, sessionId)) return
       setAttachmentPreview(createAttachmentPreview(questionnaire))
       setAttachmentNotice(null)
+      setVisibleQuestionCount(ATTACHMENT_BATCH_SIZE)
+      setVisibleRuleCount(ATTACHMENT_BATCH_SIZE)
       setConfirmedAttachmentFingerprint(null)
       setIncludeCurrentQuestionnaire(false)
       setAttachmentOpen(true)
@@ -641,12 +720,14 @@ export function AIQuestionnairePage() {
     generation: number
   ) => {
     if (!isCurrent(generation, sessionId)) return
-    setActiveArtifact({
+    invalidateArtifactPreview()
+    commitActiveArtifact({
       sessionId,
       artifactId: artifact.artifactId,
       operationId: artifact.operationId,
       preview: artifact.value
     })
+    setArtifactApplicability({ artifactId: artifact.artifactId, applicable: true })
     await Promise.all([
       loadLatestSession(sessionId, generation),
       loadSessions(sessionId, generation),
@@ -666,6 +747,8 @@ export function AIQuestionnairePage() {
       setAttachmentNotice('当前问卷已发生变化，请核对更新后的完整快照并重新确认。')
       setConfirmedAttachmentFingerprint(null)
       setIncludeCurrentQuestionnaire(false)
+      setVisibleQuestionCount(ATTACHMENT_BATCH_SIZE)
+      setVisibleRuleCount(ATTACHMENT_BATCH_SIZE)
       setAttachmentOpen(true)
       releasePendingSend(intent)
       return false
@@ -723,6 +806,7 @@ export function AIQuestionnairePage() {
           setAttachmentPreview(null)
           setAttachmentNotice(null)
           setSending(false)
+          focusTextarea(intent.generation, intent.sessionId)
         }
         releasePendingSend(intent)
       }
@@ -765,7 +849,7 @@ export function AIQuestionnairePage() {
     const sessionId = activeSessionIdRef.current
     const generation = generationRef.current
     const content = draft
-    if (sessionId === null || content.trim().length === 0 || sending || configMissing ||
+    if (sessionId === null || content.trim().length === 0 || sending || applying || configMissing ||
       sessionPage?.status === 'running') return
     if (includeCurrentQuestionnaire && confirmedAttachmentFingerprint === null) {
       setError('请先确认当前问卷的发送预览。')
@@ -786,8 +870,10 @@ export function AIQuestionnairePage() {
   }
 
   const rejectPrivacy = () => {
+    const intent = pendingSendRef.current
     setPrivacyOpen(false)
     releasePendingSend()
+    if (intent !== null) focusTextarea(intent.generation, intent.sessionId)
   }
 
   const acceptPrivacyAndSend = async () => {
@@ -837,8 +923,15 @@ export function AIQuestionnairePage() {
     const sessionId = activeSessionIdRef.current
     const generation = generationRef.current
     if (sessionId === null || activeArtifact === null ||
-      activeArtifact.sessionId !== sessionId || applying) return
+      activeArtifact.sessionId !== sessionId || applying || sending ||
+      (artifactApplicability?.artifactId === activeArtifact.artifactId &&
+        !artifactApplicability.applicable)) return
     const artifact = activeArtifact
+    const artifactIdentityIsCurrent = () => {
+      const current = activeArtifactRef.current
+      return isCurrent(generation, sessionId) && current?.sessionId === sessionId &&
+        current.artifactId === artifact.artifactId && current.operationId === artifact.operationId
+    }
     setApplying(true)
     setError(null)
     try {
@@ -847,9 +940,15 @@ export function AIQuestionnairePage() {
         artifactId: artifact.artifactId,
         operationId: artifact.operationId
       })
-      if (!isCurrent(generation, sessionId)) return
-      if (!result.ok) return handleFailure(result.errorCode, '无法应用 AI 草稿。')
-      setActiveArtifact((current) => current === null ? null : { ...current, preview: result.preview })
+      if (!artifactIdentityIsCurrent()) return
+      if (!result.ok) {
+        if (isTerminalArtifactError(result.errorCode)) {
+          setArtifactApplicability({ artifactId: artifact.artifactId, applicable: false })
+        }
+        handleFailure(result.errorCode, '无法应用 AI 草稿。')
+        return
+      }
+      commitActiveArtifact({ ...artifact, preview: result.preview })
       toast.push({
         title: result.applied ? 'AI 草稿已应用到正式问卷' : '此草稿已应用',
         description: result.applied ? '应用前备份已保留，衍生变量未被覆盖。' : undefined,
@@ -862,7 +961,7 @@ export function AIQuestionnairePage() {
         loadArtifact(sessionId, artifact.artifactId, artifact.operationId, generation)
       ])
     } catch {
-      if (isCurrent(generation, sessionId)) {
+      if (artifactIdentityIsCurrent()) {
         setError('无法应用 AI 草稿，草稿仍保留供查看。')
       }
     } finally {
@@ -871,7 +970,11 @@ export function AIQuestionnairePage() {
   }
 
   const activeSession = sessions.find(({ sessionId }) => sessionId === activeSessionId)
-  const canSend = activeSessionId !== null && draft.trim().length > 0 && !sending &&
+  const sessionOperationsLocked = sending || applying
+  const activeArtifactRequiresRegeneration = activeArtifact !== null &&
+    artifactApplicability?.artifactId === activeArtifact.artifactId &&
+    !artifactApplicability.applicable
+  const canSend = activeSessionId !== null && draft.trim().length > 0 && !sending && !applying &&
     !pendingSend && !privacyBusy &&
     !projectBlocked && !configMissing && sessionPage?.status !== 'running'
 
@@ -879,7 +982,7 @@ export function AIQuestionnairePage() {
     <MilestonePage
       title="AI 问卷助手"
       description="通过多轮对话生成、校验并安全应用问卷草稿。"
-      actions={<Button onClick={() => void createSession()} disabled={projectBlocked}><MessageSquarePlus aria-hidden="true" size={18} />新建对话</Button>}
+      actions={<Button onClick={() => void createSession()} disabled={projectBlocked || sessionOperationsLocked}><MessageSquarePlus aria-hidden="true" size={18} />新建对话</Button>}
     >
       <p className="sr-only" aria-live="polite" aria-atomic="true">{announcement}</p>
       {configMissing ? (
@@ -910,7 +1013,7 @@ export function AIQuestionnairePage() {
                 <EmptyState
                   title="还没有 AI 对话"
                   description="新建对话后即可开始设计问卷。"
-                  action={<Button onClick={() => void createSession()}>新建第一个对话</Button>}
+                  action={<Button onClick={() => void createSession()} disabled={sessionOperationsLocked}>新建第一个对话</Button>}
                 />
               ) : (
                 <ul aria-label="AI 对话列表" className="m-0 grid list-none gap-[var(--space-2)] p-0">
@@ -920,7 +1023,10 @@ export function AIQuestionnairePage() {
                         className="w-full justify-start text-left"
                         variant={item.sessionId === activeSessionId ? 'secondary' : 'ghost'}
                         aria-pressed={item.sessionId === activeSessionId}
-                        onClick={() => activateSession(item.sessionId)}
+                        disabled={sessionOperationsLocked}
+                        onClick={() => {
+                          if (!sessionOperationsLocked) activateSession(item.sessionId)
+                        }}
                       >
                         <span className="min-w-0 truncate">{item.title}</span>
                       </Button>
@@ -930,9 +1036,13 @@ export function AIQuestionnairePage() {
               )}
               {activeSession ? (
                 <div className="flex flex-wrap gap-[var(--space-2)] border-t border-[var(--color-border-default)] pt-[var(--space-3)]">
-                  <Button size="sm" variant="ghost" onClick={() => { setRenameTitle(activeSession.title); setRenameOpen(true) }} aria-label="重命名当前对话"><Pencil aria-hidden="true" size={16} />重命名</Button>
+                  <Button size="sm" variant="ghost" disabled={sessionOperationsLocked} onClick={() => {
+                    if (sessionOperationsLocked) return
+                    setRenameTitle(activeSession.title)
+                    setRenameOpen(true)
+                  }} aria-label="重命名当前对话"><Pencil aria-hidden="true" size={16} />重命名</Button>
                   <ConfirmDialog
-                    trigger={<Button size="sm" variant="danger"><Trash2 aria-hidden="true" size={16} />删除</Button>}
+                    trigger={<Button size="sm" variant="danger" disabled={sessionOperationsLocked}><Trash2 aria-hidden="true" size={16} />删除</Button>}
                     title="删除 AI 对话"
                     description={`确定删除「${activeSession.title}」吗？该对话及其草稿将无法恢复。`}
                     confirmLabel="确认删除"
@@ -982,32 +1092,47 @@ export function AIQuestionnairePage() {
                   </CardContent>
                 </Card>
 
-                {activeArtifact?.sessionId === activeSessionId ? <ArtifactPreviewCard artifact={activeArtifact} applying={applying} onApply={() => void applyArtifact()} /> : null}
+                {activeArtifact?.sessionId === activeSessionId ? (
+                  <ArtifactPreviewCard
+                    artifact={activeArtifact}
+                    applying={applying}
+                    requiresRegeneration={activeArtifactRequiresRegeneration}
+                    onApply={() => void applyArtifact()}
+                  />
+                ) : null}
 
                 <Card>
                   <CardContent className="grid gap-[var(--space-3)] pt-[var(--space-5)]">
                     {includeCurrentQuestionnaire && attachmentPreview ? (
                       <div className="flex flex-wrap items-center justify-between gap-[var(--space-2)] rounded-[var(--radius-1)] border border-[var(--color-info)] bg-[var(--color-info-soft)] p-[var(--space-3)]">
                         <span>本次发送将加入当前问卷：{attachmentPreview.snapshot.name}</span>
-                        <Button size="sm" variant="ghost" aria-label="移除当前问卷附件" onClick={() => { setIncludeCurrentQuestionnaire(false); setConfirmedAttachmentFingerprint(null); setAttachmentPreview(null); setAttachmentNotice(null) }}><X aria-hidden="true" size={16} />移除</Button>
+                        <Button size="sm" variant="ghost" disabled={sessionOperationsLocked} aria-label="移除当前问卷附件" onClick={() => {
+                          if (sessionOperationsLocked) return
+                          setIncludeCurrentQuestionnaire(false)
+                          setConfirmedAttachmentFingerprint(null)
+                          setAttachmentPreview(null)
+                          setAttachmentNotice(null)
+                        }}><X aria-hidden="true" size={16} />移除</Button>
                       </div>
                     ) : null}
                     <Textarea
+                      ref={textareaRef}
                       label="给 AI 的消息"
                       value={draft}
-                      disabled={sending || privacyBusy}
+                      disabled={sending || applying || privacyBusy}
                       placeholder="例如：为社区高血压筛查设计一份简洁问卷……"
                       hint="Enter 发送，Shift+Enter 换行。只有对话内容和你明确加入的当前问卷会发送。"
                       onChange={(event) => setDraft(event.target.value)}
                       onKeyDown={(event) => {
-                        if (event.key === 'Enter' && !event.shiftKey) {
+                        if (event.key === 'Enter' && !event.shiftKey &&
+                          !event.nativeEvent.isComposing) {
                           event.preventDefault()
                           void startSend()
                         }
                       }}
                     />
                     <div className="flex flex-wrap justify-between gap-[var(--space-2)]">
-                      <Button variant="secondary" loading={attachmentLoading} disabled={sending || pendingSend || privacyBusy || includeCurrentQuestionnaire} onClick={() => void previewQuestionnaireAttachment()}><Paperclip aria-hidden="true" size={16} />加入当前问卷</Button>
+                      <Button variant="secondary" loading={attachmentLoading} disabled={sending || applying || pendingSend || privacyBusy || includeCurrentQuestionnaire} onClick={() => void previewQuestionnaireAttachment()}><Paperclip aria-hidden="true" size={16} />加入当前问卷</Button>
                       {sending ? (
                         <Button variant="danger" onClick={() => void cancelSend()}><Square aria-hidden="true" size={14} />取消生成</Button>
                       ) : (
@@ -1026,6 +1151,7 @@ export function AIQuestionnairePage() {
         title="AI 隐私确认"
         description={AI_PRIVACY_NOTICE}
         open={privacyOpen}
+        restoreFocusRef={textareaRef}
         onOpenChange={(open) => {
           setPrivacyOpen(open)
           if (!open) releasePendingSend()
@@ -1045,6 +1171,7 @@ export function AIQuestionnairePage() {
         description="请确认本次发送将包含的问卷摘要。"
         open={attachmentOpen}
         onOpenChange={setAttachmentOpen}
+        restoreFocusRef={textareaRef}
         className="max-h-[calc(100vh-2rem)] overflow-y-auto break-words [overflow-wrap:anywhere]"
       >
         {attachmentPreview ? (
@@ -1061,7 +1188,7 @@ export function AIQuestionnairePage() {
                 <p className="m-0 text-[var(--color-text-secondary)]">无题目</p>
               ) : (
                 <ol className="m-0 grid gap-[var(--space-3)] pl-[var(--space-5)]">
-                  {attachmentPreview.snapshot.questions.map((question) => (
+                  {attachmentPreview.snapshot.questions.slice(0, visibleQuestionCount).map((question) => (
                     <li key={question.id}>
                       <strong>{question.content}</strong>
                       <p className="mb-0 mt-[var(--space-1)] text-[length:var(--font-size-sm)] text-[var(--color-text-secondary)]">
@@ -1077,6 +1204,15 @@ export function AIQuestionnairePage() {
                   ))}
                 </ol>
               )}
+              {visibleQuestionCount < attachmentPreview.snapshot.questions.length ? (
+                <Button
+                  className="mt-[var(--space-3)]"
+                  variant="ghost"
+                  onClick={() => setVisibleQuestionCount((current) => current + ATTACHMENT_BATCH_SIZE)}
+                >
+                  继续显示更多题目（剩余 {attachmentPreview.snapshot.questions.length - visibleQuestionCount}）
+                </Button>
+              ) : null}
             </section>
             <section aria-labelledby="attachment-rules-title">
               <h4 id="attachment-rules-title" className="mt-0">条件规则完整快照</h4>
@@ -1084,7 +1220,7 @@ export function AIQuestionnairePage() {
                 <p className="m-0 text-[var(--color-text-secondary)]">无条件规则</p>
               ) : (
                 <ul className="m-0 grid gap-[var(--space-3)] pl-[var(--space-5)]">
-                  {attachmentPreview.snapshot.conditionRules.map((rule) => (
+                  {attachmentPreview.snapshot.conditionRules.slice(0, visibleRuleCount).map((rule) => (
                     <li key={rule.id}>
                       <strong>规则 {rule.id}</strong>
                       <p className="mb-0 mt-[var(--space-1)] text-[length:var(--font-size-sm)]">
@@ -1097,12 +1233,21 @@ export function AIQuestionnairePage() {
                   ))}
                 </ul>
               )}
+              {visibleRuleCount < attachmentPreview.snapshot.conditionRules.length ? (
+                <Button
+                  className="mt-[var(--space-3)]"
+                  variant="ghost"
+                  onClick={() => setVisibleRuleCount((current) => current + ATTACHMENT_BATCH_SIZE)}
+                >
+                  继续显示更多规则（剩余 {attachmentPreview.snapshot.conditionRules.length - visibleRuleCount}）
+                </Button>
+              ) : null}
             </section>
             {attachmentNotice ? <p role="alert" className="m-0 rounded-[var(--radius-1)] bg-[var(--color-danger-soft)] p-[var(--space-3)] text-[var(--color-danger)]">{attachmentNotice}</p> : null}
             <p className="m-0 rounded-[var(--radius-1)] bg-[var(--color-warning-soft)] p-[var(--space-3)]">衍生变量不会发送。</p>
             <div className="flex justify-end gap-[var(--space-2)]">
-              <Button variant="secondary" onClick={() => setAttachmentOpen(false)}>取消</Button>
-              <Button onClick={() => { setConfirmedAttachmentFingerprint(attachmentPreview.fingerprint); setIncludeCurrentQuestionnaire(true); setAttachmentNotice(null); setAttachmentOpen(false) }}>确认加入</Button>
+              <Button variant="secondary" disabled={sessionOperationsLocked} onClick={() => setAttachmentOpen(false)}>取消</Button>
+              <Button disabled={sessionOperationsLocked} onClick={() => { setConfirmedAttachmentFingerprint(attachmentPreview.fingerprint); setIncludeCurrentQuestionnaire(true); setAttachmentNotice(null); setAttachmentOpen(false) }}>确认加入</Button>
             </div>
           </div>
         ) : null}
@@ -1113,12 +1258,13 @@ export function AIQuestionnairePage() {
         description="输入便于识别的对话名称。"
         open={renameOpen}
         onOpenChange={setRenameOpen}
+        restoreFocusRef={textareaRef}
       >
         <div className="grid gap-[var(--space-3)] pt-[var(--space-4)]">
           <Input label="对话名称" value={renameTitle} maxLength={120} onChange={(event) => setRenameTitle(event.target.value)} />
           <div className="flex justify-end gap-[var(--space-2)]">
             <Button variant="secondary" onClick={() => setRenameOpen(false)}>取消</Button>
-            <Button onClick={() => void saveRename()} disabled={renameTitle.trim().length === 0}>保存名称</Button>
+            <Button onClick={() => void saveRename()} disabled={renameTitle.trim().length === 0 || sessionOperationsLocked}>保存名称</Button>
           </div>
         </div>
       </Modal>
