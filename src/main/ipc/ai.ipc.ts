@@ -62,7 +62,8 @@ import {
   applyArtifact,
   createAIQuestionnaireOrchestrator,
   migrateSessionVersion,
-  previewQuestionnaireArtifact
+  previewQuestionnaireArtifact,
+  runWithProjectAIQueue
 } from '../services/ai-questionnaire.orchestrator'
 import { AISessionRepository } from '../services/ai-session.repository'
 import {
@@ -117,6 +118,7 @@ const ERROR_MESSAGES: Readonly<Record<string, string>> = {
   AI_PROJECT_LOCKED: '请先解锁项目。',
   PROJECT_CHANGED: '项目已切换，请重试。',
   AI_SESSION_NOT_FOUND: 'AI 对话不存在。',
+  AI_SESSION_RUNNING: '该对话正在运行，无法清除缓存。',
   AI_RUN_ALREADY_ACTIVE: '该对话已有正在进行的请求。',
   AI_REQUEST_IN_PROGRESS: '该请求正在进行。',
   AI_CANCELLED: 'AI 请求已取消。',
@@ -486,7 +488,34 @@ export function registerAIIpcHandlers(
     trusted(event)
     try {
       const request = parseAISessionIdRequest(rawRequest)
-      const removed = mutateSession((repository) => repository.clearCache(request.sessionId))
+      const captured = captureProject(state)
+      const removed = await runWithProjectAIQueue(captured.project, async () => {
+        if (!isCurrentProject(state, captured)) throw new Error('PROJECT_CHANGED')
+        const repository = new AISessionRepository(captured.project)
+        const session = repository.get(request.sessionId)
+        if (session === undefined) throw new Error('AI_SESSION_NOT_FOUND')
+        if (session.state.status === 'running' || session.state.activeRunId !== undefined) {
+          throw new Error('AI_SESSION_RUNNING')
+        }
+        const snapshot = captured.project.aiAssistant === undefined
+          ? undefined
+          : structuredClone(captured.project.aiAssistant)
+        try {
+          const result = repository.clearCache(request.sessionId)
+          if (result.mutated) {
+            try {
+              persist(captured)
+            } catch (error) {
+              if (error instanceof Error && error.message === 'PROJECT_CHANGED') throw error
+              throw new Error('AI_PERSIST_FAILED', { cause: error })
+            }
+          }
+          return result.value
+        } catch (error) {
+          restoreAssistant(captured.project, snapshot)
+          throw error
+        }
+      })
       return { ok: true, removed } satisfies AISessionClearCacheResult
     } catch (error) {
       return publicError(error)

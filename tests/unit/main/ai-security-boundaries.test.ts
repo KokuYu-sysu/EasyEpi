@@ -13,6 +13,7 @@ import {
   AISessionRepository,
   parseAISessionVirtualPath
 } from '@main/services/ai-session.repository'
+import { runWithProjectAIQueue } from '@main/services/ai-questionnaire.orchestrator'
 import {
   AI_PRIVACY_NOTICE_VERSION,
   parseAISendRequest,
@@ -279,7 +280,7 @@ describe('AI IPC privacy boundary', () => {
     registration.dispose()
   })
 
-  it('clears only the requested session cache and persists only actual removals', async () => {
+  it('serializes cache clearing, rejects running Sessions, and persists only actual removals', async () => {
     const handlers = new Map<string, (event: IpcInvokeEventLike, ...args: unknown[]) => Promise<unknown>>()
     const ipcMain: IpcMainLike = {
       handle: (channel, handler) => handlers.set(channel, handler),
@@ -328,8 +329,27 @@ describe('AI IPC privacy boundary', () => {
       sessionId: first.manifest.sessionId,
       extra: 'rejected'
     })).resolves.toMatchObject({ ok: false, errorCode: 'INVALID_AI_REQUEST' })
-    await expect(handler!(event, { sessionId: first.manifest.sessionId }))
-      .resolves.toEqual({ ok: true, removed: 2 })
+
+    let releaseQueue!: () => void
+    let queueEntered = false
+    const queueBlocker = new Promise<void>((resolve) => { releaseQueue = resolve })
+    const queuedOperation = runWithProjectAIQueue(state.currentProject, async () => {
+      queueEntered = true
+      await queueBlocker
+    })
+    await vi.waitFor(() => expect(queueEntered).toBe(true))
+    let clearSettled = false
+    const clearResult = handler!(event, { sessionId: first.manifest.sessionId })
+      .then((result) => {
+        clearSettled = true
+        return result
+      })
+    await Promise.resolve()
+    expect(clearSettled).toBe(false)
+    expect(repository.get(first.manifest.sessionId)!.cache.values).toEqual({ one: true, two: true })
+    releaseQueue()
+    await queuedOperation
+    await expect(clearResult).resolves.toEqual({ ok: true, removed: 2 })
     expect(saveProject).toHaveBeenCalledTimes(1)
     expect(repository.get(first.manifest.sessionId)!.cache.values).toEqual({})
     expect(repository.get(first.manifest.sessionId)!.conversation.messages)
@@ -338,9 +358,20 @@ describe('AI IPC privacy boundary', () => {
     expect(repository.get(first.manifest.sessionId)!.artifacts).toEqual(beforeArtifacts)
     expect(repository.get(second.manifest.sessionId)!.cache.values).toEqual({ other: true })
 
+    repository.writeVirtual(`session://${first.manifest.sessionId}/cache/values/three`, true, first.manifest.sessionId)
+    repository.updateState(first.manifest.sessionId, { status: 'running' })
+    await expect(handler!(event, { sessionId: first.manifest.sessionId }))
+      .resolves.toMatchObject({ ok: false, errorCode: 'AI_SESSION_RUNNING' })
+    expect(repository.get(first.manifest.sessionId)!.cache.values).toEqual({ three: true })
+    expect(saveProject).toHaveBeenCalledTimes(1)
+
+    repository.updateState(first.manifest.sessionId, { status: 'idle' })
+    await expect(handler!(event, { sessionId: first.manifest.sessionId }))
+      .resolves.toEqual({ ok: true, removed: 1 })
+    expect(saveProject).toHaveBeenCalledTimes(2)
     await expect(handler!(event, { sessionId: first.manifest.sessionId }))
       .resolves.toEqual({ ok: true, removed: 0 })
-    expect(saveProject).toHaveBeenCalledTimes(1)
+    expect(saveProject).toHaveBeenCalledTimes(2)
     registration.dispose()
   })
 

@@ -368,6 +368,9 @@ describe('AIQuestionnairePage boundaries', () => {
     expect(api.ai.privacy.status).not.toHaveBeenCalled()
     await user.click(screen.getByRole('button', { name: '发送消息' }))
     expect(screen.getByRole('button', { name: '发送消息' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: '清除缓存' })).toBeDisabled()
+    await user.click(screen.getByRole('button', { name: '清除缓存' }))
+    expect(api.ai.session.clearCache).not.toHaveBeenCalled()
     await user.keyboard('{Enter}')
     expect(api.ai.privacy.status).toHaveBeenCalledTimes(1)
     resolvePrivacy({
@@ -543,7 +546,10 @@ describe('AIQuestionnairePage boundaries', () => {
       }
     })
     api.ai.artifact.preview.mockResolvedValue({ ok: true, preview })
-    api.ai.session.clearCache.mockResolvedValue({ ok: true, removed: 2 })
+    let resolveClearCache!: (value: { ok: true; removed: number }) => void
+    api.ai.session.clearCache.mockReturnValue(new Promise((resolve) => {
+      resolveClearCache = resolve
+    }))
     renderPage()
 
     expect(await screen.findByText('保留这条对话')).toBeVisible()
@@ -554,6 +560,16 @@ describe('AIQuestionnairePage boundaries', () => {
     await waitFor(() => expect(api.ai.session.clearCache).toHaveBeenCalledWith({
       sessionId: session.sessionId
     }))
+    expect(screen.getByRole('button', { name: '清除缓存' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: '发送消息' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: '加入当前问卷' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: '应用到正式问卷' })).toBeDisabled()
+    expect(screen.getByRole('textbox', { name: '给 AI 的消息' })).toBeDisabled()
+    await user.click(screen.getByRole('button', { name: '发送消息' }))
+    await user.click(screen.getByRole('button', { name: '应用到正式问卷' }))
+    expect(api.ai.send).not.toHaveBeenCalled()
+    expect(api.ai.artifact.apply).not.toHaveBeenCalled()
+    resolveClearCache({ ok: true, removed: 2 })
     expect(screen.getByText('保留这条对话')).toBeVisible()
     expect(screen.getByText('草稿 保留草稿')).toBeVisible()
     expect((await screen.findAllByText(/已清除 2 项可重建缓存/)).length).toBeGreaterThan(0)

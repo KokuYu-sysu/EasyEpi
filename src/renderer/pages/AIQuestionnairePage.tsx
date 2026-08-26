@@ -186,11 +186,13 @@ function isTerminalArtifactError(code: string | undefined): boolean {
 function ArtifactPreviewCard({
   artifact,
   applying,
+  blocked,
   requiresRegeneration,
   onApply
 }: {
   artifact: ActiveArtifact
   applying: boolean
+  blocked: boolean
   requiresRegeneration: boolean
   onApply(): void
 }) {
@@ -257,7 +259,7 @@ function ArtifactPreviewCard({
         ) : null}
         <div className="flex justify-end">
           <ConfirmDialog
-            trigger={<Button loading={applying} disabled={applying || requiresRegeneration}>应用到正式问卷</Button>}
+            trigger={<Button loading={applying} disabled={applying || blocked || requiresRegeneration}>应用到正式问卷</Button>}
             title="应用 AI 问卷草稿"
             description="应用前会自动创建项目备份，并保留现有衍生变量。确定将此草稿应用到正式问卷吗？"
             confirmLabel="确认应用"
@@ -316,6 +318,7 @@ export function AIQuestionnairePage() {
   const mountedRef = useRef(true)
   const pendingSendRef = useRef<PendingSendIntent | null>(null)
   const privacyBusyRef = useRef(false)
+  const clearingCacheRef = useRef(false)
   const activeRequestIdRef = useRef<string | null>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const toast = useToast()
@@ -361,6 +364,11 @@ export function AIQuestionnairePage() {
     setPrivacyBusy(busy)
   }, [])
 
+  const setClearingCacheSynchronized = useCallback((busy: boolean) => {
+    clearingCacheRef.current = busy
+    setClearingCache(busy)
+  }, [])
+
   const releasePendingSend = useCallback((intent?: PendingSendIntent) => {
     if (intent !== undefined && pendingSendRef.current?.requestId !== intent.requestId) return
     pendingSendRef.current = null
@@ -389,6 +397,7 @@ export function AIQuestionnairePage() {
     activeRequestIdRef.current = null
     pendingSendRef.current = null
     privacyBusyRef.current = false
+    clearingCacheRef.current = false
     setSending(false)
     setPendingSend(false)
     setPrivacyBusy(false)
@@ -679,8 +688,9 @@ export function AIQuestionnairePage() {
   const clearSessionCache = async () => {
     const sessionId = activeSessionIdRef.current
     const generation = generationRef.current
-    if (sessionId === null || sending || applying || clearingCache) return
-    setClearingCache(true)
+    if (sessionId === null || sending || activeRequestIdRef.current !== null || applying ||
+      clearingCacheRef.current || pendingSendRef.current !== null || privacyBusyRef.current) return
+    setClearingCacheSynchronized(true)
     setError(null)
     try {
       const result = await window.easyEpi.ai.session.clearCache({ sessionId })
@@ -694,7 +704,7 @@ export function AIQuestionnairePage() {
     } catch {
       if (isCurrent(generation, sessionId)) setError('无法清除当前对话缓存。')
     } finally {
-      if (isCurrent(generation, sessionId)) setClearingCache(false)
+      if (isCurrent(generation, sessionId)) setClearingCacheSynchronized(false)
     }
   }
 
@@ -731,7 +741,8 @@ export function AIQuestionnairePage() {
   const previewQuestionnaireAttachment = async () => {
     const sessionId = activeSessionIdRef.current
     const generation = generationRef.current
-    if (sessionId === null || sending || applying) return
+    if (sessionId === null || sending || applying || clearingCacheRef.current ||
+      pendingSendRef.current !== null || privacyBusyRef.current) return
     setAttachmentLoading(true)
     setError(null)
     try {
@@ -805,7 +816,7 @@ export function AIQuestionnairePage() {
   const performSend = async (intent: PendingSendIntent) => {
     if (!isCurrent(intent.generation, intent.sessionId) ||
       pendingSendRef.current?.requestId !== intent.requestId ||
-      activeRequestIdRef.current !== null) return
+      activeRequestIdRef.current !== null || clearingCacheRef.current) return
     activeRequestIdRef.current = intent.requestId
     setSending(true)
     setPrivacyBusySynchronized(false)
@@ -885,7 +896,7 @@ export function AIQuestionnairePage() {
   }
 
   const startSend = () => {
-    if (pendingSendRef.current !== null) return
+    if (pendingSendRef.current !== null || clearingCacheRef.current) return
     const sessionId = activeSessionIdRef.current
     const generation = generationRef.current
     const content = draft
@@ -963,7 +974,7 @@ export function AIQuestionnairePage() {
     const sessionId = activeSessionIdRef.current
     const generation = generationRef.current
     if (sessionId === null || activeArtifact === null ||
-      activeArtifact.sessionId !== sessionId || applying || sending ||
+      activeArtifact.sessionId !== sessionId || applying || sending || clearingCacheRef.current ||
       (artifactApplicability?.artifactId === activeArtifact.artifactId &&
         !artifactApplicability.applicable)) return
     const artifact = activeArtifact
@@ -1010,12 +1021,12 @@ export function AIQuestionnairePage() {
   }
 
   const activeSession = sessions.find(({ sessionId }) => sessionId === activeSessionId)
-  const sessionOperationsLocked = sending || applying || clearingCache
+  const sessionOperationsLocked = sending || applying || clearingCache || pendingSend || privacyBusy
   const activeArtifactRequiresRegeneration = activeArtifact !== null &&
     artifactApplicability?.artifactId === activeArtifact.artifactId &&
     !artifactApplicability.applicable
   const canSend = activeSessionId !== null && draft.trim().length > 0 && !sending && !applying &&
-    !pendingSend && !privacyBusy &&
+    !clearingCache && !pendingSend && !privacyBusy &&
     !projectBlocked && !configMissing && sessionPage?.status !== 'running'
 
   return (
@@ -1143,6 +1154,7 @@ export function AIQuestionnairePage() {
                   <ArtifactPreviewCard
                     artifact={activeArtifact}
                     applying={applying}
+                    blocked={clearingCache}
                     requiresRegeneration={activeArtifactRequiresRegeneration}
                     onApply={() => void applyArtifact()}
                   />
@@ -1166,7 +1178,7 @@ export function AIQuestionnairePage() {
                       ref={textareaRef}
                       label="给 AI 的消息"
                       value={draft}
-                      disabled={sending || applying || privacyBusy}
+                      disabled={sending || applying || clearingCache || privacyBusy}
                       placeholder="例如：为社区高血压筛查设计一份简洁问卷……"
                       hint="Enter 发送，Shift+Enter 换行。只有对话内容和你明确加入的当前问卷会发送。"
                       onChange={(event) => setDraft(event.target.value)}
@@ -1179,7 +1191,7 @@ export function AIQuestionnairePage() {
                       }}
                     />
                     <div className="flex flex-wrap justify-between gap-[var(--space-2)]">
-                      <Button variant="secondary" loading={attachmentLoading} disabled={sending || applying || pendingSend || privacyBusy || includeCurrentQuestionnaire} onClick={() => void previewQuestionnaireAttachment()}><Paperclip aria-hidden="true" size={16} />加入当前问卷</Button>
+                      <Button variant="secondary" loading={attachmentLoading} disabled={sending || applying || clearingCache || pendingSend || privacyBusy || includeCurrentQuestionnaire} onClick={() => void previewQuestionnaireAttachment()}><Paperclip aria-hidden="true" size={16} />加入当前问卷</Button>
                       {sending ? (
                         <Button variant="danger" onClick={() => void cancelSend()}><Square aria-hidden="true" size={14} />取消生成</Button>
                       ) : (

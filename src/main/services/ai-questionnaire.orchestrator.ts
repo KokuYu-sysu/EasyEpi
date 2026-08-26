@@ -65,7 +65,7 @@ const MAX_CONTEXT_CHARACTERS = 60_000
 const MAX_REPAIR_INSTRUCTION_BYTES = 8_000
 const PROJECT_AI_QUEUES = new WeakMap<ProjectData, Promise<void>>()
 
-function withProjectAIQueue<T>(project: ProjectData, task: () => Promise<T> | T): Promise<T> {
+export function runWithProjectAIQueue<T>(project: ProjectData, task: () => Promise<T> | T): Promise<T> {
   const previous = PROJECT_AI_QUEUES.get(project) ?? Promise.resolve()
   const result = previous.catch(() => undefined).then(task)
   const tail = result.then(() => undefined, () => undefined)
@@ -110,7 +110,7 @@ async function mutateAndPersist(
   reason: AIPersistReason,
   mutate: () => void
 ): Promise<void> {
-  await withProjectAIQueue(project, async () => {
+  await runWithProjectAIQueue(project, async () => {
     const snapshot = project.aiAssistant === undefined ? undefined : structuredClone(project.aiAssistant)
     try {
       mutate()
@@ -383,7 +383,7 @@ export function createAIQuestionnaireOrchestrator(
           })
           if (signalAborted(request.signal)) throw new AIClientError('AI_CANCELLED')
           capability = completion.responseFormatSupported
-          await withProjectAIQueue(request.project, () => {
+          await runWithProjectAIQueue(request.project, () => {
             repository.writeVirtual(
               `session://${request.sessionId}/cache/values/${capabilityKey}`,
               { supported: completion.responseFormatSupported },
@@ -493,7 +493,7 @@ export function createAIQuestionnaireOrchestrator(
           repository.cleanupRunTemp(request.sessionId, runId)
         })
       } catch (error) {
-        await withProjectAIQueue(request.project, () => repository.recoverInterruptedRuns())
+        await runWithProjectAIQueue(request.project, () => repository.recoverInterruptedRuns())
         if (error instanceof Error && error.message === 'PROJECT_CHANGED') {
           return { ok: false, errorCode: 'PROJECT_CHANGED' }
         }
@@ -545,7 +545,7 @@ export async function applyArtifact(
   if (!path.isAbsolute(request.currentProjectPath) || request.currentProjectPath.includes('\0')) {
     throw new Error('INVALID_CURRENT_PROJECT_PATH')
   }
-  return withProjectAIQueue(request.project, async () => {
+  return runWithProjectAIQueue(request.project, async () => {
     const repository = new AISessionRepository(request.project)
     const session = repository.get(request.sessionId)
     if (session === undefined) throw new Error('AI_SESSION_NOT_FOUND')
