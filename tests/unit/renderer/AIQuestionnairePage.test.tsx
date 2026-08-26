@@ -302,6 +302,12 @@ describe('AIQuestionnairePage boundaries', () => {
     await user.click(screen.getByRole('button', { name: '加入当前问卷' }))
     expect(api.qnaire.getData).toHaveBeenCalledTimes(1)
     expect(await screen.findByText('基线调查')).toBeVisible()
+    expect(screen.getByRole('dialog', { name: '加入当前问卷' })).toHaveClass(
+      'max-h-[calc(100vh-2rem)]',
+      'overflow-y-auto',
+      'break-words',
+      '[overflow-wrap:anywhere]'
+    )
     expect(screen.getByText('您的性别是？')).toBeVisible()
     expect(screen.getByText(/sex/)).toBeVisible()
     expect(screen.getByText(/男/)).toBeVisible()

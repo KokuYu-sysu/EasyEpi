@@ -1045,6 +1045,7 @@ export function AIQuestionnairePage() {
         description="请确认本次发送将包含的问卷摘要。"
         open={attachmentOpen}
         onOpenChange={setAttachmentOpen}
+        className="max-h-[calc(100vh-2rem)] overflow-y-auto break-words [overflow-wrap:anywhere]"
       >
         {attachmentPreview ? (
           <div className="grid gap-[var(--space-3)] pt-[var(--space-4)]">
