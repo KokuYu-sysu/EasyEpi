@@ -280,6 +280,7 @@ export function AIQuestionnairePage() {
   const [loadingEarlier, setLoadingEarlier] = useState(false)
   const [sending, setSending] = useState(false)
   const [applying, setApplying] = useState(false)
+  const [clearingCache, setClearingCache] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [projectBlocked, setProjectBlocked] = useState(false)
   const [configMissing, setConfigMissing] = useState(true)
@@ -392,6 +393,7 @@ export function AIQuestionnairePage() {
     setPendingSend(false)
     setPrivacyBusy(false)
     setApplying(false)
+    setClearingCache(false)
     setLoadingEarlier(false)
     setPrivacyOpen(false)
     setRenameOpen(false)
@@ -671,6 +673,28 @@ export function AIQuestionnairePage() {
       await loadSessions(undefined, generationRef.current)
     } catch {
       if (isCurrent(generation, sessionId)) setError('无法删除 AI 对话。')
+    }
+  }
+
+  const clearSessionCache = async () => {
+    const sessionId = activeSessionIdRef.current
+    const generation = generationRef.current
+    if (sessionId === null || sending || applying || clearingCache) return
+    setClearingCache(true)
+    setError(null)
+    try {
+      const result = await window.easyEpi.ai.session.clearCache({ sessionId })
+      if (!isCurrent(generation, sessionId)) return
+      if (!result.ok) return handleFailure(result.errorCode, '无法清除当前对话缓存。')
+      const message = result.removed > 0
+        ? `已清除 ${result.removed} 项可重建缓存；对话、状态、草稿和正式问卷未改变。`
+        : '当前对话没有可清除的可重建缓存；对话、状态、草稿和正式问卷未改变。'
+      setAnnouncement(message)
+      toast.push({ title: '当前对话缓存已清理', description: message, tone: 'success' })
+    } catch {
+      if (isCurrent(generation, sessionId)) setError('无法清除当前对话缓存。')
+    } finally {
+      if (isCurrent(generation, sessionId)) setClearingCache(false)
     }
   }
 
@@ -986,7 +1010,7 @@ export function AIQuestionnairePage() {
   }
 
   const activeSession = sessions.find(({ sessionId }) => sessionId === activeSessionId)
-  const sessionOperationsLocked = sending || applying
+  const sessionOperationsLocked = sending || applying || clearingCache
   const activeArtifactRequiresRegeneration = activeArtifact !== null &&
     artifactApplicability?.artifactId === activeArtifact.artifactId &&
     !artifactApplicability.applicable
@@ -1057,6 +1081,13 @@ export function AIQuestionnairePage() {
                     setRenameTitle(activeSession.title)
                     setRenameOpen(true)
                   }} aria-label="重命名当前对话"><Pencil aria-hidden="true" size={16} />重命名</Button>
+                  <ConfirmDialog
+                    trigger={<Button size="sm" variant="ghost" disabled={sessionOperationsLocked}>清除缓存</Button>}
+                    title="清除当前对话缓存"
+                    description="只会删除当前对话的可重建缓存；对话、状态、草稿、artifact 和正式问卷均会保留。"
+                    confirmLabel="确认清除缓存"
+                    onConfirm={() => void clearSessionCache()}
+                  />
                   <ConfirmDialog
                     trigger={<Button size="sm" variant="danger" disabled={sessionOperationsLocked}><Trash2 aria-hidden="true" size={16} />删除</Button>}
                     title="删除 AI 对话"

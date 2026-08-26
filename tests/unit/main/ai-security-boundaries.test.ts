@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -13,7 +13,11 @@ import {
   AISessionRepository,
   parseAISessionVirtualPath
 } from '@main/services/ai-session.repository'
-import { parseAISendRequest, type AiVersionStamp } from '@shared/ai-assistant-contract'
+import {
+  AI_PRIVACY_NOTICE_VERSION,
+  parseAISendRequest,
+  type AiVersionStamp
+} from '@shared/ai-assistant-contract'
 import type { ProjectData } from '@shared/types/project'
 import {
   AI_CANCEL_CHANNEL,
@@ -103,9 +107,55 @@ describe('AI configuration security boundary', () => {
       await service.clear()
 
       await expect(service.getPrivacyStatus()).resolves.toMatchObject({ accepted: true })
+      expect(JSON.parse(readFileSync(join(directory, 'ai-provider-config.json'), 'utf8')))
+        .toMatchObject({ privacyNoticeVersion: AI_PRIVACY_NOTICE_VERSION })
       await expect(service.get()).resolves.toMatchObject({
         ok: true,
         config: { model: '', hasApiKey: false, maskedApiKey: null }
+      })
+    } finally {
+      rmSync(directory, { recursive: true, force: true })
+    }
+  })
+
+  it('requires fresh privacy consent when the stored notice version is missing or stale', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'easyepi-ai-config-version-'))
+    const configPath = join(directory, 'ai-provider-config.json')
+    try {
+      const service = createAIConfigService(directory, {
+        isEncryptionAvailable: () => true,
+        encryptString: (value) => Buffer.from(value),
+        decryptString: (value) => value.toString()
+      })
+      const oldAcceptedAt = '2026-08-25T00:00:00.000Z'
+      writeFileSync(configPath, JSON.stringify({
+        schemaVersion: 1,
+        baseUrl: 'https://api.openai.com/v1',
+        model: '',
+        privacyAcceptedAt: oldAcceptedAt
+      }))
+      await expect(service.getPrivacyStatus()).resolves.toEqual({
+        accepted: false,
+        acceptedAt: null
+      })
+
+      writeFileSync(configPath, JSON.stringify({
+        schemaVersion: 1,
+        baseUrl: 'https://api.openai.com/v1',
+        model: '',
+        privacyAcceptedAt: oldAcceptedAt,
+        privacyNoticeVersion: 999
+      }))
+      await expect(service.getPrivacyStatus()).resolves.toEqual({
+        accepted: false,
+        acceptedAt: null
+      })
+
+      const accepted = await service.acceptPrivacy()
+      expect(accepted.acceptedAt).not.toBe(oldAcceptedAt)
+      expect(JSON.parse(readFileSync(configPath, 'utf8'))).toMatchObject({
+        privacyAcceptedAt: accepted.acceptedAt,
+        privacyNoticeVersion: AI_PRIVACY_NOTICE_VERSION
       })
     } finally {
       rmSync(directory, { recursive: true, force: true })
@@ -226,6 +276,71 @@ describe('AI IPC privacy boundary', () => {
       message: '请先确认 AI 隐私说明。'
     })
     expect(getPlaintextForMain).not.toHaveBeenCalled()
+    registration.dispose()
+  })
+
+  it('clears only the requested session cache and persists only actual removals', async () => {
+    const handlers = new Map<string, (event: IpcInvokeEventLike, ...args: unknown[]) => Promise<unknown>>()
+    const ipcMain: IpcMainLike = {
+      handle: (channel, handler) => handlers.set(channel, handler),
+      removeHandler: (channel) => { handlers.delete(channel) }
+    }
+    const configService = {
+      get: async () => ({ ok: true, config: { baseUrl: '', model: '', hasApiKey: false, maskedApiKey: null } } as const),
+      update: async () => ({ ok: false, code: 'INVALID_AI_CONFIG' } as const),
+      clear: async () => ({ ok: false, code: 'AI_CONFIG_SAVE_FAILED' } as const),
+      getPlaintextForMain: async () => ({ baseUrl: '', model: '' }),
+      getPrivacyStatus: async () => ({ accepted: true, acceptedAt: '2026-08-25T00:00:00.000Z' }),
+      acceptPrivacy: async () => ({ accepted: true, acceptedAt: '2026-08-25T00:00:00.000Z' } as const)
+    } satisfies AIConfigService
+    const state = createProjectIpcState()
+    state.currentProject = createProjectData()
+    state.currentFilePath = 'D:\\cache.easyepi'
+    state.currentSaltHex = 'a'.repeat(64)
+    state.currentHashHex = 'b'.repeat(64)
+    state.auth.encryptionKey = Buffer.alloc(32, 1)
+    const repository = new AISessionRepository(state.currentProject)
+    const first = repository.create(versionStamp, 'First').value
+    const second = repository.create(versionStamp, 'Second').value
+    repository.writeVirtual(`session://${first.manifest.sessionId}/cache/values/one`, true, first.manifest.sessionId)
+    repository.writeVirtual(`session://${first.manifest.sessionId}/cache/values/two`, true, first.manifest.sessionId)
+    repository.writeVirtual(`session://${second.manifest.sessionId}/cache/values/other`, true, second.manifest.sessionId)
+    repository.appendMessage(first.manifest.sessionId, {
+      id: 'message-1', role: 'user', content: 'Keep me', createdAt: '2026-08-25T00:00:00.000Z'
+    })
+    const beforeState = structuredClone(repository.get(first.manifest.sessionId)!.state)
+    const beforeArtifacts = structuredClone(repository.get(first.manifest.sessionId)!.artifacts)
+    const saveProject = vi.fn()
+    const registration = registerAIIpcHandlers(
+      ipcMain,
+      state,
+      { configService, saveProject },
+      'file:///app/index.html'
+    )
+    const event = {
+      senderFrame: { url: 'file:///app/index.html' },
+      sender: { id: 1, send: () => undefined }
+    }
+    const handler = handlers.get('ai:session:clearCache')
+    expect(handler).toBeTypeOf('function')
+
+    await expect(handler!(event, {
+      sessionId: first.manifest.sessionId,
+      extra: 'rejected'
+    })).resolves.toMatchObject({ ok: false, errorCode: 'INVALID_AI_REQUEST' })
+    await expect(handler!(event, { sessionId: first.manifest.sessionId }))
+      .resolves.toEqual({ ok: true, removed: 2 })
+    expect(saveProject).toHaveBeenCalledTimes(1)
+    expect(repository.get(first.manifest.sessionId)!.cache.values).toEqual({})
+    expect(repository.get(first.manifest.sessionId)!.conversation.messages)
+      .toMatchObject([{ content: 'Keep me' }])
+    expect(repository.get(first.manifest.sessionId)!.state).toEqual(beforeState)
+    expect(repository.get(first.manifest.sessionId)!.artifacts).toEqual(beforeArtifacts)
+    expect(repository.get(second.manifest.sessionId)!.cache.values).toEqual({ other: true })
+
+    await expect(handler!(event, { sessionId: first.manifest.sessionId }))
+      .resolves.toEqual({ ok: true, removed: 0 })
+    expect(saveProject).toHaveBeenCalledTimes(1)
     registration.dispose()
   })
 

@@ -43,6 +43,7 @@ export type AIProviderConfigResult =
 
 export const AI_PRIVACY_NOTICE =
   '只有对话内容会被读取并发送，其余隐私信息均不会被发送和读取。'
+export const AI_PRIVACY_NOTICE_VERSION = 1
 
 export const AI_CONFIG_GET_CHANNEL = 'ai:config:get'
 export const AI_CONFIG_UPDATE_CHANNEL = 'ai:config:update'
@@ -55,6 +56,7 @@ export const AI_SESSION_LIST_CHANNEL = 'ai:session:list'
 export const AI_SESSION_GET_CHANNEL = 'ai:session:get'
 export const AI_SESSION_UPDATE_CHANNEL = 'ai:session:update'
 export const AI_SESSION_DELETE_CHANNEL = 'ai:session:delete'
+export const AI_SESSION_CLEAR_CACHE_CHANNEL = 'ai:session:clearCache'
 export const AI_SESSION_MIGRATE_CHANNEL = 'ai:session:migrate'
 export const AI_SEND_CHANNEL = 'ai:send'
 export const AI_CANCEL_CHANNEL = 'ai:cancel'
@@ -320,6 +322,7 @@ export type AISessionResult = { ok: true; session: AISessionListItem } | AIError
 export type AISessionPageResult = { ok: true; session: AISessionPage } | AIErrorResult
 export type AISessionListResult = { ok: true; sessions: AISessionListItem[] } | AIErrorResult
 export type AISessionDeleteResult = { ok: true; deleted: boolean } | AIErrorResult
+export type AISessionClearCacheResult = { ok: true; removed: number } | AIErrorResult
 export type AISessionMigrateResult =
   | { ok: true; migrated: boolean; session: AISessionListItem }
   | AIErrorResult
@@ -875,6 +878,13 @@ export function parseAISessionListResponse(value: unknown): AISessionListResult 
 export function parseAISessionDeleteResponse(value: unknown): AISessionDeleteResult {
   return parseKnownResponse<AISessionDeleteResult>(value, ['deleted'], (result) => {
     if (typeof result.deleted !== 'boolean') invalidResponse()
+  })
+}
+
+export function parseAISessionClearCacheResponse(value: unknown): AISessionClearCacheResult {
+  return parseKnownResponse<AISessionClearCacheResult>(value, ['removed'], (result) => {
+    const removed = responseNumber(result.removed, true)
+    if (removed < 0 || !Number.isSafeInteger(removed)) invalidResponse()
   })
 }
 

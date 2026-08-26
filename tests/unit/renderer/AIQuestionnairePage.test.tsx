@@ -158,7 +158,8 @@ function installApi(accepted: boolean) {
         get: vi.fn().mockResolvedValue({ ok: true, session: page }),
         create: vi.fn(),
         update: vi.fn(),
-        delete: vi.fn()
+        delete: vi.fn(),
+        clearCache: vi.fn()
       },
       send: vi.fn().mockResolvedValue({ ok: false, errorCode: 'AI_PROVIDER_ERROR', message: 'AI 服务返回错误。' }),
       cancel: vi.fn(),
@@ -321,6 +322,7 @@ describe('AIQuestionnairePage boundaries', () => {
     expect(screen.getByRole('button', { name: '新建对话' })).toBeDisabled()
     expect(screen.getByRole('button', { name: '第二段对话' })).toBeDisabled()
     expect(screen.getByRole('button', { name: '重命名当前对话' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: '清除缓存' })).toBeDisabled()
     expect(screen.getByRole('button', { name: '删除' })).toBeDisabled()
     expect(screen.getByRole('textbox', { name: '给 AI 的消息' })).toBeDisabled()
     expect(screen.getByRole('button', { name: '加入当前问卷' })).toBeDisabled()
@@ -410,6 +412,7 @@ describe('AIQuestionnairePage boundaries', () => {
     expect(screen.getByRole('button', { name: '新建对话' })).toBeDisabled()
     expect(screen.getByRole('button', { name: '第二段对话' })).toBeDisabled()
     expect(screen.getByRole('button', { name: '重命名当前对话' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: '清除缓存' })).toBeDisabled()
     expect(screen.getByRole('button', { name: '删除' })).toBeDisabled()
     expect(screen.getByRole('button', { name: '加入当前问卷' })).toBeDisabled()
     expect(editor).toBeDisabled()
@@ -520,5 +523,41 @@ describe('AIQuestionnairePage boundaries', () => {
       content: '完善问卷',
       includeCurrentQuestionnaire: true
     })
+  })
+
+  it('clears only rebuildable cache while keeping the current conversation and artifact visible', async () => {
+    const user = userEvent.setup()
+    const api = installApi(true)
+    const preview = artifactPreview('保留草稿')
+    api.ai.session.get.mockResolvedValue({
+      ok: true,
+      session: {
+        ...artifactPage('artifact-cache', 'operation-cache'),
+        messages: [{
+          id: 'message-cache',
+          role: 'user' as const,
+          content: '保留这条对话',
+          createdAt: '2026-08-25T01:00:00.000Z'
+        }],
+        total: 1
+      }
+    })
+    api.ai.artifact.preview.mockResolvedValue({ ok: true, preview })
+    api.ai.session.clearCache.mockResolvedValue({ ok: true, removed: 2 })
+    renderPage()
+
+    expect(await screen.findByText('保留这条对话')).toBeVisible()
+    expect(await screen.findByText('草稿 保留草稿')).toBeVisible()
+    await user.click(screen.getByRole('button', { name: '清除缓存' }))
+    await user.click(screen.getByRole('button', { name: '确认清除缓存' }))
+
+    await waitFor(() => expect(api.ai.session.clearCache).toHaveBeenCalledWith({
+      sessionId: session.sessionId
+    }))
+    expect(screen.getByText('保留这条对话')).toBeVisible()
+    expect(screen.getByText('草稿 保留草稿')).toBeVisible()
+    expect((await screen.findAllByText(/已清除 2 项可重建缓存/)).length).toBeGreaterThan(0)
+    expect(api.ai.session.get).toHaveBeenCalledTimes(2)
+    expect(api.qnaire.getData).not.toHaveBeenCalled()
   })
 })

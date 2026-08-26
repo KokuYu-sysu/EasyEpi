@@ -8,7 +8,7 @@ import type {
   AIProviderConfigUpdate,
   AIProviderConfigView
 } from '@shared/ai-assistant-contract'
-import { AI_MASKED_API_KEY } from '@shared/ai-assistant-contract'
+import { AI_MASKED_API_KEY, AI_PRIVACY_NOTICE_VERSION } from '@shared/ai-assistant-contract'
 
 const CONFIG_FILE_NAME = 'ai-provider-config.json'
 const DEFAULT_BASE_URL = 'https://api.openai.com/v1'
@@ -22,6 +22,7 @@ interface StoredAIConfig {
   model: string
   encryptedApiKey?: string
   privacyAcceptedAt?: string
+  privacyNoticeVersion?: number
 }
 
 export interface AISecureStorage {
@@ -136,7 +137,9 @@ export function validateAIConfigUpdate(request: unknown): AIProviderConfigUpdate
 
 function parseStoredAIConfig(value: unknown): StoredAIConfig {
   if (!isPlainObject(value)) throw new Error('INVALID_AI_CONFIG_FILE')
-  const { schemaVersion, baseUrl, model, encryptedApiKey, privacyAcceptedAt } = value
+  const {
+    schemaVersion, baseUrl, model, encryptedApiKey, privacyAcceptedAt, privacyNoticeVersion
+  } = value
   if (
     schemaVersion !== 1 ||
     typeof baseUrl !== 'string' ||
@@ -144,7 +147,9 @@ function parseStoredAIConfig(value: unknown): StoredAIConfig {
     (encryptedApiKey !== undefined &&
       (typeof encryptedApiKey !== 'string' || !isStrictBase64(encryptedApiKey))) ||
     (privacyAcceptedAt !== undefined &&
-      (typeof privacyAcceptedAt !== 'string' || !Number.isFinite(Date.parse(privacyAcceptedAt))))
+      (typeof privacyAcceptedAt !== 'string' || !Number.isFinite(Date.parse(privacyAcceptedAt)))) ||
+    (privacyNoticeVersion !== undefined &&
+      (!Number.isSafeInteger(privacyNoticeVersion) || Number(privacyNoticeVersion) < 1))
   ) {
     throw new Error('INVALID_AI_CONFIG_FILE')
   }
@@ -157,7 +162,8 @@ function parseStoredAIConfig(value: unknown): StoredAIConfig {
     baseUrl: validated.baseUrl,
     model: validated.model,
     ...(encryptedApiKey === undefined ? {} : { encryptedApiKey }),
-    ...(privacyAcceptedAt === undefined ? {} : { privacyAcceptedAt })
+    ...(privacyAcceptedAt === undefined ? {} : { privacyAcceptedAt }),
+    ...(privacyNoticeVersion === undefined ? {} : { privacyNoticeVersion: Number(privacyNoticeVersion) })
   }
 }
 
@@ -257,10 +263,12 @@ export function createAIConfigService(
 
       let encryptedApiKey: string | undefined
       let privacyAcceptedAt: string | undefined
+      let privacyNoticeVersion: number | undefined
       try {
         const current = await readStored()
         encryptedApiKey = current.encryptedApiKey
         privacyAcceptedAt = current.privacyAcceptedAt
+        privacyNoticeVersion = current.privacyNoticeVersion
       } catch {
         return { ok: false, code: 'AI_CONFIG_READ_FAILED' }
       }
@@ -288,7 +296,8 @@ export function createAIConfigService(
         baseUrl: validated.baseUrl,
         model: validated.model,
         ...(encryptedApiKey === undefined ? {} : { encryptedApiKey }),
-        ...(privacyAcceptedAt === undefined ? {} : { privacyAcceptedAt })
+        ...(privacyAcceptedAt === undefined ? {} : { privacyAcceptedAt }),
+        ...(privacyNoticeVersion === undefined ? {} : { privacyNoticeVersion })
       }
       try {
         await writeStored(stored)
@@ -302,14 +311,23 @@ export function createAIConfigService(
   function clear(): Promise<AIProviderConfigResult> {
     return serialize(async () => {
       let privacyAcceptedAt: string | undefined
+      let privacyNoticeVersion: number | undefined
       try {
-        privacyAcceptedAt = (await readStored()).privacyAcceptedAt
+        const current = await readStored()
+        if (current.privacyNoticeVersion === AI_PRIVACY_NOTICE_VERSION) {
+          privacyAcceptedAt = current.privacyAcceptedAt
+          privacyNoticeVersion = current.privacyNoticeVersion
+        }
       } catch {
         return { ok: false, code: 'AI_CONFIG_READ_FAILED' }
       }
       if (privacyAcceptedAt !== undefined) {
         try {
-          await writeStored({ ...emptyConfig(), privacyAcceptedAt })
+          await writeStored({
+            ...emptyConfig(),
+            privacyAcceptedAt,
+            ...(privacyNoticeVersion === undefined ? {} : { privacyNoticeVersion })
+          })
         } catch {
           return { ok: false, code: 'AI_CONFIG_SAVE_FAILED' }
         }
@@ -343,18 +361,26 @@ export function createAIConfigService(
   }
 
   async function getPrivacyStatus(): Promise<{ accepted: boolean; acceptedAt: string | null }> {
-    const acceptedAt = (await readStored()).privacyAcceptedAt ?? null
+    const stored = await readStored()
+    const acceptedAt = stored.privacyNoticeVersion === AI_PRIVACY_NOTICE_VERSION
+      ? (stored.privacyAcceptedAt ?? null)
+      : null
     return { accepted: acceptedAt !== null, acceptedAt }
   }
 
   function acceptPrivacy(): Promise<{ accepted: true; acceptedAt: string }> {
     return serialize(async () => {
       const stored = await readStored()
-      if (stored.privacyAcceptedAt !== undefined) {
+      if (stored.privacyAcceptedAt !== undefined &&
+        stored.privacyNoticeVersion === AI_PRIVACY_NOTICE_VERSION) {
         return { accepted: true, acceptedAt: stored.privacyAcceptedAt }
       }
       const acceptedAt = new Date().toISOString()
-      await writeStored({ ...stored, privacyAcceptedAt: acceptedAt })
+      await writeStored({
+        ...stored,
+        privacyAcceptedAt: acceptedAt,
+        privacyNoticeVersion: AI_PRIVACY_NOTICE_VERSION
+      })
       return { accepted: true, acceptedAt }
     })
   }

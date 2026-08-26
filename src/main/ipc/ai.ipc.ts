@@ -14,6 +14,7 @@ import type {
   AIPrivacyStatusResult,
   AIQuestionnaireArtifactPreviewDto,
   AISendResult,
+  AISessionClearCacheResult,
   AISessionData,
   AISessionDeleteResult,
   AISessionPage,
@@ -35,6 +36,7 @@ import {
   AI_PRIVACY_STATUS_CHANNEL,
   AI_SESSION_PAGE_MAX_UTF8_BYTES,
   AI_SEND_CHANNEL,
+  AI_SESSION_CLEAR_CACHE_CHANNEL,
   AI_SESSION_CREATE_CHANNEL,
   AI_SESSION_DELETE_CHANNEL,
   AI_SESSION_GET_CHANNEL,
@@ -480,6 +482,17 @@ export function registerAIIpcHandlers(
     }
   })
 
+  ipcMain.handle(AI_SESSION_CLEAR_CACHE_CHANNEL, async (event, rawRequest) => {
+    trusted(event)
+    try {
+      const request = parseAISessionIdRequest(rawRequest)
+      const removed = mutateSession((repository) => repository.clearCache(request.sessionId))
+      return { ok: true, removed } satisfies AISessionClearCacheResult
+    } catch (error) {
+      return publicError(error)
+    }
+  })
+
   ipcMain.handle(AI_SESSION_MIGRATE_CHANNEL, async (event, rawRequest) => {
     trusted(event)
     try {
@@ -658,7 +671,8 @@ export function registerAIIpcHandlers(
     AI_CONFIG_GET_CHANNEL, AI_CONFIG_UPDATE_CHANNEL, AI_CONFIG_CLEAR_CHANNEL,
     AI_CONFIG_TEST_CONNECTION_CHANNEL, AI_PRIVACY_STATUS_CHANNEL, AI_PRIVACY_ACCEPT_CHANNEL,
     AI_SESSION_CREATE_CHANNEL, AI_SESSION_LIST_CHANNEL, AI_SESSION_GET_CHANNEL,
-    AI_SESSION_UPDATE_CHANNEL, AI_SESSION_DELETE_CHANNEL, AI_SESSION_MIGRATE_CHANNEL,
+    AI_SESSION_UPDATE_CHANNEL, AI_SESSION_DELETE_CHANNEL, AI_SESSION_CLEAR_CACHE_CHANNEL,
+    AI_SESSION_MIGRATE_CHANNEL,
     AI_SEND_CHANNEL, AI_CANCEL_CHANNEL, AI_ARTIFACT_PREVIEW_CHANNEL, AI_ARTIFACT_APPLY_CHANNEL
   ] as const
 

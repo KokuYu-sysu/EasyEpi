@@ -67,6 +67,7 @@ import type {
   AIPrivacyStatusResult,
   AISendRequest,
   AISendResult,
+  AISessionClearCacheResult,
   AISessionCreateRequest,
   AISessionDeleteResult,
   AISessionGetRequest,
@@ -109,6 +110,7 @@ export interface DesktopApi {
       get(request: AISessionGetRequest): Promise<AISessionPageResult>
       update(request: AISessionUpdateRequest): Promise<AISessionResult>
       delete(request: AISessionIdRequest): Promise<AISessionDeleteResult>
+      clearCache(request: AISessionIdRequest): Promise<AISessionClearCacheResult>
       migrate(request: AISessionIdRequest): Promise<AISessionMigrateResult>
     }
     send(request: AISendRequest): Promise<AISendResult>

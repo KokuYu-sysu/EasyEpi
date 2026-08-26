@@ -125,6 +125,7 @@ import {
   AI_PRIVACY_ACCEPT_CHANNEL,
   AI_PRIVACY_STATUS_CHANNEL,
   AI_SEND_CHANNEL,
+  AI_SESSION_CLEAR_CACHE_CHANNEL,
   AI_SESSION_CREATE_CHANNEL,
   AI_SESSION_DELETE_CHANNEL,
   AI_SESSION_GET_CHANNEL,
@@ -143,6 +144,7 @@ import {
   parseAIPrivacyStatusResponse,
   parseAISendRequest,
   parseAISendResponse,
+  parseAISessionClearCacheResponse,
   parseAISessionCreateRequest,
   parseAISessionDeleteResponse,
   parseAISessionGetRequest,
@@ -163,6 +165,7 @@ import {
   type AIPrivacyStatusResult,
   type AISendRequest,
   type AISendResult,
+  type AISessionClearCacheResult,
   type AISessionCreateRequest,
   type AISessionDeleteResult,
   type AISessionGetRequest,
@@ -257,6 +260,7 @@ export interface DesktopInvoke {
   (channel: typeof AI_CONFIG_TEST_CONNECTION_CHANNEL): Promise<unknown>
   (channel: typeof AI_PRIVACY_STATUS_CHANNEL): Promise<unknown>
   (channel: typeof AI_PRIVACY_ACCEPT_CHANNEL): Promise<unknown>
+  (channel: typeof AI_SESSION_CLEAR_CACHE_CHANNEL, request: AISessionIdRequest): Promise<unknown>
   (channel: typeof AI_SESSION_CREATE_CHANNEL, request: AISessionCreateRequest): Promise<unknown>
   (channel: typeof AI_SESSION_LIST_CHANNEL): Promise<unknown>
   (channel: typeof AI_SESSION_GET_CHANNEL, request: Required<AISessionGetRequest>): Promise<unknown>
@@ -525,6 +529,10 @@ export function createDesktopApi(invoke: DesktopInvoke): DesktopApi {
       delete: async (request: AISessionIdRequest) => parsePublicAIResult<AISessionDeleteResult>(
         await invoke(AI_SESSION_DELETE_CHANNEL, parseAISessionIdRequest(request)),
         parseAISessionDeleteResponse
+      ),
+      clearCache: async (request: AISessionIdRequest) => parsePublicAIResult<AISessionClearCacheResult>(
+        await invoke(AI_SESSION_CLEAR_CACHE_CHANNEL, parseAISessionIdRequest(request)),
+        parseAISessionClearCacheResponse
       ),
       migrate: async (request: AISessionIdRequest) => parsePublicAIResult<AISessionMigrateResult>(
         await invoke(AI_SESSION_MIGRATE_CHANNEL, parseAISessionIdRequest(request)),

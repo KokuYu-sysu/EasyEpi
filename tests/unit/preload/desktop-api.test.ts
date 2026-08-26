@@ -181,6 +181,21 @@ describe('createDesktopApi', () => {
     await expect(api.ai.config.get()).rejects.toThrow('INVALID_AI_RESPONSE')
   })
 
+  it('clears session cache through one fixed validated channel', async () => {
+    const sessionId = '123e4567-e89b-42d3-a456-426614174000'
+    const invoke = vi.fn()
+      .mockResolvedValueOnce({ ok: true, removed: 2 })
+      .mockResolvedValueOnce({ ok: true, removed: -1 })
+    const api = createDesktopApi(invoke)
+    const clearCache = (api.ai.session as unknown as {
+      clearCache(request: { sessionId: string }): Promise<{ ok: true; removed: number }>
+    }).clearCache
+
+    await expect(clearCache({ sessionId })).resolves.toEqual({ ok: true, removed: 2 })
+    expect(invoke).toHaveBeenCalledWith('ai:session:clearCache', { sessionId })
+    await expect(clearCache({ sessionId })).rejects.toThrow('INVALID_AI_RESPONSE')
+  })
+
   it('recursively rejects malformed or sensitive AI responses', async () => {
     const manifest = {
       sessionId: '123e4567-e89b-42d3-a456-426614174000',

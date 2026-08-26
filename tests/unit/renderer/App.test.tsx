@@ -25,7 +25,8 @@ function createApi(): DesktopApi {
       config: { get: vi.fn(), update: vi.fn(), clear: vi.fn(), testConnection: vi.fn() },
       privacy: { status: vi.fn(), accept: vi.fn() },
       session: {
-        create: vi.fn(), list: vi.fn(), get: vi.fn(), update: vi.fn(), delete: vi.fn(), migrate: vi.fn()
+        create: vi.fn(), list: vi.fn(), get: vi.fn(), update: vi.fn(), delete: vi.fn(),
+        clearCache: vi.fn(), migrate: vi.fn()
       },
       send: vi.fn(),
       cancel: vi.fn(),
