@@ -7,6 +7,7 @@ import { ToastProvider } from '@renderer/components/ui'
 import {
   AI_PRIVACY_NOTICE,
   type AIArtifactPreview,
+  type AIQuestionnaireArtifactPreviewDto,
   type AISessionPage
 } from '@shared/ai-assistant-contract'
 import type { QuestionnaireDef } from '@shared/types/qnaire'
@@ -105,6 +106,22 @@ function artifactPage(artifactId: string, operationId: string): AISessionPage {
       createdAt: '2026-08-25T01:00:00.000Z',
       updatedAt: '2026-08-25T01:00:00.000Z'
     }]
+  }
+}
+
+function artifactDto(
+  artifactId: string,
+  operationId: string,
+  preview: AIArtifactPreview
+): AIQuestionnaireArtifactPreviewDto {
+  return {
+    artifactId,
+    operationId,
+    kind: 'questionnaire-draft',
+    status: 'completed',
+    createdAt: '2026-08-25T01:00:00.000Z',
+    updatedAt: '2026-08-25T01:00:00.000Z',
+    value: preview
   }
 }
 
@@ -326,10 +343,13 @@ describe('AIQuestionnairePage boundaries', () => {
     const api = installApi(false)
     api.ai.session.list.mockResolvedValue({ ok: true, sessions: [session, secondSession] })
     api.ai.cancel.mockResolvedValue({ ok: true, cancelled: true })
+    const previewA = artifactPreview('较早草稿 A')
+    const previewB = artifactPreview('最新草稿 B')
     let resolveSend!: (value: {
-      ok: false
-      errorCode: string
-      message: string
+      ok: true
+      requestId: string
+      artifact: AIQuestionnaireArtifactPreviewDto
+      attempts: number
     }) => void
     api.ai.send.mockReturnValue(new Promise((resolve) => { resolveSend = resolve }))
     let resolvePrivacy!: (value: Awaited<ReturnType<typeof api.ai.privacy.status>>) => void
@@ -361,6 +381,12 @@ describe('AIQuestionnairePage boundaries', () => {
     expect(editor).toHaveValue('帮我设计一份问卷')
     expect(editor).toHaveFocus()
 
+    let resolveOldSessionLoad!: (value: { ok: true; session: AISessionPage }) => void
+    api.ai.session.get.mockReturnValueOnce(new Promise((resolve) => {
+      resolveOldSessionLoad = resolve
+    }))
+    await user.click(screen.getByRole('button', { name: '刷新当前对话' }))
+
     let resolveAccept!: (value: Awaited<ReturnType<typeof api.ai.privacy.accept>>) => void
     api.ai.privacy.status.mockResolvedValue({
       ok: true,
@@ -387,14 +413,31 @@ describe('AIQuestionnairePage boundaries', () => {
     expect(screen.getByRole('button', { name: '删除' })).toBeDisabled()
     expect(screen.getByRole('button', { name: '加入当前问卷' })).toBeDisabled()
     expect(editor).toBeDisabled()
-    expect(screen.getByRole('button', { name: '刷新当前对话' })).toBeEnabled()
     await user.click(screen.getByRole('button', { name: '取消生成' }))
     expect(api.ai.cancel).toHaveBeenCalledWith({
       requestId: api.ai.send.mock.calls[0]?.[0].requestId
     })
-    resolveSend({ ok: false, errorCode: 'AI_PROVIDER_ERROR', message: 'AI 服务返回错误。' })
+    api.ai.session.get.mockResolvedValue({
+      ok: true,
+      session: artifactPage('artifact-b', 'operation-b')
+    })
+    api.ai.artifact.preview.mockImplementation(({ artifactId }: { artifactId: string }) =>
+      Promise.resolve({ ok: true, preview: artifactId === 'artifact-a' ? previewA : previewB }))
+    resolveSend({
+      ok: true,
+      requestId: api.ai.send.mock.calls[0]?.[0].requestId,
+      artifact: artifactDto('artifact-b', 'operation-b', previewB),
+      attempts: 1
+    })
     await waitFor(() => expect(editor).toBeEnabled())
     expect(editor).toHaveFocus()
+    expect(screen.getByText('草稿 最新草稿 B')).toBeVisible()
+    resolveOldSessionLoad({
+      ok: true,
+      session: artifactPage('artifact-a', 'operation-a')
+    })
+    await waitFor(() => expect(screen.getByText('草稿 最新草稿 B')).toBeVisible())
+    expect(screen.queryByText('草稿 较早草稿 A')).not.toBeInTheDocument()
     expect(api.qnaire.getData).not.toHaveBeenCalled()
   })
 

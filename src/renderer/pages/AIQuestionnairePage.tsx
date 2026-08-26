@@ -302,6 +302,7 @@ export function AIQuestionnairePage() {
   const [announcement, setAnnouncement] = useState('')
   const generationRef = useRef(0)
   const configRequestRef = useRef(0)
+  const sessionLoadRequestRef = useRef(0)
   const artifactPreviewRequestRef = useRef(0)
   const artifactPreviewTargetRef = useRef<{
     token: number
@@ -344,6 +345,10 @@ export function AIQuestionnairePage() {
     artifactPreviewTargetRef.current = null
   }, [])
 
+  const invalidateSessionLoad = useCallback(() => {
+    sessionLoadRequestRef.current += 1
+  }, [])
+
   const focusTextarea = useCallback((generation: number, sessionId: string) => {
     void Promise.resolve().then(() => {
       if (isCurrent(generation, sessionId)) textareaRef.current?.focus({ preventScroll: true })
@@ -363,6 +368,7 @@ export function AIQuestionnairePage() {
   }, [setPrivacyBusySynchronized])
 
   const clearSessionContent = useCallback(() => {
+    invalidateSessionLoad()
     setSessionPage(null)
     setMessages([])
     setMessageOffset(0)
@@ -390,18 +396,20 @@ export function AIQuestionnairePage() {
     setPrivacyOpen(false)
     setRenameOpen(false)
     setRenameTitle('')
-  }, [commitActiveArtifact, invalidateArtifactPreview])
+  }, [commitActiveArtifact, invalidateArtifactPreview, invalidateSessionLoad])
 
   const activateSession = useCallback((sessionId: string | null) => {
     if (activeSessionIdRef.current === sessionId) return
+    invalidateSessionLoad()
     generationRef.current += 1
     activeSessionIdRef.current = sessionId
     clearSessionContent()
     setActiveSessionId(sessionId)
     setLoading(sessionId !== null)
-  }, [clearSessionContent])
+  }, [clearSessionContent, invalidateSessionLoad])
 
   const clearProjectContent = useCallback((message?: string) => {
+    invalidateSessionLoad()
     generationRef.current += 1
     activeSessionIdRef.current = null
     setSessions([])
@@ -411,7 +419,7 @@ export function AIQuestionnairePage() {
     setLoading(false)
     setAnnouncement('')
     setError(message ?? '请先从欢迎页创建或打开项目，并使用项目密码完成解锁。')
-  }, [clearSessionContent])
+  }, [clearSessionContent, invalidateSessionLoad])
 
   const handleFailure = useCallback((code: string | undefined, fallback: string) => {
     const message = friendlyAIError(code, fallback)
@@ -424,7 +432,8 @@ export function AIQuestionnairePage() {
     startOffset: number,
     endOffset: number,
     generation: number,
-    basis: AISessionPage
+    basis: AISessionPage,
+    sessionLoadToken?: number
   ): Promise<AISessionPage | null> => {
     let cursor = startOffset
     const targetEnd = endOffset
@@ -437,7 +446,10 @@ export function AIQuestionnairePage() {
         offset: cursor,
         limit: Math.min(PAGE_SIZE, targetEnd - cursor)
       })
-      if (!isCurrent(generation, sessionId)) return null
+      if (!isCurrent(generation, sessionId) ||
+        (sessionLoadToken !== undefined && sessionLoadRequestRef.current !== sessionLoadToken)) {
+        return null
+      }
       if (!result.ok) {
         handleFailure(result.errorCode, '无法读取 AI 对话。')
         return null
@@ -510,11 +522,14 @@ export function AIQuestionnairePage() {
     generation = generationRef.current
   ) => {
     if (!isCurrent(generation, sessionId)) return
+    const sessionLoadToken = ++sessionLoadRequestRef.current
+    const sessionLoadIsCurrent = () => isCurrent(generation, sessionId) &&
+      sessionLoadRequestRef.current === sessionLoadToken
     setLoading(true)
     setError(null)
     try {
       const probe = await window.easyEpi.ai.session.get({ sessionId, offset: 0, limit: 1 })
-      if (!isCurrent(generation, sessionId)) return
+      if (!sessionLoadIsCurrent()) return
       if (!probe.ok) {
         handleFailure(probe.errorCode, '无法读取 AI 对话。')
         return
@@ -527,10 +542,10 @@ export function AIQuestionnairePage() {
             offset,
             probe.session.total,
             generation,
-            probe.session
+            probe.session,
+            sessionLoadToken
           )
-      if (!isCurrent(generation, sessionId)) return
-      if (result === null) return
+      if (result === null || !sessionLoadIsCurrent()) return
       setProjectBlocked(false)
       setSessionPage(result)
       setMessages(result.messages)
@@ -541,14 +556,14 @@ export function AIQuestionnairePage() {
         setArtifactApplicability(null)
       } else {
         const summary = result.artifacts.find(({ artifactId }) => artifactId === result.activeArtifactId)
-        if (summary !== undefined && summary.status === 'completed') {
+        if (summary !== undefined && summary.status === 'completed' && sessionLoadIsCurrent()) {
           void loadArtifact(sessionId, summary.artifactId, summary.operationId, generation)
         }
       }
     } catch {
-      if (isCurrent(generation, sessionId)) setError('无法读取 AI 对话。')
+      if (sessionLoadIsCurrent()) setError('无法读取 AI 对话。')
     } finally {
-      if (isCurrent(generation, sessionId)) setLoading(false)
+      if (sessionLoadIsCurrent()) setLoading(false)
     }
   }, [commitActiveArtifact, fetchSessionRange, handleFailure, invalidateArtifactPreview, isCurrent, loadArtifact])
 
@@ -720,6 +735,7 @@ export function AIQuestionnairePage() {
     generation: number
   ) => {
     if (!isCurrent(generation, sessionId)) return
+    invalidateSessionLoad()
     invalidateArtifactPreview()
     commitActiveArtifact({
       sessionId,
