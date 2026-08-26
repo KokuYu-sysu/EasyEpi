@@ -27,23 +27,29 @@ import {
   useToast
 } from '@renderer/components/ui'
 import { friendlyAIError, isProjectBoundaryError } from '@renderer/components/ai/ai-errors'
+import { subscribeAIConfigChanged } from '@renderer/components/ai/ai-config-events'
 import {
   AI_PRIVACY_NOTICE,
   type AIArtifactPreview,
+  type AIPublicAttachmentSummary,
   type AIPublicMessage,
   type AIQuestionnaireArtifactPreviewDto,
   type AISessionListItem,
   type AISessionPage,
   type AISessionStatus
 } from '@shared/ai-assistant-contract'
+import {
+  CONDITION_OPERATOR_LABELS,
+  CONSTRAINT_TYPE_LABELS,
+  QUESTION_TYPE_LABELS,
+  type QuestionnaireDef
+} from '@shared/types/qnaire'
 
 const PAGE_SIZE = 50
 
 interface QuestionnaireAttachmentPreview {
-  name: string
-  description: string | null
-  questionCount: number
-  ruleCount: number
+  snapshot: Omit<QuestionnaireDef, 'derivedVariables'>
+  fingerprint: string
 }
 
 interface ActiveArtifact {
@@ -51,6 +57,15 @@ interface ActiveArtifact {
   artifactId: string
   operationId: string
   preview: AIArtifactPreview
+}
+
+interface PendingSendIntent {
+  requestId: string
+  sessionId: string
+  generation: number
+  content: string
+  includeCurrentQuestionnaire: boolean
+  attachmentFingerprint: string | null
 }
 
 const STATUS_LABELS: Record<AISessionStatus, string> = {
@@ -71,6 +86,90 @@ function statusVariant(status: AISessionStatus): 'neutral' | 'success' | 'warnin
 function localTime(value: string): string {
   const parsed = new Date(value)
   return Number.isNaN(parsed.getTime()) ? '时间未知' : parsed.toLocaleString('zh-CN')
+}
+
+function questionnaireAttachmentSnapshot(
+  questionnaire: QuestionnaireDef
+): Omit<QuestionnaireDef, 'derivedVariables'> {
+  return {
+    name: questionnaire.name,
+    ...(questionnaire.description === undefined ? {} : { description: questionnaire.description }),
+    questions: questionnaire.questions.map((question) => ({
+      id: question.id,
+      content: question.content,
+      variableName: question.variableName,
+      type: question.type,
+      options: question.options.map(({ value, label }) => ({ value, label })),
+      constraint: {
+        type: question.constraint.type,
+        ...(question.constraint.fixedLength === undefined ? {} : { fixedLength: question.constraint.fixedLength }),
+        ...(question.constraint.minValue === undefined ? {} : { minValue: question.constraint.minValue }),
+        ...(question.constraint.maxValue === undefined ? {} : { maxValue: question.constraint.maxValue }),
+        ...(question.constraint.step === undefined ? {} : { step: question.constraint.step }),
+        ...(question.constraint.regexPattern === undefined ? {} : { regexPattern: question.constraint.regexPattern }),
+        ...(question.constraint.regexFlags === undefined ? {} : { regexFlags: question.constraint.regexFlags })
+      },
+      ...(question.defaultValue === undefined ? {} : { defaultValue: question.defaultValue }),
+      isKey: question.isKey,
+      allowSkip: question.allowSkip,
+      ...(question.skipValue === undefined ? {} : { skipValue: question.skipValue }),
+      order: question.order
+    })),
+    conditionRules: questionnaire.conditionRules.map((rule) => ({
+      id: rule.id,
+      sourceQuestionId: rule.sourceQuestionId,
+      conditions: rule.conditions.map(({ questionId, operator, value }) => ({
+        questionId,
+        operator,
+        value
+      })),
+      logic: rule.logic,
+      action: rule.action,
+      targetQuestionIds: [...rule.targetQuestionIds]
+    })),
+    keyQuestionIds: [...questionnaire.keyQuestionIds]
+  }
+}
+
+function questionnaireFingerprint(snapshot: Omit<QuestionnaireDef, 'derivedVariables'>): string {
+  return JSON.stringify(snapshot)
+}
+
+function createAttachmentPreview(questionnaire: QuestionnaireDef): QuestionnaireAttachmentPreview {
+  const snapshot = questionnaireAttachmentSnapshot(questionnaire)
+  return { snapshot, fingerprint: questionnaireFingerprint(snapshot) }
+}
+
+function constraintSummary(constraint: QuestionnaireDef['questions'][number]['constraint']): string {
+  const details = [
+    constraint.fixedLength === undefined ? null : `长度 ${constraint.fixedLength}`,
+    constraint.minValue === undefined ? null : `最小 ${constraint.minValue}`,
+    constraint.maxValue === undefined ? null : `最大 ${constraint.maxValue}`,
+    constraint.step === undefined ? null : `步长 ${constraint.step}`,
+    constraint.regexPattern === undefined ? null : `表达式 ${constraint.regexPattern}`,
+    constraint.regexFlags === undefined ? null : `标志 ${constraint.regexFlags}`
+  ].filter((item): item is string => item !== null)
+  return [CONSTRAINT_TYPE_LABELS[constraint.type], ...details].join('；')
+}
+
+function mergeMessages(...groups: AIPublicMessage[][]): AIPublicMessage[] {
+  const byId = new Map<string, AIPublicMessage>()
+  for (const group of groups) {
+    for (const message of group) {
+      if (!byId.has(message.id)) byId.set(message.id, message)
+    }
+  }
+  return [...byId.values()]
+}
+
+function mergeAttachments(...groups: AIPublicAttachmentSummary[][]): AIPublicAttachmentSummary[] {
+  const byId = new Map<string, AIPublicAttachmentSummary>()
+  for (const group of groups) {
+    for (const attachment of group) {
+      if (!byId.has(attachment.attachmentId)) byId.set(attachment.attachmentId, attachment)
+    }
+  }
+  return [...byId.values()]
 }
 
 function ArtifactPreviewCard({
@@ -161,28 +260,59 @@ export function AIQuestionnairePage() {
   const [loadingEarlier, setLoadingEarlier] = useState(false)
   const [sending, setSending] = useState(false)
   const [applying, setApplying] = useState(false)
-  const [requestId, setRequestId] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [projectBlocked, setProjectBlocked] = useState(false)
   const [configMissing, setConfigMissing] = useState(true)
   const [privacyAccepted, setPrivacyAccepted] = useState<boolean | null>(null)
+  const [privacyBusy, setPrivacyBusy] = useState(false)
+  const [pendingSend, setPendingSend] = useState(false)
   const [privacyOpen, setPrivacyOpen] = useState(false)
   const [attachmentOpen, setAttachmentOpen] = useState(false)
   const [attachmentLoading, setAttachmentLoading] = useState(false)
   const [attachmentPreview, setAttachmentPreview] = useState<QuestionnaireAttachmentPreview | null>(null)
+  const [attachmentNotice, setAttachmentNotice] = useState<string | null>(null)
   const [includeCurrentQuestionnaire, setIncludeCurrentQuestionnaire] = useState(false)
+  const [confirmedAttachmentFingerprint, setConfirmedAttachmentFingerprint] = useState<string | null>(null)
   const [activeArtifact, setActiveArtifact] = useState<ActiveArtifact | null>(null)
   const [renameOpen, setRenameOpen] = useState(false)
   const [renameTitle, setRenameTitle] = useState('')
   const [announcement, setAnnouncement] = useState('')
   const generationRef = useRef(0)
+  const configRequestRef = useRef(0)
   const activeSessionIdRef = useRef<string | null>(null)
   const mountedRef = useRef(true)
+  const pendingSendRef = useRef<PendingSendIntent | null>(null)
+  const privacyBusyRef = useRef(false)
+  const activeRequestIdRef = useRef<string | null>(null)
   const toast = useToast()
+
+  const refreshAIConfig = useCallback(async () => {
+    const request = ++configRequestRef.current
+    try {
+      const result = await window.easyEpi.ai.config.get()
+      if (!mountedRef.current || request !== configRequestRef.current) return
+      setConfigMissing(!result.ok || !result.config.baseUrl ||
+        !result.config.model || !result.config.hasApiKey)
+    } catch {
+      if (mountedRef.current && request === configRequestRef.current) setConfigMissing(true)
+    }
+  }, [])
 
   const isCurrent = useCallback((generation: number, sessionId?: string) =>
     mountedRef.current && generationRef.current === generation &&
     (sessionId === undefined || activeSessionIdRef.current === sessionId), [])
+
+  const setPrivacyBusySynchronized = useCallback((busy: boolean) => {
+    privacyBusyRef.current = busy
+    setPrivacyBusy(busy)
+  }, [])
+
+  const releasePendingSend = useCallback((intent?: PendingSendIntent) => {
+    if (intent !== undefined && pendingSendRef.current?.requestId !== intent.requestId) return
+    pendingSendRef.current = null
+    setPendingSend(false)
+    setPrivacyBusySynchronized(false)
+  }, [setPrivacyBusySynchronized])
 
   const clearSessionContent = useCallback(() => {
     setSessionPage(null)
@@ -190,13 +320,19 @@ export function AIQuestionnairePage() {
     setMessageOffset(0)
     setActiveArtifact(null)
     setIncludeCurrentQuestionnaire(false)
+    setConfirmedAttachmentFingerprint(null)
     setAttachmentPreview(null)
+    setAttachmentNotice(null)
     setAttachmentOpen(false)
     setAttachmentLoading(false)
     setDraft('')
     setError(null)
-    setRequestId(null)
+    activeRequestIdRef.current = null
+    pendingSendRef.current = null
+    privacyBusyRef.current = false
     setSending(false)
+    setPendingSend(false)
+    setPrivacyBusy(false)
     setApplying(false)
     setLoadingEarlier(false)
     setPrivacyOpen(false)
@@ -231,6 +367,55 @@ export function AIQuestionnairePage() {
     else setError(message)
   }, [clearProjectContent])
 
+  const fetchSessionRange = useCallback(async (
+    sessionId: string,
+    startOffset: number,
+    endOffset: number,
+    generation: number,
+    basis: AISessionPage
+  ): Promise<AISessionPage | null> => {
+    let cursor = startOffset
+    const targetEnd = endOffset
+    let latest = basis
+    const collectedMessages: AIPublicMessage[] = []
+    const collectedAttachments: AIPublicAttachmentSummary[] = []
+    for (let iteration = 0; cursor < targetEnd && iteration <= PAGE_SIZE; iteration += 1) {
+      const result = await window.easyEpi.ai.session.get({
+        sessionId,
+        offset: cursor,
+        limit: Math.min(PAGE_SIZE, targetEnd - cursor)
+      })
+      if (!isCurrent(generation, sessionId)) return null
+      if (!result.ok) {
+        handleFailure(result.errorCode, '无法读取 AI 对话。')
+        return null
+      }
+      latest = result.session
+      const returnedCount = result.session.messages.length
+      if (returnedCount === 0) throw new Error('AI_SESSION_PAGINATION_STALLED')
+      collectedMessages.push(...result.session.messages)
+      collectedAttachments.push(...result.session.attachments)
+      const expectedNext = cursor + returnedCount
+      if (expectedNext >= targetEnd) {
+        cursor = expectedNext
+        break
+      }
+      if (result.session.nextOffset === null || result.session.nextOffset !== expectedNext ||
+        result.session.nextOffset <= cursor) {
+        throw new Error('AI_SESSION_PAGINATION_STALLED')
+      }
+      cursor = result.session.nextOffset
+    }
+    if (cursor < targetEnd) throw new Error('AI_SESSION_PAGINATION_STALLED')
+    return {
+      ...latest,
+      messages: mergeMessages(collectedMessages),
+      attachments: mergeAttachments(collectedAttachments),
+      total: latest.total,
+      nextOffset: null
+    }
+  }, [handleFailure, isCurrent])
+
   const loadArtifact = useCallback(async (
     sessionId: string,
     artifactId: string,
@@ -262,20 +447,25 @@ export function AIQuestionnairePage() {
         return
       }
       const offset = Math.max(0, probe.session.total - PAGE_SIZE)
-      const result = await window.easyEpi.ai.session.get({ sessionId, offset, limit: PAGE_SIZE })
+      const result = probe.session.total === 0
+        ? { ...probe.session, messages: [], attachments: [], nextOffset: null }
+        : await fetchSessionRange(
+            sessionId,
+            offset,
+            probe.session.total,
+            generation,
+            probe.session
+          )
       if (!isCurrent(generation, sessionId)) return
-      if (!result.ok) {
-        handleFailure(result.errorCode, '无法读取 AI 对话。')
-        return
-      }
+      if (result === null) return
       setProjectBlocked(false)
-      setSessionPage(result.session)
-      setMessages(result.session.messages)
+      setSessionPage(result)
+      setMessages(result.messages)
       setMessageOffset(offset)
-      if (result.session.activeArtifactId === null) {
+      if (result.activeArtifactId === null) {
         setActiveArtifact(null)
       } else {
-        const summary = result.session.artifacts.find(({ artifactId }) => artifactId === result.session.activeArtifactId)
+        const summary = result.artifacts.find(({ artifactId }) => artifactId === result.activeArtifactId)
         if (summary !== undefined && summary.status === 'completed') {
           void loadArtifact(sessionId, summary.artifactId, summary.operationId, generation)
         }
@@ -285,7 +475,7 @@ export function AIQuestionnairePage() {
     } finally {
       if (isCurrent(generation, sessionId)) setLoading(false)
     }
-  }, [handleFailure, isCurrent, loadArtifact])
+  }, [fetchSessionRange, handleFailure, isCurrent, loadArtifact])
 
   const loadSessions = useCallback(async (
     preferredSessionId?: string,
@@ -321,21 +511,18 @@ export function AIQuestionnairePage() {
     mountedRef.current = true
     const generation = generationRef.current
     void Promise.resolve().then(() => loadSessions(undefined, generation))
-    void window.easyEpi.ai.config.get().then((result) => {
-      if (mountedRef.current) {
-        setConfigMissing(!result.ok || !result.config.baseUrl || !result.config.model || !result.config.hasApiKey)
-      }
-    }).catch(() => {
-      if (mountedRef.current) setConfigMissing(true)
-    })
+    void Promise.resolve().then(() => refreshAIConfig())
+    const unsubscribeConfig = subscribeAIConfigChanged(() => { void refreshAIConfig() })
     const unsubscribe = window.easyEpi.project.onClosed?.(() => clearProjectContent())
     return () => {
       mountedRef.current = false
       generationRef.current += 1
+      configRequestRef.current += 1
       activeSessionIdRef.current = null
+      unsubscribeConfig()
       unsubscribe?.()
     }
-  }, [clearProjectContent, isCurrent, loadSessions])
+  }, [clearProjectContent, loadSessions, refreshAIConfig])
 
   useEffect(() => {
     if (activeSessionId === null) return
@@ -398,20 +585,26 @@ export function AIQuestionnairePage() {
   const loadEarlier = async () => {
     const sessionId = activeSessionIdRef.current
     const generation = generationRef.current
-    if (sessionId === null || messageOffset <= 0 || loadingEarlier) return
+    if (sessionId === null || sessionPage === null || messageOffset <= 0 || loadingEarlier) return
     const nextOffset = Math.max(0, messageOffset - PAGE_SIZE)
     setLoadingEarlier(true)
     try {
-      const result = await window.easyEpi.ai.session.get({
+      const result = await fetchSessionRange(
         sessionId,
-        offset: nextOffset,
-        limit: messageOffset - nextOffset
-      })
+        nextOffset,
+        messageOffset,
+        generation,
+        sessionPage
+      )
       if (!isCurrent(generation, sessionId)) return
-      if (!result.ok) return handleFailure(result.errorCode, '无法加载更早的消息。')
-      setMessages((current) => [...result.session.messages, ...current])
+      if (result === null) return
+      setMessages((current) => mergeMessages(result.messages, current))
       setMessageOffset(nextOffset)
-      setSessionPage((current) => current === null ? result.session : { ...current, total: result.session.total })
+      setSessionPage((current) => current === null ? result : {
+        ...current,
+        attachments: mergeAttachments(result.attachments, current.attachments),
+        total: result.total
+      })
     } catch {
       if (isCurrent(generation, sessionId)) setError('无法加载更早的消息。')
     } finally {
@@ -428,12 +621,10 @@ export function AIQuestionnairePage() {
     try {
       const questionnaire = await window.easyEpi.qnaire.getData()
       if (!isCurrent(generation, sessionId)) return
-      setAttachmentPreview({
-        name: questionnaire.name || '未命名问卷',
-        description: questionnaire.description?.trim() || null,
-        questionCount: questionnaire.questions.length,
-        ruleCount: questionnaire.conditionRules.length
-      })
+      setAttachmentPreview(createAttachmentPreview(questionnaire))
+      setAttachmentNotice(null)
+      setConfirmedAttachmentFingerprint(null)
+      setIncludeCurrentQuestionnaire(false)
       setAttachmentOpen(true)
     } catch {
       if (isCurrent(generation, sessionId)) {
@@ -463,26 +654,50 @@ export function AIQuestionnairePage() {
     ])
   }
 
-  const performSend = async () => {
-    const sessionId = activeSessionIdRef.current
-    const generation = generationRef.current
-    if (sessionId === null || draft.trim().length === 0 || sending || configMissing ||
-      sessionPage?.status === 'running') return
-    const currentRequestId = crypto.randomUUID()
-    const content = draft
-    const includeQuestionnaire = includeCurrentQuestionnaire
-    setRequestId(currentRequestId)
+  const verifyPendingAttachment = async (intent: PendingSendIntent): Promise<boolean> => {
+    if (!intent.includeCurrentQuestionnaire) return true
+    try {
+      const questionnaire = await window.easyEpi.qnaire.getData()
+      if (!isCurrent(intent.generation, intent.sessionId) ||
+        pendingSendRef.current?.requestId !== intent.requestId) return false
+      const currentPreview = createAttachmentPreview(questionnaire)
+      if (currentPreview.fingerprint === intent.attachmentFingerprint) return true
+      setAttachmentPreview(currentPreview)
+      setAttachmentNotice('当前问卷已发生变化，请核对更新后的完整快照并重新确认。')
+      setConfirmedAttachmentFingerprint(null)
+      setIncludeCurrentQuestionnaire(false)
+      setAttachmentOpen(true)
+      releasePendingSend(intent)
+      return false
+    } catch {
+      if (isCurrent(intent.generation, intent.sessionId) &&
+        pendingSendRef.current?.requestId === intent.requestId) {
+        setError('无法读取当前问卷。请先创建或打开项目并完成解锁。')
+        releasePendingSend(intent)
+      }
+      return false
+    }
+  }
+
+  const performSend = async (intent: PendingSendIntent) => {
+    if (!isCurrent(intent.generation, intent.sessionId) ||
+      pendingSendRef.current?.requestId !== intent.requestId ||
+      activeRequestIdRef.current !== null) return
+    activeRequestIdRef.current = intent.requestId
     setSending(true)
+    setPrivacyBusySynchronized(false)
     setError(null)
     setAnnouncement('消息已发送，AI 正在生成问卷草稿。')
     try {
       const result = await window.easyEpi.ai.send({
-        requestId: currentRequestId,
-        sessionId,
-        content,
-        includeCurrentQuestionnaire: includeQuestionnaire
+        requestId: intent.requestId,
+        sessionId: intent.sessionId,
+        content: intent.content,
+        includeCurrentQuestionnaire: intent.includeCurrentQuestionnaire
       })
-      if (!isCurrent(generation, sessionId)) return
+      if (!isCurrent(intent.generation, intent.sessionId) ||
+        activeRequestIdRef.current !== intent.requestId ||
+        pendingSendRef.current?.requestId !== intent.requestId) return
       if (!result.ok) {
         handleFailure(result.errorCode, 'AI 生成失败，请重试。')
         setAnnouncement('AI 请求未完成。')
@@ -490,61 +705,125 @@ export function AIQuestionnairePage() {
       }
       setDraft('')
       setAnnouncement('AI 问卷草稿已生成。')
-      await refreshAfterSend(sessionId, result.artifact, generation)
+      await refreshAfterSend(intent.sessionId, result.artifact, intent.generation)
     } catch {
-      if (isCurrent(generation, sessionId)) {
+      if (isCurrent(intent.generation, intent.sessionId) &&
+        activeRequestIdRef.current === intent.requestId &&
+        pendingSendRef.current?.requestId === intent.requestId) {
         setError('AI 生成失败，请重试。')
         setAnnouncement('AI 请求未完成。')
       }
     } finally {
-      if (isCurrent(generation, sessionId)) {
-        setIncludeCurrentQuestionnaire(false)
-        setAttachmentPreview(null)
-        setSending(false)
-        setRequestId(null)
+      if (activeRequestIdRef.current === intent.requestId &&
+        pendingSendRef.current?.requestId === intent.requestId) {
+        activeRequestIdRef.current = null
+        if (isCurrent(intent.generation, intent.sessionId)) {
+          setIncludeCurrentQuestionnaire(false)
+          setConfirmedAttachmentFingerprint(null)
+          setAttachmentPreview(null)
+          setAttachmentNotice(null)
+          setSending(false)
+        }
+        releasePendingSend(intent)
       }
     }
   }
 
-  const startSend = async () => {
-    const sessionId = activeSessionIdRef.current
-    const generation = generationRef.current
-    if (sessionId === null || draft.trim().length === 0 || sending || configMissing ||
-      sessionPage?.status === 'running') return
-    if (privacyAccepted === true) return performSend()
+  const continuePendingSend = async (intent: PendingSendIntent) => {
+    if (!await verifyPendingAttachment(intent)) return
+    if (!isCurrent(intent.generation, intent.sessionId) ||
+      pendingSendRef.current?.requestId !== intent.requestId) return
+    if (privacyAccepted === true) {
+      setPrivacyBusySynchronized(false)
+      await performSend(intent)
+      return
+    }
     try {
       const result = await window.easyEpi.ai.privacy.status()
-      if (!isCurrent(generation, sessionId)) return
-      if (!result.ok) return handleFailure(result.errorCode, '无法读取 AI 隐私确认状态。')
+      if (!isCurrent(intent.generation, intent.sessionId) ||
+        pendingSendRef.current?.requestId !== intent.requestId) return
+      if (!result.ok) {
+        handleFailure(result.errorCode, '无法读取 AI 隐私确认状态。')
+        releasePendingSend(intent)
+        return
+      }
       setPrivacyAccepted(result.accepted)
-      if (result.accepted) return performSend()
-      setPrivacyOpen(true)
+      setPrivacyBusySynchronized(false)
+      if (result.accepted) await performSend(intent)
+      else setPrivacyOpen(true)
     } catch {
-      if (isCurrent(generation, sessionId)) setError('无法读取 AI 隐私确认状态。')
+      if (isCurrent(intent.generation, intent.sessionId) &&
+        pendingSendRef.current?.requestId === intent.requestId) {
+        setError('无法读取 AI 隐私确认状态。')
+        releasePendingSend(intent)
+      }
     }
   }
 
-  const acceptPrivacyAndSend = async () => {
+  const startSend = () => {
+    if (pendingSendRef.current !== null) return
     const sessionId = activeSessionIdRef.current
     const generation = generationRef.current
-    if (sessionId === null) return
+    const content = draft
+    if (sessionId === null || content.trim().length === 0 || sending || configMissing ||
+      sessionPage?.status === 'running') return
+    if (includeCurrentQuestionnaire && confirmedAttachmentFingerprint === null) {
+      setError('请先确认当前问卷的发送预览。')
+      return
+    }
+    const intent: PendingSendIntent = {
+      requestId: crypto.randomUUID(),
+      sessionId,
+      generation,
+      content,
+      includeCurrentQuestionnaire,
+      attachmentFingerprint: includeCurrentQuestionnaire ? confirmedAttachmentFingerprint : null
+    }
+    pendingSendRef.current = intent
+    setPendingSend(true)
+    setPrivacyBusySynchronized(true)
+    void continuePendingSend(intent)
+  }
+
+  const rejectPrivacy = () => {
+    setPrivacyOpen(false)
+    releasePendingSend()
+  }
+
+  const acceptPrivacyAndSend = async () => {
+    const intent = pendingSendRef.current
+    if (intent === null || privacyBusyRef.current ||
+      !isCurrent(intent.generation, intent.sessionId)) return
+    setPrivacyBusySynchronized(true)
     try {
       const result = await window.easyEpi.ai.privacy.accept()
-      if (!isCurrent(generation, sessionId)) return
-      if (!result.ok) return handleFailure(result.errorCode, '无法保存 AI 隐私确认。')
+      if (!isCurrent(intent.generation, intent.sessionId) ||
+        pendingSendRef.current?.requestId !== intent.requestId) return
+      if (!result.ok) {
+        handleFailure(result.errorCode, '无法保存 AI 隐私确认。')
+        setPrivacyOpen(false)
+        releasePendingSend(intent)
+        return
+      }
       setPrivacyAccepted(true)
       setPrivacyOpen(false)
-      await performSend()
+      setPrivacyBusySynchronized(false)
+      await performSend(intent)
     } catch {
-      if (isCurrent(generation, sessionId)) setError('无法保存 AI 隐私确认。')
+      if (isCurrent(intent.generation, intent.sessionId) &&
+        pendingSendRef.current?.requestId === intent.requestId) {
+        setError('无法保存 AI 隐私确认。')
+        setPrivacyOpen(false)
+        releasePendingSend(intent)
+      }
     }
   }
 
   const cancelSend = async () => {
     const sessionId = activeSessionIdRef.current
     const generation = generationRef.current
-    if (requestId === null || sessionId === null) return
-    const pendingRequestId = requestId
+    const pendingRequestId = activeRequestIdRef.current
+    if (pendingRequestId === null || sessionId === null) return
     try {
       const result = await window.easyEpi.ai.cancel({ requestId: pendingRequestId })
       if (!isCurrent(generation, sessionId)) return
@@ -593,6 +872,7 @@ export function AIQuestionnairePage() {
 
   const activeSession = sessions.find(({ sessionId }) => sessionId === activeSessionId)
   const canSend = activeSessionId !== null && draft.trim().length > 0 && !sending &&
+    !pendingSend && !privacyBusy &&
     !projectBlocked && !configMissing && sessionPage?.status !== 'running'
 
   return (
@@ -708,14 +988,14 @@ export function AIQuestionnairePage() {
                   <CardContent className="grid gap-[var(--space-3)] pt-[var(--space-5)]">
                     {includeCurrentQuestionnaire && attachmentPreview ? (
                       <div className="flex flex-wrap items-center justify-between gap-[var(--space-2)] rounded-[var(--radius-1)] border border-[var(--color-info)] bg-[var(--color-info-soft)] p-[var(--space-3)]">
-                        <span>本次发送将加入当前问卷：{attachmentPreview.name}</span>
-                        <Button size="sm" variant="ghost" aria-label="移除当前问卷附件" onClick={() => { setIncludeCurrentQuestionnaire(false); setAttachmentPreview(null) }}><X aria-hidden="true" size={16} />移除</Button>
+                        <span>本次发送将加入当前问卷：{attachmentPreview.snapshot.name}</span>
+                        <Button size="sm" variant="ghost" aria-label="移除当前问卷附件" onClick={() => { setIncludeCurrentQuestionnaire(false); setConfirmedAttachmentFingerprint(null); setAttachmentPreview(null); setAttachmentNotice(null) }}><X aria-hidden="true" size={16} />移除</Button>
                       </div>
                     ) : null}
                     <Textarea
                       label="给 AI 的消息"
                       value={draft}
-                      disabled={sending}
+                      disabled={sending || privacyBusy}
                       placeholder="例如：为社区高血压筛查设计一份简洁问卷……"
                       hint="Enter 发送，Shift+Enter 换行。只有对话内容和你明确加入的当前问卷会发送。"
                       onChange={(event) => setDraft(event.target.value)}
@@ -727,11 +1007,11 @@ export function AIQuestionnairePage() {
                       }}
                     />
                     <div className="flex flex-wrap justify-between gap-[var(--space-2)]">
-                      <Button variant="secondary" loading={attachmentLoading} disabled={sending || includeCurrentQuestionnaire} onClick={() => void previewQuestionnaireAttachment()}><Paperclip aria-hidden="true" size={16} />加入当前问卷</Button>
+                      <Button variant="secondary" loading={attachmentLoading} disabled={sending || pendingSend || privacyBusy || includeCurrentQuestionnaire} onClick={() => void previewQuestionnaireAttachment()}><Paperclip aria-hidden="true" size={16} />加入当前问卷</Button>
                       {sending ? (
                         <Button variant="danger" onClick={() => void cancelSend()}><Square aria-hidden="true" size={14} />取消生成</Button>
                       ) : (
-                        <Button onClick={() => void startSend()} disabled={!canSend} aria-label="发送消息"><Send aria-hidden="true" size={16} />发送</Button>
+                        <Button onClick={startSend} loading={privacyBusy} disabled={!canSend} aria-label="发送消息"><Send aria-hidden="true" size={16} />发送</Button>
                       )}
                     </div>
                   </CardContent>
@@ -746,13 +1026,16 @@ export function AIQuestionnairePage() {
         title="AI 隐私确认"
         description={AI_PRIVACY_NOTICE}
         open={privacyOpen}
-        onOpenChange={setPrivacyOpen}
+        onOpenChange={(open) => {
+          setPrivacyOpen(open)
+          if (!open) releasePendingSend()
+        }}
       >
         <div className="grid gap-[var(--space-3)] pt-[var(--space-4)]">
           <p className="m-0 text-[var(--color-text-secondary)]">接受后才会发送当前消息；暂不接受将保留输入内容。</p>
           <div className="flex justify-end gap-[var(--space-2)]">
-            <Button variant="secondary" onClick={() => setPrivacyOpen(false)}>暂不接受</Button>
-            <Button onClick={() => void acceptPrivacyAndSend()}>接受并发送</Button>
+            <Button variant="secondary" disabled={privacyBusy} onClick={rejectPrivacy}>暂不接受</Button>
+            <Button loading={privacyBusy} disabled={privacyBusy || !pendingSend} onClick={() => void acceptPrivacyAndSend()}>接受并发送</Button>
           </div>
         </div>
       </Modal>
@@ -766,14 +1049,59 @@ export function AIQuestionnairePage() {
         {attachmentPreview ? (
           <div className="grid gap-[var(--space-3)] pt-[var(--space-4)]">
             <dl className="m-0 grid gap-[var(--space-2)]">
-              <div><dt className="text-[var(--color-text-secondary)]">问卷名</dt><dd className="m-0">{attachmentPreview.name}</dd></div>
-              <div><dt className="text-[var(--color-text-secondary)]">说明</dt><dd className="m-0">{attachmentPreview.description ?? '无说明'}</dd></div>
-              <div><dt className="text-[var(--color-text-secondary)]">题目 / 规则</dt><dd className="m-0">{attachmentPreview.questionCount} / {attachmentPreview.ruleCount}</dd></div>
+              <div><dt className="text-[var(--color-text-secondary)]">问卷名</dt><dd className="m-0">{attachmentPreview.snapshot.name}</dd></div>
+              <div><dt className="text-[var(--color-text-secondary)]">说明</dt><dd className="m-0">{attachmentPreview.snapshot.description ?? '无说明'}</dd></div>
+              <div><dt className="text-[var(--color-text-secondary)]">题目 / 规则</dt><dd className="m-0">{attachmentPreview.snapshot.questions.length} / {attachmentPreview.snapshot.conditionRules.length}</dd></div>
+              <div><dt className="text-[var(--color-text-secondary)]">Key</dt><dd className="m-0">Key：{attachmentPreview.snapshot.keyQuestionIds.join('、') || '无'}</dd></div>
             </dl>
+            <section aria-labelledby="attachment-questions-title">
+              <h4 id="attachment-questions-title" className="mt-0">题目完整快照</h4>
+              {attachmentPreview.snapshot.questions.length === 0 ? (
+                <p className="m-0 text-[var(--color-text-secondary)]">无题目</p>
+              ) : (
+                <ol className="m-0 grid gap-[var(--space-3)] pl-[var(--space-5)]">
+                  {attachmentPreview.snapshot.questions.map((question) => (
+                    <li key={question.id}>
+                      <strong>{question.content}</strong>
+                      <p className="mb-0 mt-[var(--space-1)] text-[length:var(--font-size-sm)] text-[var(--color-text-secondary)]">
+                        ID：{question.id}；变量：{question.variableName}；类型：{QUESTION_TYPE_LABELS[question.type]}；顺序：{question.order}
+                      </p>
+                      <p className="mb-0 mt-[var(--space-1)] text-[length:var(--font-size-sm)]">
+                        选项：{question.options.length > 0 ? question.options.map(({ value, label }) => `${value}（${label}）`).join('、') : '无'}
+                      </p>
+                      <p className="mb-0 mt-[var(--space-1)] text-[length:var(--font-size-sm)]">
+                        约束：{constraintSummary(question.constraint)}；Key：{question.isKey ? '是' : '否'}；允许跳过：{question.allowSkip ? '是' : '否'}；默认值：{question.defaultValue ?? '无'}；跳过值：{question.skipValue ?? '无'}
+                      </p>
+                    </li>
+                  ))}
+                </ol>
+              )}
+            </section>
+            <section aria-labelledby="attachment-rules-title">
+              <h4 id="attachment-rules-title" className="mt-0">条件规则完整快照</h4>
+              {attachmentPreview.snapshot.conditionRules.length === 0 ? (
+                <p className="m-0 text-[var(--color-text-secondary)]">无条件规则</p>
+              ) : (
+                <ul className="m-0 grid gap-[var(--space-3)] pl-[var(--space-5)]">
+                  {attachmentPreview.snapshot.conditionRules.map((rule) => (
+                    <li key={rule.id}>
+                      <strong>规则 {rule.id}</strong>
+                      <p className="mb-0 mt-[var(--space-1)] text-[length:var(--font-size-sm)]">
+                        来源：{rule.sourceQuestionId}；逻辑：{rule.logic}；动作：{rule.action}；目标：{rule.targetQuestionIds.join('、') || '无'}
+                      </p>
+                      <p className="mb-0 mt-[var(--space-1)] text-[length:var(--font-size-sm)]">
+                        条件：{rule.conditions.length > 0 ? rule.conditions.map(({ questionId, operator, value }) => `${questionId} ${CONDITION_OPERATOR_LABELS[operator]} ${value || '空值'}`).join(` ${rule.logic} `) : '无'}
+                      </p>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </section>
+            {attachmentNotice ? <p role="alert" className="m-0 rounded-[var(--radius-1)] bg-[var(--color-danger-soft)] p-[var(--space-3)] text-[var(--color-danger)]">{attachmentNotice}</p> : null}
             <p className="m-0 rounded-[var(--radius-1)] bg-[var(--color-warning-soft)] p-[var(--space-3)]">衍生变量不会发送。</p>
             <div className="flex justify-end gap-[var(--space-2)]">
               <Button variant="secondary" onClick={() => setAttachmentOpen(false)}>取消</Button>
-              <Button onClick={() => { setIncludeCurrentQuestionnaire(true); setAttachmentOpen(false) }}>确认加入</Button>
+              <Button onClick={() => { setConfirmedAttachmentFingerprint(attachmentPreview.fingerprint); setIncludeCurrentQuestionnaire(true); setAttachmentNotice(null); setAttachmentOpen(false) }}>确认加入</Button>
             </div>
           </div>
         ) : null}

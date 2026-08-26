@@ -3,6 +3,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { Button, Input } from '@renderer/components/ui'
 import type { AIProviderConfigView } from '@shared/ai-assistant-contract'
 import { friendlyAIError } from './ai-errors'
+import { notifyAIConfigChanged } from './ai-config-events'
 
 const EMPTY_CONFIG: AIProviderConfigView = {
   baseUrl: '',
@@ -70,6 +71,7 @@ export function AIProviderSettings({ onConfigChange }: AIProviderSettingsProps) 
         return
       }
       adopt(result.config)
+      notifyAIConfigChanged()
       setStatus('AI 服务配置已保存。')
     } catch {
       setError('无法保存 AI 服务配置。')
@@ -89,6 +91,7 @@ export function AIProviderSettings({ onConfigChange }: AIProviderSettingsProps) 
         return
       }
       adopt(result.config)
+      notifyAIConfigChanged()
       setStatus('AI 服务配置已清除。')
     } catch {
       setError('无法清除 AI 服务配置。')
