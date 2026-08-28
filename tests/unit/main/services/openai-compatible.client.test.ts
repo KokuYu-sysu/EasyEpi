@@ -112,6 +112,20 @@ describe('OpenAI-compatible bounded streaming transport', () => {
     })
   })
 
+  it('counts an astral code point using its real UTF-8 event bytes', () => {
+    const contentEvent = `data: ${chunk('😀')}\n\n`
+    const parser = createSseChatCompletionParser({
+      maxEventCount: 3,
+      maxEventBytes: encoder.encode(contentEvent).byteLength,
+      maxPartialBytes: encoder.encode(contentEvent).byteLength,
+      maxContentCharacters: 10
+    })
+    expect(parser.push(encoder.encode(
+      contentEvent + `data: ${chunk(undefined, 'stop')}\n\ndata: [DONE]\n\n`
+    ))).toEqual([{ content: '😀', sequence: 1 }])
+    expect(parser.finish().content).toBe('😀')
+  })
+
   it.each([
     ['multiple choices', JSON.stringify({ choices: [
       { index: 0, delta: { content: 'a' }, finish_reason: null },
@@ -325,6 +339,60 @@ describe('OpenAI-compatible bounded streaming transport', () => {
     controller.abort()
     await expect(pending).rejects.toMatchObject({ code: 'AI_CANCELLED' })
     expect(cancelled).toHaveBeenCalledOnce()
+  })
+
+  it('attaches reader cancellation before onModelStreaming can synchronously abort', async () => {
+    let closeStream: (() => void) | undefined
+    const cancelled = vi.fn()
+    const response = new Response(new ReadableStream<Uint8Array>({
+      start(controller) { closeStream = () => controller.close() },
+      cancel: cancelled
+    }), { status: 200, headers: { 'content-type': 'text/event-stream' } })
+    const controller = new AbortController()
+    const client = createOpenAICompatibleClient({ fetch: vi.fn().mockResolvedValue(response) })
+    const completion = client.complete(request({
+      signal: controller.signal,
+      onModelStreaming: () => controller.abort()
+    }))
+    const outcome = await Promise.race([
+      completion.catch((error: unknown) => errorCode(error)),
+      new Promise<'hung'>((resolve) => setTimeout(() => resolve('hung'), 25))
+    ])
+    if (outcome === 'hung') {
+      closeStream?.()
+      await completion.catch(() => undefined)
+    }
+    expect(outcome).toBe('AI_CANCELLED')
+    expect(cancelled).toHaveBeenCalledOnce()
+  })
+
+  it('handles a rejecting reader cancellation promise in the abort handler', async () => {
+    let resolveRead: ((result: ReadableStreamReadResult<Uint8Array>) => void) | undefined
+    const cancellationCatch = vi.fn().mockResolvedValue(undefined)
+    const cancel = vi.fn(() => {
+      resolveRead?.({ done: true, value: undefined })
+      return { catch: cancellationCatch } as unknown as Promise<void>
+    })
+    const reader = {
+      read: () => new Promise<ReadableStreamReadResult<Uint8Array>>((resolve) => { resolveRead = resolve }),
+      cancel,
+      releaseLock: vi.fn()
+    }
+    const response = {
+      ok: true,
+      status: 200,
+      headers: new Headers({ 'content-type': 'text/event-stream' }),
+      body: { getReader: () => reader }
+    } as unknown as Response
+    const controller = new AbortController()
+    const client = createOpenAICompatibleClient({ fetch: vi.fn().mockResolvedValue(response) })
+    const completion = client.complete(request({
+      signal: controller.signal,
+      onModelStreaming: () => queueMicrotask(() => controller.abort())
+    }))
+    await expect(completion).rejects.toMatchObject({ code: 'AI_CANCELLED' })
+    expect(cancel).toHaveBeenCalledOnce()
+    expect(cancellationCatch).toHaveBeenCalledOnce()
   })
 
   it('rejects an already-aborted request without starting a network call', async () => {

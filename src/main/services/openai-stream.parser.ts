@@ -57,7 +57,6 @@ function has(value: Record<string, unknown>, key: string): boolean {
 
 export function createSseChatCompletionParser(limits: StreamLimits): SseChatCompletionParser {
   const decoder = new TextDecoder('utf-8', { fatal: true })
-  const byteCounter = new TextEncoder()
   let currentLine = ''
   let eventBytes = 0
   let eventPresent = false
@@ -144,9 +143,12 @@ export function createSseChatCompletionParser(limits: StreamLimits): SseChatComp
 
   function consumeDecoded(text: string): StreamContentDelta[] {
     const emitted: StreamContentDelta[] = []
-    for (let index = 0; index < text.length; index += 1) {
-      const character = text[index]!
-      eventBytes += byteCounter.encode(character).byteLength
+    for (let index = 0; index < text.length;) {
+      const codePoint = text.codePointAt(index)
+      if (codePoint === undefined) invalid()
+      const character = String.fromCodePoint(codePoint)
+      index += character.length
+      eventBytes += codePoint <= 0x7f ? 1 : codePoint <= 0x7ff ? 2 : codePoint <= 0xffff ? 3 : 4
       if (eventBytes > limits.maxPartialBytes) limit()
       if (character !== '\n') {
         currentLine += character

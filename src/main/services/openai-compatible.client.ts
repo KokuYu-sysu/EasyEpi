@@ -187,6 +187,14 @@ async function cancelResponseBody(response: Response): Promise<void> {
   }
 }
 
+function cancelReaderWithoutUnhandledRejection(reader: ReadableStreamDefaultReader<Uint8Array>): void {
+  try {
+    void reader.cancel().catch(() => undefined)
+  } catch {
+    // Abort handlers must not replace the timeout/cancellation result.
+  }
+}
+
 async function boundedText(response: Response, maxBytes: number, signal?: AbortSignal): Promise<string> {
   const length = response.headers.get('content-length')
   if (length !== null && Number(length) > maxBytes) {
@@ -200,7 +208,7 @@ async function boundedText(response: Response, maxBytes: number, signal?: AbortS
   let bodyCancelled = false
   const onAbort = (): void => {
     bodyCancelled = true
-    void reader.cancel()
+    cancelReaderWithoutUnhandledRejection(reader)
   }
   signal?.addEventListener('abort', onAbort, { once: true })
   try {
@@ -460,7 +468,6 @@ export function createOpenAICompatibleClient(
         throw new AIClientError('AI_RESPONSE_TOO_LARGE')
       }
       if (response.body === null) throw new AIClientError('AI_INVALID_RESPONSE')
-      request.onModelStreaming?.()
       const parser = createSseChatCompletionParser({
         maxEventCount,
         maxEventBytes,
@@ -474,10 +481,16 @@ export function createOpenAICompatibleClient(
       let readerCancelled = false
       const cancelReader = (): void => {
         readerCancelled = true
-        void reader.cancel()
+        cancelReaderWithoutUnhandledRejection(reader)
       }
       controller.signal.addEventListener('abort', cancelReader, { once: true })
       try {
+        if (controller.signal.aborted) {
+          cancelReader()
+          throw new Error('ABORTED')
+        }
+        request.onModelStreaming?.()
+        if (controller.signal.aborted) throw new Error('ABORTED')
         for (;;) {
           const result = await reader.read()
           if (controller.signal.aborted) throw new Error('ABORTED')
