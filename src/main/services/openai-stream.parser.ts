@@ -19,8 +19,23 @@ export class OpenAIStreamParseError extends Error {
 
 export interface SseChatCompletionParser {
   push(bytes: Uint8Array): StreamContentDelta[]
-  finish(): { content: string }
+  finish(): StreamCompletionEvidence
   readonly acceptedContent: boolean
+}
+
+export interface CompleteChoiceEvidence {
+  choiceCount: number
+  index: unknown
+  finishReason: unknown
+  content: unknown
+  role: unknown
+  refusalPresent: boolean
+  toolCallPresent: boolean
+}
+
+export interface StreamCompletionEvidence {
+  content: string
+  choice: CompleteChoiceEvidence
 }
 
 function invalid(): never {
@@ -51,6 +66,11 @@ export function createSseChatCompletionParser(limits: StreamLimits): SseChatComp
   let sequence = 0
   let content = ''
   let terminal = false
+  let terminalIndex: unknown
+  let terminalFinishReason: unknown
+  let role: unknown
+  let refusalPresent = false
+  let toolCallPresent = false
   let done = false
   let finished = false
 
@@ -98,11 +118,11 @@ export function createSseChatCompletionParser(limits: StreamLimits): SseChatComp
     if (choice.index !== 0) invalid()
     if (!has(choice, 'delta')) invalid()
     const delta = record(choice.delta)
-    if (has(delta, 'tool_calls') || has(delta, 'function_call') || has(delta, 'refusal')) invalid()
-    if (has(delta, 'role') && delta.role !== 'assistant') invalid()
+    if (has(delta, 'tool_calls') || has(delta, 'function_call')) toolCallPresent = true
+    if (has(delta, 'refusal')) refusalPresent = true
+    if (has(delta, 'role')) role = delta.role
 
     const finishReason = has(choice, 'finish_reason') ? choice.finish_reason : null
-    if (finishReason !== null && finishReason !== 'stop') invalid()
     const emitted: StreamContentDelta[] = []
     if (has(delta, 'content')) {
       if (typeof delta.content !== 'string') invalid()
@@ -113,14 +133,19 @@ export function createSseChatCompletionParser(limits: StreamLimits): SseChatComp
         emitted.push({ content: delta.content, sequence: ++sequence })
       }
     }
-    if (finishReason === 'stop') terminal = true
+    if (finishReason !== null) {
+      if (terminal) invalid()
+      terminal = true
+      terminalIndex = choice.index
+      terminalFinishReason = finishReason
+    }
     return emitted
   }
 
   function consumeDecoded(text: string): StreamContentDelta[] {
     const emitted: StreamContentDelta[] = []
     for (let index = 0; index < text.length; index += 1) {
-      const character = text[index]
+      const character = text[index]!
       eventBytes += byteCounter.encode(character).byteLength
       if (eventBytes > limits.maxPartialBytes) limit()
       if (character !== '\n') {
@@ -168,8 +193,19 @@ export function createSseChatCompletionParser(limits: StreamLimits): SseChatComp
         invalid()
       }
       consumeDecoded(tail)
-      if (currentLine.length > 0 || eventPresent || eventBytes > 0 || !terminal || !done || content.length === 0) invalid()
-      return { content }
+      if (currentLine.length > 0 || eventPresent || eventBytes > 0 || !terminal || !done) invalid()
+      return {
+        content,
+        choice: {
+          choiceCount: 1,
+          index: terminalIndex,
+          finishReason: terminalFinishReason,
+          content,
+          role,
+          refusalPresent,
+          toolCallPresent
+        }
+      }
     }
   }
 }
@@ -318,7 +354,7 @@ export function createAssistantMessageExtractor(maxCharacters: number): Assistan
     push(text) {
       const emitted: string[] = []
       for (let index = 0; index < text.length; index += 1) {
-        const character = text[index]
+        const character = text[index]!
         if (purpose !== null) {
           consumeStringCharacter(character, emitted)
           continue

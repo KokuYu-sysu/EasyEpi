@@ -98,7 +98,18 @@ describe('OpenAI-compatible bounded streaming transport', () => {
       'data: "delta":{"content":"ok"},"finish_reason":null}]}\n\n' +
       `data: ${chunk(undefined, 'stop')}\n\ndata: [DONE]\n\n`
     expect(parser.push(encoder.encode(event))).toEqual([{ content: 'ok', sequence: 1 }])
-    expect(parser.finish()).toEqual({ content: 'ok' })
+    expect(parser.finish()).toEqual({
+      content: 'ok',
+      choice: {
+        choiceCount: 1,
+        index: 0,
+        finishReason: 'stop',
+        content: 'ok',
+        role: undefined,
+        refusalPresent: false,
+        toolCallPresent: false
+      }
+    })
   })
 
   it.each([
@@ -190,14 +201,20 @@ describe('OpenAI-compatible bounded streaming transport', () => {
       content: envelope, streamingSupported: false, responseFormatSupported: true
     })
     expect(fetcher).toHaveBeenCalledOnce()
-    expect(JSON.parse(fetcher.mock.calls[0][1].body)).toMatchObject({ stream: true, response_format: { type: 'json_schema' } })
+    const init = fetcher.mock.calls[0]?.[1]
+    expect(init).toBeDefined()
+    expect(JSON.parse(String(init?.body))).toMatchObject({ stream: true, response_format: { type: 'json_schema' } })
   })
 
   it('falls back independently for explicit response_format then stream rejections', async () => {
     const fallback: string[] = []
     const fetcher = vi.fn()
-      .mockResolvedValueOnce(errorResponse(422, 'response_format json_schema is unsupported'))
-      .mockResolvedValueOnce(errorResponse(400, 'stream parameter is not supported'))
+      .mockResolvedValueOnce(errorResponse(422, JSON.stringify({
+        error: { message: 'Unsupported parameter', param: 'response_format', code: 'unsupported_parameter' }
+      })))
+      .mockResolvedValueOnce(errorResponse(400, JSON.stringify({
+        error: { message: 'Invalid parameter', param: 'stream', code: 'invalid_parameter' }
+      })))
       .mockResolvedValueOnce(jsonResponse())
     const client = createOpenAICompatibleClient({ fetch: fetcher })
     const result = await client.complete(request({ onCapabilityFallback: (capability) => fallback.push(capability) }))
@@ -209,6 +226,48 @@ describe('OpenAI-compatible bounded streaming transport', () => {
       expect.not.objectContaining({ response_format: expect.anything() }),
       expect.not.objectContaining({ stream: true, response_format: expect.anything() })
     ])
+  })
+
+  it.each([
+    ['response_format', JSON.stringify({
+      error: {
+        message: 'Invalid parameter temperature; response_format was present in the request',
+        param: 'temperature',
+        code: 'invalid_parameter'
+      }
+    })],
+    ['streaming', JSON.stringify({
+      error: {
+        message: 'Invalid parameter temperature while stream was requested',
+        param: 'temperature',
+        code: 'invalid_parameter'
+      }
+    })]
+  ])('does not disable %s when exact error metadata identifies another parameter', async (_name, body) => {
+    const fallback = vi.fn()
+    const fetcher = vi.fn()
+      .mockResolvedValueOnce(errorResponse(400, body))
+      .mockResolvedValueOnce(jsonResponse())
+    const client = createOpenAICompatibleClient({ fetch: fetcher })
+    await expect(client.complete(request({ onCapabilityFallback: fallback })))
+      .rejects.toMatchObject({ code: 'AI_PROVIDER_ERROR' })
+    expect(fetcher).toHaveBeenCalledOnce()
+    expect(fallback).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    ['response_format', 'invalid parameter temperature; request also contained response_format'],
+    ['streaming', 'invalid parameter temperature; stream was true']
+  ])('does not disable %s from an incidental plain-text mention', async (_name, body) => {
+    const fallback = vi.fn()
+    const fetcher = vi.fn()
+      .mockResolvedValueOnce(errorResponse(422, body))
+      .mockResolvedValueOnce(jsonResponse())
+    const client = createOpenAICompatibleClient({ fetch: fetcher })
+    await expect(client.complete(request({ onCapabilityFallback: fallback })))
+      .rejects.toMatchObject({ code: 'AI_PROVIDER_ERROR' })
+    expect(fetcher).toHaveBeenCalledOnce()
+    expect(fallback).not.toHaveBeenCalled()
   })
 
   it('honors caller-provided independent capability outcomes without a client-global cache', async () => {
@@ -311,6 +370,7 @@ describe('OpenAI-compatible bounded streaming transport', () => {
       { index: 1, finish_reason: 'stop', message: { content: envelope } }
     ] }],
     ['nonzero index', { choices: [{ index: 2, finish_reason: 'stop', message: { content: envelope } }] }],
+    ['missing index', { choices: [{ finish_reason: 'stop', message: { content: envelope } }] }],
     ['non-stop finish', { choices: [{ index: 0, finish_reason: 'length', message: { content: envelope } }] }],
     ['empty content', { choices: [{ index: 0, finish_reason: 'stop', message: { content: '' } }] }],
     ['refusal', { choices: [{ index: 0, finish_reason: 'stop', message: { content: envelope, refusal: 'no' } }] }],

@@ -3,6 +3,7 @@ import {
   OpenAIStreamParseError,
   createAssistantMessageExtractor,
   createSseChatCompletionParser,
+  type CompleteChoiceEvidence,
   type StreamContentDelta
 } from './openai-stream.parser'
 
@@ -245,21 +246,56 @@ async function boundedText(response: Response, maxBytes: number, signal?: AbortS
   }
 }
 
-function unsupportedResponseFormat(status: number, text: string): boolean {
-  if (status !== 400 && status !== 422) return false
-  const normalized = text.toLowerCase()
-  return (normalized.includes('response_format') || normalized.includes('json_schema')) &&
-    ['unsupported', 'not support', 'unknown', 'unrecognized', 'invalid parameter'].some((term) => normalized.includes(term))
+type NegotiatedCapability = 'streaming' | 'response_format'
+
+function providerErrorMetadata(text: string): { param?: string; signal: string } {
+  try {
+    const root = asRecord(JSON.parse(text))
+    const error = asRecord(root.error)
+    const param = typeof error.param === 'string' ? error.param.toLowerCase() : undefined
+    const signal = [error.code, error.type, error.message]
+      .filter((value): value is string => typeof value === 'string')
+      .join(' ')
+      .toLowerCase()
+    return { ...(param === undefined ? {} : { param }), signal }
+  } catch {
+    return { signal: text.toLowerCase() }
+  }
 }
 
-function unsupportedStreaming(status: number, text: string): boolean {
+function unsupportedSignal(signal: string, allowInvalidParameter: boolean): boolean {
+  const normalized = signal.replaceAll('_', ' ')
+  return ['unsupported', 'not support', 'unknown', 'unrecognized'].some((term) => normalized.includes(term)) ||
+    allowInvalidParameter && normalized.includes('invalid parameter')
+}
+
+function narrowlyNamesUnsupportedCapability(signal: string, capability: NegotiatedCapability): boolean {
+  const patterns = capability === 'response_format'
+    ? [
+        /(?:unsupported|unknown|unrecognized)\s+(?:parameter\s*[:=]?\s*)?["'`]?response_format\b/,
+        /\bresponse_format(?:\s+json_schema)?\s+(?:parameter\s+)?(?:is\s+)?(?:unsupported|not supported|unknown|unrecognized)\b/,
+        /\b(?:does not|doesn't)\s+support\s+(?:the\s+)?response_format\b/
+      ]
+    : [
+        /(?:unsupported|unknown|unrecognized)\s+(?:parameter\s*[:=]?\s*)?["'`]?stream\b/,
+        /\bstream\s+(?:parameter\s+)?(?:is\s+)?(?:unsupported|not supported|unknown|unrecognized)\b/,
+        /\b(?:does not|doesn't)\s+support\s+(?:the\s+)?stream(?:ing)?\b/
+      ]
+  return patterns.some((pattern) => pattern.test(signal))
+}
+
+function unsupportedCapability(
+  status: number,
+  text: string,
+  capability: NegotiatedCapability
+): boolean {
   if (status !== 400 && status !== 422) return false
-  const normalized = text.toLowerCase()
-  const identifiesParameter = [
-    'stream parameter', 'parameter stream', "'stream'", '"stream"', '`stream`', 'stream is'
-  ].some((term) => normalized.includes(term))
-  return identifiesParameter &&
-    ['unsupported', 'not support', 'unknown', 'unrecognized', 'invalid parameter'].some((term) => normalized.includes(term))
+  const metadata = providerErrorMetadata(text)
+  const expectedParam = capability === 'streaming' ? 'stream' : 'response_format'
+  if (metadata.param !== undefined) {
+    return metadata.param === expectedParam && unsupportedSignal(metadata.signal, true)
+  }
+  return narrowlyNamesUnsupportedCapability(metadata.signal, capability)
 }
 
 function statusError(status: number): AIClientError {
@@ -280,29 +316,48 @@ function has(value: Record<string, unknown>, key: string): boolean {
   return Object.prototype.hasOwnProperty.call(value, key)
 }
 
-function strictCompletionContent(parsed: unknown): string {
-  if (typeof parsed !== 'object' || parsed === null || !('choices' in parsed) || !Array.isArray(parsed.choices)) {
-    throw new AIClientError('AI_INVALID_RESPONSE')
-  }
-  if (parsed.choices.length !== 1) throw new AIClientError('AI_INVALID_RESPONSE')
-  const choice = asRecord(parsed.choices[0])
-  if (has(choice, 'index') && choice.index !== 0 || choice.finish_reason !== 'stop' || !has(choice, 'message')) {
-    throw new AIClientError('AI_INVALID_RESPONSE')
-  }
-  const message = asRecord(choice.message)
+function strictCompletionContent(evidence: CompleteChoiceEvidence): string {
   if (
-    has(message, 'refusal') || has(message, 'tool_calls') || has(message, 'function_call') ||
-    has(message, 'role') && message.role !== 'assistant' ||
-    typeof message.content !== 'string' || message.content.length === 0
+    evidence.choiceCount !== 1 || evidence.index !== 0 || evidence.finishReason !== 'stop' ||
+    evidence.refusalPresent || evidence.toolCallPresent ||
+    evidence.role !== undefined && evidence.role !== 'assistant' ||
+    typeof evidence.content !== 'string' || evidence.content.length === 0
   ) {
     throw new AIClientError('AI_INVALID_RESPONSE')
   }
-  return message.content
+  return evidence.content
+}
+
+function completeJsonEvidence(parsed: unknown): CompleteChoiceEvidence {
+  const root = asRecord(parsed)
+  if (!Array.isArray(root.choices)) throw new AIClientError('AI_INVALID_RESPONSE')
+  if (root.choices.length !== 1) {
+    return {
+      choiceCount: root.choices.length,
+      index: undefined,
+      finishReason: undefined,
+      content: undefined,
+      role: undefined,
+      refusalPresent: false,
+      toolCallPresent: false
+    }
+  }
+  const choice = asRecord(root.choices[0])
+  const message = asRecord(choice.message)
+  return {
+    choiceCount: root.choices.length,
+    index: choice.index,
+    finishReason: choice.finish_reason,
+    content: message.content,
+    role: message.role,
+    refusalPresent: has(message, 'refusal'),
+    toolCallPresent: has(message, 'tool_calls') || has(message, 'function_call')
+  }
 }
 
 function completionContent(text: string): string {
   try {
-    return strictCompletionContent(JSON.parse(text))
+    return strictCompletionContent(completeJsonEvidence(JSON.parse(text)))
   } catch (error) {
     if (error instanceof AIClientError) throw error
     throw new AIClientError('AI_INVALID_RESPONSE')
@@ -342,11 +397,15 @@ export function createOpenAICompatibleClient(
     if (request.signal?.aborted === true) throw new AIClientError('AI_CANCELLED')
     const controller = new AbortController()
     let timedOut = false
+    let callerAborted = false
     const timeout = setTimeout(() => {
       timedOut = true
       controller.abort()
     }, timeoutMs)
-    const onAbort = (): void => controller.abort()
+    const onAbort = (): void => {
+      callerAborted = true
+      controller.abort()
+    }
     request.signal?.addEventListener('abort', onAbort, { once: true })
     try {
       const response = await fetcher(endpoint(request.baseUrl), {
@@ -448,7 +507,8 @@ export function createOpenAICompatibleClient(
             }
           }
         }
-        const streamed = parser.finish().content
+        const streamCompletion = parser.finish()
+        const streamed = streamCompletion.content
         const extracted = extractor.finish()
         let parsedEnvelope: unknown
         try {
@@ -460,9 +520,7 @@ export function createOpenAICompatibleClient(
         if (typeof root.assistantMessage !== 'string' || root.assistantMessage !== extracted) {
           throw new AIClientError('AI_INVALID_RESPONSE')
         }
-        const content = strictCompletionContent({
-          choices: [{ index: 0, finish_reason: 'stop', message: { role: 'assistant', content: streamed } }]
-        })
+        const content = strictCompletionContent(streamCompletion.choice)
         return { kind: 'complete', content, usedSse: true }
       } catch (error) {
         if (!readerCancelled) {
@@ -477,7 +535,7 @@ export function createOpenAICompatibleClient(
         reader.releaseLock()
       }
     } catch (error) {
-      if (request.signal?.aborted === true) throw new AIClientError('AI_CANCELLED')
+      if (callerAborted) throw new AIClientError('AI_CANCELLED')
       if (timedOut) throw new AIClientError('AI_TIMEOUT')
       if (error instanceof AIClientError) throw error
       throw new AIClientError('AI_NETWORK_ERROR')
@@ -514,12 +572,12 @@ export function createOpenAICompatibleClient(
             responseFormatSupported: useResponseFormat
           }
         }
-        if (useResponseFormat && unsupportedResponseFormat(result.status, result.text)) {
+        if (useResponseFormat && unsupportedCapability(result.status, result.text, 'response_format')) {
           useResponseFormat = false
           safeRequest.onCapabilityFallback?.('response_format')
           continue
         }
-        if (useStreaming && unsupportedStreaming(result.status, result.text)) {
+        if (useStreaming && unsupportedCapability(result.status, result.text, 'streaming')) {
           useStreaming = false
           safeRequest.onCapabilityFallback?.('streaming')
           continue
