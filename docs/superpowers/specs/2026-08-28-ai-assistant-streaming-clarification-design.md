@@ -122,6 +122,17 @@ interface AIPublicFailureDetails {
   attempts: AIPublicAttemptFailure[] // max 3, unique and ordered
 }
 
+type AIProgressStage =
+  | 'starting'
+  | 'connecting'
+  | 'streaming'
+  | 'validating'
+  | 'repairing'
+  | 'clarification'
+  | 'completed'
+  | 'failed'
+  | 'cancelled'
+
 interface AIPublicRunSnapshot {
   requestId: string
   runId: string
@@ -135,7 +146,7 @@ interface AIPublicRunSnapshot {
 
 `AIPublicMessage` gains `clarification: AIPublicClarification | null`. `AISessionPage` gains `activeRun: AIPublicRunSnapshot | null` and `failures`, containing bounded failure records only for run IDs represented by the returned message page. Each failure record contains `runId`, `userMessageId`, `completedAt`, `errorCode`, and `details`.
 
-`AISendRequest` gains an optional `clarificationSelection` object containing `clarificationId` and `optionId`. It is present only for a quick-reply click. A free-text response omits it.
+`AISendRequest` gains an optional `clarificationSelection` object containing `clarificationId` and `optionId`. It is present only for a quick-reply click, in which case request parsing requires `content` to be the empty string. The main process looks up the persisted option and derives the canonical visible content as `我选择：${option.label}`; renderer-provided text can never disagree with the selected option. A free-text response omits selection metadata and still requires non-empty `content`.
 
 `AISendResult` becomes:
 
@@ -154,11 +165,13 @@ The preload parsers validate every new field exactly. The validation-field prope
 
 The client adds a streaming completion path using `stream: true` and consumes standards-compatible SSE records until `[DONE]`. It accumulates the complete content for final parsing while reporting content deltas through a callback.
 
-Streaming uses one incremental UTF-8 `TextDecoder` so split multibyte characters are preserved. The parser accepts CRLF or LF framing, joins multiple `data:` lines in one event with a newline, ignores comments and empty keep-alive events, and recognizes `[DONE]` only as the complete trimmed data value. It accepts only bounded JSON events whose `choices[0].delta.content` is a string. Empty usage chunks are ignored. Tool calls, refusal payloads, multiple content choices, a non-`stop` terminal finish reason, missing `[DONE]`, premature EOF, invalid UTF-8, malformed JSON, or a content delta after a terminal choice fail the stream.
+Streaming uses one incremental UTF-8 `TextDecoder` so split multibyte characters are preserved. The parser accepts CRLF or LF framing, joins multiple `data:` lines in one event with a newline, ignores comments and empty keep-alive events, and recognizes `[DONE]` only as the complete trimmed data value. Empty usage chunks, an initial role-only assistant delta, empty deltas, and a terminal chunk without `delta.content` are valid and ignored for content assembly. A content chunk must contain exactly choice index 0 and a string `delta.content`; multiple choices are rejected. Tool calls, refusal payloads, a terminal finish reason other than `stop`, missing `[DONE]`, premature EOF, invalid UTF-8, malformed JSON, or a content delta after a terminal choice fail the stream.
 
 Limits apply to total response bytes, decoded content characters, event count, individual event bytes, buffered partial-event bytes, timeout, and cancellation. The implementation uses conservative constants no larger than the existing complete-response limits.
 
 If a `stream: true` request returns HTTP 200 with a complete `application/json` Chat Completions body, that same body is parsed without issuing a second generation request. A non-streaming retry is allowed only when a bounded 400/422 error positively identifies the `stream` parameter as unsupported and no content delta was accepted. Timeout, network failure, malformed SSE, empty EOF, generic 4xx, and any failure after a content delta do not retry.
+
+Streaming SSE, same-response complete JSON, and ordinary non-streaming fallback all use one completion-choice validator. A complete response must contain exactly one choice, finish with `stop`, contain a non-empty assistant string, and contain no refusal or tool-call payload. This prevents a fallback path from accepting a completion that the streaming path would reject.
 
 Streaming support and `response_format` support are independent capability-cache entries. On an explicit 400/422 rejection, the client disables only the named capability and retries the same generation attempt with the remaining supported capability. For example, a schema rejection retries streaming without `response_format`; a later explicit stream rejection may retry non-streaming without it. Capability-negotiation requests that are rejected before generation do not consume one of the three generation attempts, but every retry is surfaced in progress and cached so later turns return to the one-request common path.
 
@@ -172,7 +185,7 @@ Each repair attempt owns a provisional assistant stream. If validation rejects t
 
 ### Main-to-renderer event channel
 
-A fixed, one-way IPC event channel carries validated events scoped by `requestId`, `sessionId`, and `runId`. The preload exposes `onProgress(requestId, callback)`, validates every event, filters the exact request ID, and returns an unsubscribe function. It never exposes generic Electron messaging. The renderer subscribes before invoking `ai.send` so it cannot miss initial events.
+A fixed, one-way IPC event channel carries validated events scoped by `requestId`, `sessionId`, and `runId`. The preload exposes `onProgress({ requestId, sessionId }, callback)`, validates every event, filters the exact request/Session pair, and returns an unsubscribe function. It never exposes generic Electron messaging. The renderer subscribes before invoking `ai.send` so it cannot miss initial events.
 
 The event union is:
 
@@ -183,9 +196,9 @@ The event union is:
 - `validating`: `attempt`
 - `validation_failed`: `attempt` and one `AIPublicAttemptFailure`
 - `repairing`: rejected `attempt` and `nextAttempt`
-- `stream_fallback`: `attempt` and reason `unsupported`
-- `clarification`: `attempt`, `messageId`, and validated `AIPublicClarification`
-- `completed`: `attempt` and `artifactId`
+- `capability_fallback`: `attempt`, capability `streaming` or `response_format`, and reason `unsupported`
+- `clarification`: terminal event with `attempt`, outcome `clarification`, `messageId`, and validated `AIPublicClarification`
+- `completed`: terminal event with `attempt`, outcome `questionnaire`, and `artifactId`
 - `failed`: last `attempt`, stable `errorCode`, and optional `AIPublicFailureDetails`
 - `cancelled`: last `attempt` and error code `AI_CANCELLED`
 
@@ -193,7 +206,7 @@ Every event has `requestId`, `sessionId`, `runId`, and `at`; other required fiel
 
 The in-flight entry captures the initiating `webContents`. Events are sent only to that live owner while its captured project is still current. Main and preload both validate `requestId + sessionId`; the renderer additionally checks its current generation and active Session before accepting an event.
 
-The main process first atomically persists the terminal Session state, then emits exactly one terminal event, then resolves `ai.send`. The invoke result is authoritative. On page reopen, `AISessionPage.activeRun.requestId` allows the same renderer to resubscribe and cancel. If the app or owning `webContents` has gone away, startup/window recovery cancels or fails the interrupted run rather than trying to reconnect it.
+The terminal event set is `clarification | completed | failed | cancelled`; exactly one is emitted per non-replayed run. The main process first atomically persists the terminal Session state, then emits that terminal event, then resolves `ai.send`. The invoke result is authoritative. On page reopen, `AISessionPage.activeRun.requestId` allows the same renderer to resubscribe and cancel. If the app or owning `webContents` has gone away, startup/window recovery cancels or fails the interrupted run rather than trying to reconnect it.
 
 Assistant deltas are batched or throttled before IPC delivery while preserving `sequence`, so token-rate providers cannot flood the renderer.
 
