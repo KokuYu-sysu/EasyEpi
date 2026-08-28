@@ -1,4 +1,10 @@
 import { normalizeAIBaseUrl, validateAIConfigUpdate } from './ai-config.service'
+import {
+  OpenAIStreamParseError,
+  createAssistantMessageExtractor,
+  createSseChatCompletionParser,
+  type StreamContentDelta
+} from './openai-stream.parser'
 
 export type AIClientErrorCode =
   | 'AI_AUTH_ERROR'
@@ -31,11 +37,17 @@ export interface AIChatCompletionRequest {
   signal?: AbortSignal
   /** False means this provider/model was already proven not to support JSON schema. */
   responseFormatSupported?: boolean
+  /** False means this provider/model was already proven not to support SSE streaming. */
+  streamingSupported?: boolean
+  onModelStreaming?: () => void
+  onContentDelta?: (delta: StreamContentDelta) => void
+  onCapabilityFallback?: (capability: 'streaming' | 'response_format') => void
   schemaVersion?: number
 }
 
 export interface AIChatCompletionResult {
   content: string
+  streamingSupported: boolean
   responseFormatSupported: boolean
 }
 
@@ -44,6 +56,12 @@ export interface OpenAICompatibleClientOptions {
   timeoutMs?: number
   maxResponseBytes?: number
   maxErrorResponseBytes?: number
+  maxEventCount?: number
+  maxEventBytes?: number
+  maxPartialEventBytes?: number
+  maxStreamContentCharacters?: number
+  maxAssistantMessageCharacters?: number
+  maxCallbackDeltaCharacters?: number
 }
 
 const QUESTIONNAIRE_SCHEMA = {
@@ -168,7 +186,7 @@ async function cancelResponseBody(response: Response): Promise<void> {
   }
 }
 
-async function boundedText(response: Response, maxBytes: number): Promise<string> {
+async function boundedText(response: Response, maxBytes: number, signal?: AbortSignal): Promise<string> {
   const length = response.headers.get('content-length')
   if (length !== null && Number(length) > maxBytes) {
     await cancelResponseBody(response)
@@ -179,9 +197,15 @@ async function boundedText(response: Response, maxBytes: number): Promise<string
   const chunks: Uint8Array[] = []
   let size = 0
   let bodyCancelled = false
+  const onAbort = (): void => {
+    bodyCancelled = true
+    void reader.cancel()
+  }
+  signal?.addEventListener('abort', onAbort, { once: true })
   try {
     for (;;) {
       const result = await reader.read()
+      if (signal?.aborted === true) throw new Error('ABORTED')
       if (result.done) break
       size += result.value.byteLength
       if (size > maxBytes) {
@@ -205,6 +229,7 @@ async function boundedText(response: Response, maxBytes: number): Promise<string
     }
     throw error
   } finally {
+    signal?.removeEventListener('abort', onAbort)
     reader.releaseLock()
   }
   const bytes = new Uint8Array(size)
@@ -213,13 +238,27 @@ async function boundedText(response: Response, maxBytes: number): Promise<string
     bytes.set(chunk, offset)
     offset += chunk.byteLength
   }
-  return new TextDecoder().decode(bytes)
+  try {
+    return new TextDecoder('utf-8', { fatal: true }).decode(bytes)
+  } catch {
+    throw new AIClientError('AI_INVALID_RESPONSE')
+  }
 }
 
 function unsupportedResponseFormat(status: number, text: string): boolean {
   if (status !== 400 && status !== 422) return false
   const normalized = text.toLowerCase()
   return (normalized.includes('response_format') || normalized.includes('json_schema')) &&
+    ['unsupported', 'not support', 'unknown', 'unrecognized', 'invalid parameter'].some((term) => normalized.includes(term))
+}
+
+function unsupportedStreaming(status: number, text: string): boolean {
+  if (status !== 400 && status !== 422) return false
+  const normalized = text.toLowerCase()
+  const identifiesParameter = [
+    'stream parameter', 'parameter stream', "'stream'", '"stream"', '`stream`', 'stream is'
+  ].some((term) => normalized.includes(term))
+  return identifiesParameter &&
     ['unsupported', 'not support', 'unknown', 'unrecognized', 'invalid parameter'].some((term) => normalized.includes(term))
 }
 
@@ -230,23 +269,49 @@ function statusError(status: number): AIClientError {
   return new AIClientError('AI_PROVIDER_ERROR')
 }
 
-function completionContent(text: string): string {
-  let parsed: unknown
-  try {
-    parsed = JSON.parse(text)
-  } catch {
+function asRecord(value: unknown): Record<string, unknown> {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
     throw new AIClientError('AI_INVALID_RESPONSE')
   }
+  return value as Record<string, unknown>
+}
+
+function has(value: Record<string, unknown>, key: string): boolean {
+  return Object.prototype.hasOwnProperty.call(value, key)
+}
+
+function strictCompletionContent(parsed: unknown): string {
   if (typeof parsed !== 'object' || parsed === null || !('choices' in parsed) || !Array.isArray(parsed.choices)) {
     throw new AIClientError('AI_INVALID_RESPONSE')
   }
-  const choice = parsed.choices[0]
-  if (typeof choice !== 'object' || choice === null || !('message' in choice)) throw new AIClientError('AI_INVALID_RESPONSE')
-  const message = choice.message
-  if (typeof message !== 'object' || message === null || !('content' in message) || typeof message.content !== 'string' || message.content.length === 0) {
+  if (parsed.choices.length !== 1) throw new AIClientError('AI_INVALID_RESPONSE')
+  const choice = asRecord(parsed.choices[0])
+  if (has(choice, 'index') && choice.index !== 0 || choice.finish_reason !== 'stop' || !has(choice, 'message')) {
+    throw new AIClientError('AI_INVALID_RESPONSE')
+  }
+  const message = asRecord(choice.message)
+  if (
+    has(message, 'refusal') || has(message, 'tool_calls') || has(message, 'function_call') ||
+    has(message, 'role') && message.role !== 'assistant' ||
+    typeof message.content !== 'string' || message.content.length === 0
+  ) {
     throw new AIClientError('AI_INVALID_RESPONSE')
   }
   return message.content
+}
+
+function completionContent(text: string): string {
+  try {
+    return strictCompletionContent(JSON.parse(text))
+  } catch (error) {
+    if (error instanceof AIClientError) throw error
+    throw new AIClientError('AI_INVALID_RESPONSE')
+  }
+}
+
+function contentTypeIsJson(response: Response): boolean {
+  const contentType = response.headers.get('content-type')?.toLowerCase() ?? ''
+  return contentType.includes('application/json') || contentType.includes('+json')
 }
 
 export function createOpenAICompatibleClient(
@@ -256,11 +321,25 @@ export function createOpenAICompatibleClient(
   const timeoutMs = options.timeoutMs ?? 60_000
   const maxResponseBytes = options.maxResponseBytes ?? 2_000_000
   const maxErrorResponseBytes = options.maxErrorResponseBytes ?? 32_000
+  const maxEventCount = options.maxEventCount ?? 10_000
+  const maxEventBytes = Math.min(options.maxEventBytes ?? 128_000, maxResponseBytes)
+  const maxPartialEventBytes = Math.min(options.maxPartialEventBytes ?? 128_000, maxResponseBytes)
+  const maxStreamContentCharacters = options.maxStreamContentCharacters ?? 1_000_000
+  const maxAssistantMessageCharacters = options.maxAssistantMessageCharacters ?? 20_000
+  const maxCallbackDeltaCharacters = Math.min(options.maxCallbackDeltaCharacters ?? 4_096, 4_096)
+  if (!Number.isSafeInteger(maxCallbackDeltaCharacters) || maxCallbackDeltaCharacters < 2) {
+    throw new Error('INVALID_STREAM_LIMIT')
+  }
 
   async function requestOnce(
     request: AIChatCompletionRequest,
+    useStreaming: boolean,
     useResponseFormat: boolean
-  ): Promise<{ response: Response; text: string }> {
+  ): Promise<
+    | { kind: 'error'; status: number; text: string }
+    | { kind: 'complete'; content: string; usedSse: boolean }
+  > {
+    if (request.signal?.aborted === true) throw new AIClientError('AI_CANCELLED')
     const controller = new AbortController()
     let timedOut = false
     const timeout = setTimeout(() => {
@@ -281,6 +360,7 @@ export function createOpenAICompatibleClient(
         body: JSON.stringify({
           model: request.model,
           messages: request.messages,
+          ...(useStreaming ? { stream: true } : {}),
           ...(useResponseFormat
             ? {
                 response_format: {
@@ -296,18 +376,110 @@ export function createOpenAICompatibleClient(
         }),
         signal: controller.signal
       })
+      if (controller.signal.aborted) {
+        await cancelResponseBody(response)
+        throw new Error('ABORTED')
+      }
       if (!response.ok && response.status !== 400 && response.status !== 422) {
         await cancelResponseBody(response)
         throw statusError(response.status)
       }
-      return {
-        response,
-        text: await boundedText(response, response.ok ? maxResponseBytes : maxErrorResponseBytes)
+      if (!response.ok) {
+        return {
+          kind: 'error',
+          status: response.status,
+          text: await boundedText(response, maxErrorResponseBytes, controller.signal)
+        }
+      }
+      if (!useStreaming || contentTypeIsJson(response)) {
+        const text = await boundedText(response, maxResponseBytes, controller.signal)
+        return { kind: 'complete', content: completionContent(text), usedSse: false }
+      }
+      const length = response.headers.get('content-length')
+      if (length !== null && Number(length) > maxResponseBytes) {
+        await cancelResponseBody(response)
+        throw new AIClientError('AI_RESPONSE_TOO_LARGE')
+      }
+      if (response.body === null) throw new AIClientError('AI_INVALID_RESPONSE')
+      request.onModelStreaming?.()
+      const parser = createSseChatCompletionParser({
+        maxEventCount,
+        maxEventBytes,
+        maxPartialBytes: maxPartialEventBytes,
+        maxContentCharacters: maxStreamContentCharacters
+      })
+      const extractor = createAssistantMessageExtractor(maxAssistantMessageCharacters)
+      const reader = response.body.getReader()
+      let totalBytes = 0
+      let callbackSequence = 0
+      let readerCancelled = false
+      const cancelReader = (): void => {
+        readerCancelled = true
+        void reader.cancel()
+      }
+      controller.signal.addEventListener('abort', cancelReader, { once: true })
+      try {
+        for (;;) {
+          const result = await reader.read()
+          if (controller.signal.aborted) throw new Error('ABORTED')
+          if (result.done) break
+          totalBytes += result.value.byteLength
+          if (totalBytes > maxResponseBytes) {
+            readerCancelled = true
+            try { await reader.cancel() } catch { /* Preserve the size error. */ }
+            throw new AIClientError('AI_RESPONSE_TOO_LARGE')
+          }
+          for (const modelDelta of parser.push(result.value)) {
+            const safeDelta = extractor.push(modelDelta.content).join('')
+            for (let offset = 0; offset < safeDelta.length;) {
+              let end = Math.min(offset + maxCallbackDeltaCharacters, safeDelta.length)
+              if (
+                end < safeDelta.length &&
+                safeDelta.charCodeAt(end - 1) >= 0xd800 && safeDelta.charCodeAt(end - 1) <= 0xdbff &&
+                safeDelta.charCodeAt(end) >= 0xdc00 && safeDelta.charCodeAt(end) <= 0xdfff
+              ) {
+                end -= 1
+              }
+              request.onContentDelta?.({
+                content: safeDelta.slice(offset, end),
+                sequence: ++callbackSequence
+              })
+              offset = end
+            }
+          }
+        }
+        const streamed = parser.finish().content
+        const extracted = extractor.finish()
+        let parsedEnvelope: unknown
+        try {
+          parsedEnvelope = JSON.parse(streamed)
+        } catch {
+          throw new AIClientError('AI_INVALID_RESPONSE')
+        }
+        const root = asRecord(parsedEnvelope)
+        if (typeof root.assistantMessage !== 'string' || root.assistantMessage !== extracted) {
+          throw new AIClientError('AI_INVALID_RESPONSE')
+        }
+        const content = strictCompletionContent({
+          choices: [{ index: 0, finish_reason: 'stop', message: { role: 'assistant', content: streamed } }]
+        })
+        return { kind: 'complete', content, usedSse: true }
+      } catch (error) {
+        if (!readerCancelled) {
+          try { await reader.cancel() } catch { /* Preserve the parse/read error. */ }
+        }
+        if (error instanceof OpenAIStreamParseError) {
+          throw new AIClientError(error.kind === 'limit' ? 'AI_RESPONSE_TOO_LARGE' : 'AI_INVALID_RESPONSE')
+        }
+        throw error
+      } finally {
+        controller.signal.removeEventListener('abort', cancelReader)
+        reader.releaseLock()
       }
     } catch (error) {
-      if (error instanceof AIClientError) throw error
       if (request.signal?.aborted === true) throw new AIClientError('AI_CANCELLED')
       if (timedOut) throw new AIClientError('AI_TIMEOUT')
+      if (error instanceof AIClientError) throw error
       throw new AIClientError('AI_NETWORK_ERROR')
     } finally {
       clearTimeout(timeout)
@@ -331,14 +503,30 @@ export function createOpenAICompatibleClient(
         apiKey: typeof validated.apiKey === 'string' ? validated.apiKey : undefined
       }
       const preferSchema = safeRequest.responseFormatSupported !== false
-      let result = await requestOnce(safeRequest, preferSchema)
-      if (!result.response.ok && preferSchema && unsupportedResponseFormat(result.response.status, result.text)) {
-        result = await requestOnce(safeRequest, false)
-        if (!result.response.ok) throw statusError(result.response.status)
-        return { content: completionContent(result.text), responseFormatSupported: false }
+      let useResponseFormat = preferSchema
+      let useStreaming = safeRequest.streamingSupported !== false
+      for (let negotiation = 0; negotiation < 3; negotiation += 1) {
+        const result = await requestOnce(safeRequest, useStreaming, useResponseFormat)
+        if (result.kind === 'complete') {
+          return {
+            content: result.content,
+            streamingSupported: useStreaming && result.usedSse,
+            responseFormatSupported: useResponseFormat
+          }
+        }
+        if (useResponseFormat && unsupportedResponseFormat(result.status, result.text)) {
+          useResponseFormat = false
+          safeRequest.onCapabilityFallback?.('response_format')
+          continue
+        }
+        if (useStreaming && unsupportedStreaming(result.status, result.text)) {
+          useStreaming = false
+          safeRequest.onCapabilityFallback?.('streaming')
+          continue
+        }
+        throw statusError(result.status)
       }
-      if (!result.response.ok) throw statusError(result.response.status)
-      return { content: completionContent(result.text), responseFormatSupported: preferSchema }
+      throw new AIClientError('AI_PROVIDER_ERROR')
     }
   }
 }
