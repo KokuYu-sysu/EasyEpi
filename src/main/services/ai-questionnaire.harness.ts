@@ -3,6 +3,7 @@ import { createHash, randomUUID } from 'node:crypto'
 import type {
   AIArtifact,
   AIJsonValue,
+  AIQuickReplyOption,
   AiVersionStamp,
   AISessionData
 } from '@shared/ai-assistant-contract'
@@ -22,9 +23,9 @@ import {
 } from '@shared/types/qnaire'
 
 export const AI_PROMPT_ID = 'easyepi-questionnaire-assistant'
-export const AI_PROMPT_VERSION = '1.1.0'
-export const HARNESS_VERSION = '1.1.0'
-export const QUESTIONNAIRE_SCHEMA_VERSION = 1
+export const AI_PROMPT_VERSION = '2.0.0'
+export const HARNESS_VERSION = '2.0.0'
+export const QUESTIONNAIRE_SCHEMA_VERSION = 2
 
 const QUESTIONNAIRE_SYSTEM_PROMPT_V1_0_0 = `You are EasyEpi's questionnaire drafting assistant.
 You may create or revise only: questionnaire name and description; questions; question types; options; variable names; order; required/allowSkip behavior; skip/default values; constraints; key-question flags; and conditional rules.
@@ -37,7 +38,13 @@ Never create, remove, or modify a regex constraint. An existing regex constraint
 Never request, infer, read, or emit derived variables, responses, baseline data, administrator data, files, passwords, credentials, or filesystem paths. Never output a project file or instructions to modify one.
 Return exactly one strict JSON object with keys assistantMessage, rollingSummary, and questionnaire. The questionnaire candidate may contain only name, description, questions, conditionRules, and keyQuestionIds. Each question may contain only id, content, variableName, type, options, constraint, defaultValue, isKey, allowSkip, skipValue, and order. Each rule may contain only id, sourceQuestionId, conditions, logic, action, and targetQuestionIds. Do not use markdown except that a single JSON fence is tolerated by the local parser.`
 
-export const QUESTIONNAIRE_SYSTEM_PROMPT = QUESTIONNAIRE_SYSTEM_PROMPT_V1_1_0
+const QUESTIONNAIRE_SYSTEM_PROMPT_V2_0_0 = `You are EasyEpi's questionnaire drafting assistant.
+You may create or revise only: questionnaire name and description; questions; question types; options; variable names; order; required/allowSkip behavior; skip/default values; constraints; key-question flags; and conditional rules.
+Never create, remove, or modify a regex constraint. An existing regex constraint may only be copied with exactly the same regexPattern and regexFlags.
+Never request, infer, read, or emit derived variables, responses, baseline data, administrator data, files, passwords, credentials, or filesystem paths. Never output a project file or instructions to modify one.
+Return exactly one strict JSON object with required keys kind, assistantMessage, rollingSummary, options, and questionnaire, in that order so assistantMessage appears before the large questionnaire. Set kind to clarification or questionnaire. Ask at most one core clarification question per response, only when a core requirement is missing; otherwise generate the questionnaire directly. A clarification has one to five options and questionnaire null. A questionnaire has options [] and a questionnaire object. The questionnaire candidate may contain only name, description, questions, conditionRules, and keyQuestionIds. Each question may contain only id, content, variableName, type, options, constraint, defaultValue, isKey, allowSkip, skipValue, and order. Each rule may contain only id, sourceQuestionId, conditions, logic, action, and targetQuestionIds. Do not use markdown except that a single JSON fence is tolerated by the local parser.`
+
+export const QUESTIONNAIRE_SYSTEM_PROMPT = QUESTIONNAIRE_SYSTEM_PROMPT_V2_0_0
 
 export interface AIValidationError {
   code: string
@@ -70,6 +77,13 @@ export interface QuestionnaireHarnessValue {
   validation: { success: true; errors: [] }
 }
 
+export interface ClarificationHarnessValue {
+  assistantMessage: string
+  rollingSummary: string
+  options: AIQuickReplyOption[]
+  validation: { success: true; errors: [] }
+}
+
 export interface QuestionnaireArtifactValue extends QuestionnaireHarnessValue {
   baseQuestionnaireRevision: string
   baseQuestionnaireHash: string
@@ -94,12 +108,20 @@ export type AIRegistryEntry = AIRegistryEntryBase & ({
 })
 
 export type QuestionnaireHarnessResult =
-  | { ok: true; value: QuestionnaireHarnessValue }
-  | { ok: false; errors: AIValidationError[] }
+  | { ok: true; kind: 'questionnaire'; value: QuestionnaireHarnessValue }
+  | { ok: true; kind: 'clarification'; value: ClarificationHarnessValue }
+  | {
+      ok: false
+      errors: AIValidationError[]
+      establishedKind?: 'questionnaire' | 'clarification'
+    }
 
 type JsonObject = Record<string, unknown>
 
-const ENVELOPE_FIELDS = new Set(['assistantMessage', 'rollingSummary', 'questionnaire'])
+const ENVELOPE_FIELDS = new Set([
+  'kind', 'assistantMessage', 'rollingSummary', 'options', 'questionnaire'
+])
+const CLARIFICATION_OPTION_FIELDS = new Set(['id', 'label'])
 const QUESTIONNAIRE_FIELDS = new Set([
   'name', 'description', 'questions', 'conditionRules', 'keyQuestionIds'
 ])
@@ -126,11 +148,21 @@ const MAX_CONDITIONS_PER_RULE = 100
 const MAX_TARGETS_PER_RULE = 500
 const MAX_CANDIDATE_NODES = 50_000
 const MAX_VALIDATION_ERRORS = 100
+const MAX_CLARIFICATION_OPTIONS = 5
+const MAX_CLARIFICATION_LABEL_LENGTH = 200
 
 function isObject(value: unknown): value is JsonObject {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return false
   const prototype = Object.getPrototypeOf(value)
   return prototype === Object.prototype || prototype === null
+}
+
+function hasControlCharacter(value: string): boolean {
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index)
+    if (code <= 0x1f || code === 0x7f) return true
+  }
+  return false
 }
 
 function addError(
@@ -162,6 +194,91 @@ function stripJsonFence(text: string): string {
   const trimmed = text.trim()
   const match = /^```(?:json)?\s*([\s\S]*?)\s*```$/i.exec(trimmed)
   return match?.[1] ?? trimmed
+}
+
+function hasDuplicateJsonKey(text: string): boolean {
+  let offset = 0
+  let duplicate = false
+  const skipWhitespace = (): void => {
+    while (/\s/.test(text[offset] ?? '')) offset += 1
+  }
+  const scanString = (): string => {
+    const start = offset
+    offset += 1
+    while (offset < text.length) {
+      if (text[offset] === '\\') {
+        offset += 2
+      } else if (text[offset] === '"') {
+        offset += 1
+        return JSON.parse(text.slice(start, offset)) as string
+      } else {
+        offset += 1
+      }
+    }
+    throw new Error('INVALID_JSON')
+  }
+  const scanValue = (): void => {
+    skipWhitespace()
+    if (text[offset] === '{') {
+      offset += 1
+      skipWhitespace()
+      const keys = new Set<string>()
+      if (text[offset] === '}') {
+        offset += 1
+        return
+      }
+      for (;;) {
+        if (text[offset] !== '"') throw new Error('INVALID_JSON')
+        const key = scanString()
+        if (keys.has(key)) duplicate = true
+        keys.add(key)
+        skipWhitespace()
+        if (text[offset] !== ':') throw new Error('INVALID_JSON')
+        offset += 1
+        scanValue()
+        skipWhitespace()
+        if (text[offset] === '}') {
+          offset += 1
+          return
+        }
+        if (text[offset] !== ',') throw new Error('INVALID_JSON')
+        offset += 1
+        skipWhitespace()
+      }
+    }
+    if (text[offset] === '[') {
+      offset += 1
+      skipWhitespace()
+      if (text[offset] === ']') {
+        offset += 1
+        return
+      }
+      for (;;) {
+        scanValue()
+        skipWhitespace()
+        if (text[offset] === ']') {
+          offset += 1
+          return
+        }
+        if (text[offset] !== ',') throw new Error('INVALID_JSON')
+        offset += 1
+      }
+    }
+    if (text[offset] === '"') {
+      scanString()
+      return
+    }
+    const start = offset
+    while (offset < text.length && !/[\s,\]}]/.test(text[offset] ?? '')) offset += 1
+    if (start === offset) throw new Error('INVALID_JSON')
+  }
+  try {
+    scanValue()
+    skipWhitespace()
+    return offset === text.length && duplicate
+  } catch {
+    return false
+  }
 }
 
 function validateCandidateLimits(value: unknown): AIValidationError[] {
@@ -224,15 +341,24 @@ function validateCandidateLimits(value: unknown): AIValidationError[] {
   return errors
 }
 
-function parseEnvelope(text: string): { value?: JsonObject; errors: AIValidationError[] } {
+function parseEnvelope(text: string): {
+  value?: JsonObject
+  errors: AIValidationError[]
+  establishedKind?: 'questionnaire' | 'clarification'
+} {
   const errors: AIValidationError[] = []
   if (typeof text !== 'string' || text.length === 0 || text.length > MAX_MODEL_TEXT_LENGTH) {
     addError(errors, 'INVALID_ENVELOPE_SIZE', '$', 'Model response is empty or too large')
     return { errors }
   }
+  const stripped = stripJsonFence(text)
+  if (hasDuplicateJsonKey(stripped)) {
+    addError(errors, 'DUPLICATE_JSON_KEY', '$', 'Duplicate JSON object keys are forbidden')
+    return { errors }
+  }
   let parsed: unknown
   try {
-    parsed = JSON.parse(stripJsonFence(text))
+    parsed = JSON.parse(stripped)
   } catch {
     addError(errors, 'INVALID_JSON', '$', 'Response must be strict JSON')
     return { errors }
@@ -240,6 +366,12 @@ function parseEnvelope(text: string): { value?: JsonObject; errors: AIValidation
   const limitErrors = validateCandidateLimits(parsed)
   if (limitErrors.length > 0) return { errors: limitErrors }
   if (!rejectUnknownFields(parsed, ENVELOPE_FIELDS, '$', errors)) return { errors }
+  const establishedKind = parsed.kind === 'questionnaire' || parsed.kind === 'clarification'
+    ? parsed.kind
+    : undefined
+  if (establishedKind === undefined) {
+    addError(errors, 'INVALID_RESPONSE_KIND', '$.kind', 'Kind must be clarification or questionnaire')
+  }
   if (typeof parsed.assistantMessage !== 'string' || parsed.assistantMessage.trim().length === 0) {
     addError(errors, 'INVALID_ASSISTANT_MESSAGE', '$.assistantMessage', 'Message must be non-empty')
   } else if (parsed.assistantMessage.length > 20_000) {
@@ -250,8 +382,65 @@ function parseEnvelope(text: string): { value?: JsonObject; errors: AIValidation
   } else if (parsed.rollingSummary.length > 20_000) {
     addError(errors, 'INVALID_ROLLING_SUMMARY', '$.rollingSummary', 'Summary is too long')
   }
-  inspectCandidate(parsed.questionnaire, '$.questionnaire', errors)
-  return errors.length === 0 ? { value: parsed, errors } : { errors }
+  if (establishedKind === 'clarification') {
+    if (parsed.questionnaire !== null) {
+      addError(
+        errors,
+        'INVALID_CLARIFICATION_QUESTIONNAIRE',
+        '$.questionnaire',
+        'Clarification questionnaire must be null'
+      )
+    }
+    if (!Array.isArray(parsed.options) ||
+      parsed.options.length < 1 || parsed.options.length > MAX_CLARIFICATION_OPTIONS) {
+      addError(
+        errors,
+        'INVALID_CLARIFICATION_OPTIONS',
+        '$.options',
+        'Clarification requires one to five options'
+      )
+    } else {
+      const optionIds = new Set<string>()
+      const optionLabels = new Set<string>()
+      for (const [index, option] of parsed.options.entries()) {
+        const path = `$.options[${index}]`
+        if (!rejectUnknownFields(option, CLARIFICATION_OPTION_FIELDS, path, errors)) continue
+        if (typeof option.id !== 'string' || !ID_PATTERN.test(option.id)) {
+          addError(errors, 'INVALID_CLARIFICATION_OPTION', `${path}.id`, 'Option id is invalid')
+        } else if (optionIds.has(option.id)) {
+          addError(errors, 'DUPLICATE_CLARIFICATION_OPTION', `${path}.id`, 'Option id must be unique')
+        } else {
+          optionIds.add(option.id)
+        }
+        if (typeof option.label !== 'string' || option.label.length < 1 ||
+          option.label.length > MAX_CLARIFICATION_LABEL_LENGTH || option.label !== option.label.trim() ||
+          hasControlCharacter(option.label)) {
+          addError(errors, 'INVALID_CLARIFICATION_OPTION', `${path}.label`, 'Option label is invalid')
+        } else if (optionLabels.has(option.label)) {
+          addError(errors, 'DUPLICATE_CLARIFICATION_OPTION', `${path}.label`, 'Option label must be unique')
+        } else {
+          optionLabels.add(option.label)
+        }
+      }
+    }
+  } else if (establishedKind === 'questionnaire') {
+    if (!Array.isArray(parsed.options) || parsed.options.length !== 0) {
+      addError(
+        errors,
+        'INVALID_QUESTIONNAIRE_OPTIONS',
+        '$.options',
+        'Questionnaire options must be empty'
+      )
+    }
+    if (!isObject(parsed.questionnaire)) {
+      addError(errors, 'INVALID_QUESTIONNAIRE', '$.questionnaire', 'Questionnaire must be an object')
+    } else {
+      inspectCandidate(parsed.questionnaire, '$.questionnaire', errors)
+    }
+  }
+  return errors.length === 0
+    ? { value: parsed, errors, ...(establishedKind === undefined ? {} : { establishedKind }) }
+    : { errors, ...(establishedKind === undefined ? {} : { establishedKind }) }
 }
 
 function inspectCandidate(value: unknown, path: string, errors: AIValidationError[]): void {
@@ -815,21 +1004,59 @@ export function diffQuestionnaires(base: QuestionnaireDef, draft: QuestionnaireD
 export function runQuestionnaireHarness(
   responseText: string,
   base?: QuestionnaireDef,
-  protectedDerivedVariableNames: readonly string[] = []
+  protectedDerivedVariableNames: readonly string[] = [],
+  branchLock?: 'questionnaire' | 'clarification'
 ): QuestionnaireHarnessResult {
   const parsed = parseEnvelope(responseText)
-  if (parsed.value === undefined) return { ok: false, errors: parsed.errors }
+  if (branchLock !== undefined && parsed.establishedKind !== undefined &&
+    parsed.establishedKind !== branchLock) {
+    return {
+      ok: false,
+      establishedKind: branchLock,
+      errors: [{
+        code: 'AI_RESPONSE_BRANCH_SWITCH',
+        path: '$.kind',
+        message: `Repair response must remain on the ${branchLock} branch`
+      }]
+    }
+  }
+  if (parsed.value === undefined) {
+    return {
+      ok: false,
+      errors: parsed.errors,
+      ...(branchLock === undefined && parsed.establishedKind === undefined
+        ? {}
+        : { establishedKind: branchLock ?? parsed.establishedKind })
+    }
+  }
+  if (parsed.establishedKind === 'clarification') {
+    return {
+      ok: true,
+      kind: 'clarification',
+      value: {
+        assistantMessage: (parsed.value.assistantMessage as string).trim(),
+        rollingSummary: parsed.value.rollingSummary as string,
+        options: structuredClone(parsed.value.options as AIQuickReplyOption[]),
+        validation: { success: true, errors: [] }
+      }
+    }
+  }
   const candidate = parsed.value.questionnaire as JsonObject
   const referenceErrors = validateStableQuestionReferences(candidate, base)
-  if (referenceErrors.length > 0) return { ok: false, errors: referenceErrors }
+  if (referenceErrors.length > 0) {
+    return { ok: false, establishedKind: 'questionnaire', errors: referenceErrors }
+  }
   const draft = normalizeQuestionnaire(candidate, base)
   const regexErrors = validateRegexChanges(base, draft)
-  if (regexErrors.length > 0) return { ok: false, errors: regexErrors }
+  if (regexErrors.length > 0) {
+    return { ok: false, establishedKind: 'questionnaire', errors: regexErrors }
+  }
   const errors = validateQuestionnaire(draft, protectedDerivedVariableNames)
-  if (errors.length > 0) return { ok: false, errors }
+  if (errors.length > 0) return { ok: false, establishedKind: 'questionnaire', errors }
   const emptyBase: QuestionnaireDef = { name: '', questions: [], conditionRules: [], keyQuestionIds: [] }
   return {
     ok: true,
+    kind: 'questionnaire',
     value: {
       draft,
       diff: diffQuestionnaires(base ?? emptyBase, draft),
@@ -878,7 +1105,7 @@ export function getAiVersionStamp(): AiVersionStamp {
   return {
     promptId: AI_PROMPT_ID,
     promptVersion: AI_PROMPT_VERSION,
-    promptHash: `sha256:${createHash('sha256').update(QUESTIONNAIRE_SYSTEM_PROMPT_V1_1_0).digest('hex')}`,
+    promptHash: `sha256:${createHash('sha256').update(QUESTIONNAIRE_SYSTEM_PROMPT_V2_0_0).digest('hex')}`,
     harnessVersion: HARNESS_VERSION,
     schemaVersion: QUESTIONNAIRE_SCHEMA_VERSION
   }
@@ -889,31 +1116,44 @@ const historicalV1Stamp: AiVersionStamp = Object.freeze({
   promptVersion: '1.0.0',
   promptHash: `sha256:${createHash('sha256').update(QUESTIONNAIRE_SYSTEM_PROMPT_V1_0_0).digest('hex')}`,
   harnessVersion: '1.0.0',
-  schemaVersion: QUESTIONNAIRE_SCHEMA_VERSION
+  schemaVersion: 1
 })
 const legacyHarnessV1_1Stamp: AiVersionStamp = Object.freeze({
   ...historicalV1Stamp,
   harnessVersion: '1.1.0'
 })
-const currentV1Stamp: AiVersionStamp = Object.freeze(getAiVersionStamp())
+const previousV1Stamp: AiVersionStamp = Object.freeze({
+  promptId: AI_PROMPT_ID,
+  promptVersion: '1.1.0',
+  promptHash: `sha256:${createHash('sha256').update(QUESTIONNAIRE_SYSTEM_PROMPT_V1_1_0).digest('hex')}`,
+  harnessVersion: '1.1.0',
+  schemaVersion: 1
+})
+const currentV2Stamp: AiVersionStamp = Object.freeze(getAiVersionStamp())
 const historicalV1RegistryEntry: AIRegistryEntry = Object.freeze({
   versionStamp: historicalV1Stamp,
   systemPrompt: QUESTIONNAIRE_SYSTEM_PROMPT_V1_0_0,
-  schemaVersion: QUESTIONNAIRE_SCHEMA_VERSION,
+  schemaVersion: 1,
   compatibility: 'requires-migration'
 })
-const currentV1RegistryEntry: AIRegistryEntry = Object.freeze({
-  versionStamp: currentV1Stamp,
+const previousV1RegistryEntry: AIRegistryEntry = Object.freeze({
+  versionStamp: previousV1Stamp,
   systemPrompt: QUESTIONNAIRE_SYSTEM_PROMPT_V1_1_0,
-  schemaVersion: QUESTIONNAIRE_SCHEMA_VERSION,
-  compatibility: 'supported',
-  runHarness: runQuestionnaireHarness
+  schemaVersion: 1,
+  compatibility: 'requires-migration'
 })
 const legacyHarnessV1_1RegistryEntry: AIRegistryEntry = Object.freeze({
   versionStamp: legacyHarnessV1_1Stamp,
   systemPrompt: QUESTIONNAIRE_SYSTEM_PROMPT_V1_0_0,
-  schemaVersion: QUESTIONNAIRE_SCHEMA_VERSION,
+  schemaVersion: 1,
   compatibility: 'requires-migration'
+})
+const currentV2RegistryEntry: AIRegistryEntry = Object.freeze({
+  versionStamp: currentV2Stamp,
+  systemPrompt: QUESTIONNAIRE_SYSTEM_PROMPT_V2_0_0,
+  schemaVersion: QUESTIONNAIRE_SCHEMA_VERSION,
+  compatibility: 'supported',
+  runHarness: runQuestionnaireHarness
 })
 
 function versionRegistryKey(stamp: AiVersionStamp): string {
@@ -929,7 +1169,8 @@ function versionRegistryKey(stamp: AiVersionStamp): string {
 const AI_REGISTRY = new Map<string, AIRegistryEntry>([
   [versionRegistryKey(historicalV1Stamp), historicalV1RegistryEntry],
   [versionRegistryKey(legacyHarnessV1_1Stamp), legacyHarnessV1_1RegistryEntry],
-  [versionRegistryKey(currentV1Stamp), currentV1RegistryEntry]
+  [versionRegistryKey(previousV1Stamp), previousV1RegistryEntry],
+  [versionRegistryKey(currentV2Stamp), currentV2RegistryEntry]
 ])
 
 export function resolveAIRegistryEntry(stamp: AiVersionStamp): AIRegistryEntry {
@@ -940,15 +1181,12 @@ export function resolveAIRegistryEntry(stamp: AiVersionStamp): AIRegistryEntry {
 
 export function migrateAISessionVersion(from: AiVersionStamp, to: AiVersionStamp): void {
   resolveAIRegistryEntry(from)
-  const major = (version: string): number => Number.parseInt(version.split('.')[0] ?? '', 10)
-  if (from.promptId !== to.promptId ||
-    major(from.promptVersion) !== major(to.promptVersion) ||
-    major(from.harnessVersion) !== major(to.harnessVersion) ||
-    from.schemaVersion !== to.schemaVersion) {
-    throw new Error('AI_MAJOR_VERSION_MIGRATION_REQUIRED')
-  }
   const target = resolveAIRegistryEntry(to)
   if (target.compatibility !== 'supported') throw new Error('AI_VERSION_MIGRATION_REQUIRED')
+  if (versionRegistryKey(from) !== versionRegistryKey(previousV1Stamp) ||
+    versionRegistryKey(to) !== versionRegistryKey(currentV2Stamp)) {
+    throw new Error('AI_VERSION_MIGRATION_NOT_ALLOWED')
+  }
 }
 
 export function stripDerivedVariables(questionnaire: QuestionnaireDef): QuestionnaireDef {

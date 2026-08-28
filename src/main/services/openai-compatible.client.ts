@@ -65,15 +65,28 @@ export interface OpenAICompatibleClientOptions {
   maxCallbackDeltaCharacters?: number
 }
 
-const QUESTIONNAIRE_SCHEMA = {
+const MODEL_ENVELOPE_SCHEMA_V2 = {
   type: 'object',
   additionalProperties: false,
-  required: ['assistantMessage', 'rollingSummary', 'questionnaire'],
+  required: ['kind', 'assistantMessage', 'rollingSummary', 'options', 'questionnaire'],
   properties: {
+    kind: { type: 'string', enum: ['clarification', 'questionnaire'] },
     assistantMessage: { type: 'string' },
     rollingSummary: { type: 'string' },
+    options: {
+      type: 'array',
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['id', 'label'],
+        properties: {
+          id: { type: 'string' },
+          label: { type: 'string' }
+        }
+      }
+    },
     questionnaire: {
-      type: 'object',
+      type: ['object', 'null'],
       additionalProperties: false,
       required: ['name', 'description', 'questions', 'conditionRules', 'keyQuestionIds'],
       properties: {
@@ -173,6 +186,16 @@ const QUESTIONNAIRE_SCHEMA = {
     }
   }
 } as const
+
+const PROVIDER_SCHEMA_REGISTRY = new Map<number, typeof MODEL_ENVELOPE_SCHEMA_V2>([
+  [2, MODEL_ENVELOPE_SCHEMA_V2]
+])
+
+function providerSchema(schemaVersion: number | undefined): typeof MODEL_ENVELOPE_SCHEMA_V2 {
+  const schema = PROVIDER_SCHEMA_REGISTRY.get(schemaVersion ?? 2)
+  if (schema === undefined) throw new Error('AI_SCHEMA_NOT_REGISTERED')
+  return schema
+}
 
 function endpoint(baseUrl: string): string {
   const normalized = normalizeAIBaseUrl(baseUrl)
@@ -435,7 +458,7 @@ export function createOpenAICompatibleClient(
                   json_schema: {
                     name: 'easyepi_questionnaire_envelope',
                     strict: true,
-                    schema: QUESTIONNAIRE_SCHEMA
+                    schema: providerSchema(request.schemaVersion)
                   }
                 }
               }
@@ -566,7 +589,7 @@ export function createOpenAICompatibleClient(
       } catch {
         throw new Error('INVALID_AI_CONFIG')
       }
-      if ((request.schemaVersion ?? 1) !== 1) throw new Error('AI_SCHEMA_NOT_REGISTERED')
+      providerSchema(request.schemaVersion)
       const safeRequest: AIChatCompletionRequest = {
         ...request,
         baseUrl: validated.baseUrl,

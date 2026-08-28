@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import {
+  QUESTIONNAIRE_SYSTEM_PROMPT,
   buildQuestionnaireContext,
   getAiVersionStamp,
   migrateAISessionVersion,
@@ -8,41 +9,149 @@ import {
   runQuestionnaireHarness,
   stripDerivedVariables
 } from '@main/services/ai-questionnaire.harness'
+import { createOpenAICompatibleClient } from '@main/services/openai-compatible.client'
 import type { AISessionData } from '@shared/ai-assistant-contract'
 import type { QuestionnaireDef } from '@shared/types/qnaire'
 
 function envelope(questionnaire: unknown): string {
   return JSON.stringify({
+    kind: 'questionnaire',
     assistantMessage: 'Draft ready',
     rollingSummary: 'Created a draft',
+    options: [],
     questionnaire
   })
 }
 
+function clarification(options: unknown = [{ id: 'adult', label: 'Adults' }]): string {
+  return JSON.stringify({
+    kind: 'clarification',
+    assistantMessage: 'Which population should this questionnaire cover?',
+    rollingSummary: 'The study population is not decided.',
+    options,
+    questionnaire: null
+  })
+}
+
 describe('questionnaire harness trust boundary', () => {
-  it('resolves immutable registered versions and rejects unknown hashes', () => {
+  it('registers v2 while retaining the historical v1 stamp for directed migration', () => {
     const current = getAiVersionStamp()
-    const historical = {
-      ...current,
-      promptVersion: '1.0.0',
-      promptHash: 'sha256:5bb44f2a0062a001aaeaef8fd1b0b7e46183a41c5b34e01df7542121b8de0b0d',
-      harnessVersion: '1.0.0'
+    const previous = {
+      promptId: current.promptId,
+      promptVersion: '1.1.0',
+      promptHash: 'sha256:d407a445883fa9a015c8772201af387fdbca41df3f33545a58017ba79d47c832',
+      harnessVersion: '1.1.0',
+      schemaVersion: 1
     }
+    expect(current).toMatchObject({ promptVersion: '2.0.0', harnessVersion: '2.0.0', schemaVersion: 2 })
     expect(resolveAIRegistryEntry(current)).toMatchObject({
-      versionStamp: getAiVersionStamp()
+      versionStamp: current,
+      compatibility: 'supported'
     })
-    expect(resolveAIRegistryEntry(historical)).toMatchObject({
-      versionStamp: historical,
+    expect(resolveAIRegistryEntry(previous)).toMatchObject({
+      versionStamp: previous,
       compatibility: 'requires-migration'
     })
-    expect(() => migrateAISessionVersion(historical, current)).not.toThrow()
+    expect(() => migrateAISessionVersion(previous, current)).not.toThrow()
     expect(() => resolveAIRegistryEntry({
       ...getAiVersionStamp(),
       promptHash: 'sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff'
     })).toThrow('AI_VERSION_NOT_REGISTERED')
-    expect(() => migrateAISessionVersion(getAiVersionStamp(), {
-      ...getAiVersionStamp(), harnessVersion: '2.0.0'
-    })).toThrow('AI_MAJOR_VERSION_MIGRATION_REQUIRED')
+    expect(() => migrateAISessionVersion({ ...previous, promptVersion: '1.0.0' }, current))
+      .toThrow('AI_VERSION_NOT_REGISTERED')
+  })
+
+  it('preserves privacy and regex rules while requesting one clarification before questionnaire data', () => {
+    expect(QUESTIONNAIRE_SYSTEM_PROMPT).toContain('Never create, remove, or modify a regex constraint')
+    expect(QUESTIONNAIRE_SYSTEM_PROMPT).toContain('Never request, infer, read, or emit derived variables')
+    expect(QUESTIONNAIRE_SYSTEM_PROMPT).toContain('at most one core clarification question')
+    expect(QUESTIONNAIRE_SYSTEM_PROMPT.indexOf('assistantMessage'))
+      .toBeLessThan(QUESTIONNAIRE_SYSTEM_PROMPT.indexOf('questionnaire object'))
+  })
+
+  it('validates both root branches without running questionnaire validation for clarification', () => {
+    const result = runQuestionnaireHarness(clarification())
+    expect(result).toEqual({
+      ok: true,
+      kind: 'clarification',
+      value: {
+        assistantMessage: 'Which population should this questionnaire cover?',
+        rollingSummary: 'The study population is not decided.',
+        options: [{ id: 'adult', label: 'Adults' }],
+        validation: { success: true, errors: [] }
+      }
+    })
+    expect(runQuestionnaireHarness(JSON.stringify({
+      kind: 'clarification',
+      assistantMessage: 'Choose one',
+      rollingSummary: '',
+      options: [],
+      questionnaire: { forbidden: true }
+    }))).toMatchObject({
+      ok: false,
+      establishedKind: 'clarification',
+      errors: expect.arrayContaining([
+        expect.objectContaining({ code: 'INVALID_CLARIFICATION_OPTIONS' }),
+        expect.objectContaining({ code: 'INVALID_CLARIFICATION_QUESTIONNAIRE' })
+      ])
+    })
+    expect(runQuestionnaireHarness(JSON.stringify({
+      kind: 'questionnaire', assistantMessage: 'Ready', rollingSummary: '',
+      options: [{ id: 'x', label: 'X' }], questionnaire: null
+    }))).toMatchObject({
+      ok: false,
+      establishedKind: 'questionnaire',
+      errors: expect.arrayContaining([
+        expect.objectContaining({ code: 'INVALID_QUESTIONNAIRE_OPTIONS' }),
+        expect.objectContaining({ code: 'INVALID_QUESTIONNAIRE' })
+      ])
+    })
+  })
+
+  it('rejects duplicate keys, duplicate or unbounded options, and branch switches during repair', () => {
+    expect(runQuestionnaireHarness(
+      '{"kind":"clarification","kind":"questionnaire","assistantMessage":"x","rollingSummary":"","options":[],"questionnaire":null}'
+    )).toMatchObject({ ok: false, errors: [{ code: 'DUPLICATE_JSON_KEY' }] })
+    expect(runQuestionnaireHarness(clarification([
+      { id: 'same', label: 'One' }, { id: 'same', label: 'Two' }
+    ]))).toMatchObject({ ok: false, establishedKind: 'clarification' })
+    expect(runQuestionnaireHarness(clarification([{ id: 'ok', label: 'x'.repeat(201) }])))
+      .toMatchObject({ ok: false, establishedKind: 'clarification' })
+    expect(runQuestionnaireHarness(clarification(), undefined, [], 'questionnaire')).toMatchObject({
+      ok: false,
+      establishedKind: 'questionnaire',
+      errors: [{ code: 'AI_RESPONSE_BRANCH_SWITCH' }]
+    })
+    const malformed = runQuestionnaireHarness('{', undefined, [], undefined)
+    expect(malformed).toMatchObject({ ok: false })
+    expect(malformed).not.toHaveProperty('establishedKind')
+  })
+
+  it('selects the registered v2 provider schema with five required nullable-superset fields', async () => {
+    let requestBody: Record<string, any> | undefined
+    const client = createOpenAICompatibleClient({
+      fetch: async (_input, init) => {
+        requestBody = JSON.parse(String(init?.body))
+        return new Response(JSON.stringify({
+          choices: [{ index: 0, finish_reason: 'stop', message: { role: 'assistant', content: clarification() } }]
+        }), { status: 200, headers: { 'content-type': 'application/json' } })
+      }
+    })
+    await expect(client.complete({
+      baseUrl: 'https://example.test/v1', model: 'model', messages: [], schemaVersion: 2,
+      streamingSupported: false
+    })).resolves.toMatchObject({ responseFormatSupported: true })
+    const schema = requestBody?.response_format.json_schema.schema
+    expect(schema).toMatchObject({
+      type: 'object',
+      additionalProperties: false,
+      required: ['kind', 'assistantMessage', 'rollingSummary', 'options', 'questionnaire']
+    })
+    expect(schema.anyOf).toBeUndefined()
+    expect(schema.properties.questionnaire.type).toEqual(['object', 'null'])
+    await expect(client.complete({
+      baseUrl: 'https://example.test/v1', model: 'model', messages: [], schemaVersion: 1
+    })).rejects.toThrow('AI_SCHEMA_NOT_REGISTERED')
   })
 
   it('rejects forbidden fields and invalid references with structured errors', () => {
@@ -55,6 +164,7 @@ describe('questionnaire harness trust boundary', () => {
     }))
     expect(forbidden).toMatchObject({
       ok: false,
+      establishedKind: 'questionnaire',
       errors: [{ code: 'FORBIDDEN_FIELD', path: '$.questionnaire.derivedVariables' }]
     })
 
@@ -83,6 +193,7 @@ describe('questionnaire harness trust boundary', () => {
     }))
     expect(brokenReference.ok).toBe(false)
     if (!brokenReference.ok) {
+      expect(brokenReference.establishedKind).toBe('questionnaire')
       expect(brokenReference.errors.map((error) => error.code)).toEqual(expect.arrayContaining([
         'UNKNOWN_CONDITION_QUESTION', 'UNKNOWN_TARGET'
       ]))
