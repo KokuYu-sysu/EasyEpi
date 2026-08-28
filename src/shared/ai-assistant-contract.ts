@@ -6,6 +6,11 @@ import {
 } from './types/qnaire'
 import { isDerivedResultType } from './types/derived'
 import { isUUIDv4 } from './types/project'
+import {
+  AI_PUBLIC_VALIDATION_SUMMARIES,
+  isAIPublicValidationCode,
+  type AIPublicValidationCode
+} from './ai-public-validation'
 
 export type AIJsonValue =
   | string
@@ -128,7 +133,7 @@ export interface AIPublicClarification {
 }
 
 export interface AIPublicValidationIssue {
-  code: string
+  code: AIPublicValidationCode
   field: string
   summary: string
 }
@@ -1021,10 +1026,12 @@ function assertPublicMessage(value: unknown): void {
 
 function assertPublicValidationIssue(value: unknown): void {
   const input = responseKeys(value, ['code', 'field', 'summary'])
-  responseErrorCode(input.code)
+  const code = responseErrorCode(input.code)
+  if (!isAIPublicValidationCode(code)) invalidResponse()
   const field = responseString(input.field, 256)
   if (!AI_VALIDATION_FIELD_PATTERN.test(field)) invalidResponse()
-  responsePlainText(input.summary, 200)
+  const summary = responsePlainText(input.summary, 200)
+  if (summary !== AI_PUBLIC_VALIDATION_SUMMARIES[code]) invalidResponse()
 }
 
 function assertPublicAttemptFailure(value: unknown): void {
@@ -1274,7 +1281,7 @@ export function parseAIProgressEvent(value: unknown): AIProgressEvent {
     default:
       invalidResponse()
   }
-  return structuredClone(discriminator) as AIProgressEvent
+  return structuredClone(discriminator) as unknown as AIProgressEvent
 }
 
 export function parseAIResponse<T>(value: unknown, successKeys: readonly string[]): T {
@@ -1379,6 +1386,13 @@ export function parseAISendResponse(value: unknown): AISendResult {
         ['ok', 'requestId', 'outcome', 'message', 'attempts']
       )
       assertPublicMessage(discriminator.message)
+      const message = discriminator.message as {
+        role: unknown
+        clarification: null | { status?: unknown }
+      }
+      if (message.role !== 'assistant' || message.clarification?.status !== 'unresolved') {
+        invalidResponse()
+      }
     } else {
       invalidResponse()
     }

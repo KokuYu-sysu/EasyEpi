@@ -349,15 +349,29 @@ describe('AI streaming and clarification public contract', () => {
         truncated: false
       }]
     }
+    const firstAttempt = details.attempts[0]!
+    const firstIssue = firstAttempt.issues[0]!
     expect(parseAIPublicFailureDetails(details)).toEqual(details)
     expect(() => parseAIPublicFailureDetails({
       attempts: [{
-        ...details.attempts[0],
-        issues: [{ ...details.attempts[0].issues[0], field: 'C:\\Users\\secret.txt' }]
+        ...firstAttempt,
+        issues: [{ ...firstIssue, field: 'C:\\Users\\secret.txt' }]
       }]
     })).toThrow('INVALID_AI_RESPONSE')
     expect(() => parseAIPublicFailureDetails({
-      attempts: [{ ...details.attempts[0], rawMessage: 'internal' }]
+      attempts: [{ ...firstAttempt, rawMessage: 'internal' }]
+    })).toThrow('INVALID_AI_RESPONSE')
+    expect(() => parseAIPublicFailureDetails({
+      attempts: [{
+        ...firstAttempt,
+        issues: [{ ...firstIssue, code: 'UNKNOWN_INTERNAL_CODE' }]
+      }]
+    })).toThrow('INVALID_AI_RESPONSE')
+    expect(() => parseAIPublicFailureDetails({
+      attempts: [{
+        ...firstAttempt,
+        issues: [{ ...firstIssue, summary: 'raw Harness message' }]
+      }]
     })).toThrow('INVALID_AI_RESPONSE')
   })
 
@@ -466,6 +480,24 @@ describe('AI streaming and clarification public contract', () => {
     expect(parseAISendResponse(questionnaireResult)).toEqual(questionnaireResult)
     expect(parseAISendResponse(clarificationResult)).toEqual(clarificationResult)
     expect(parseAISendResponse(failureResult)).toEqual(failureResult)
+    expect(() => parseAISendResponse({
+      ...clarificationResult,
+      message: { ...publicMessage, role: 'user' }
+    })).toThrow('INVALID_AI_RESPONSE')
+    expect(() => parseAISendResponse({
+      ...clarificationResult,
+      message: { ...publicMessage, clarification: null }
+    })).toThrow('INVALID_AI_RESPONSE')
+    expect(() => parseAISendResponse({
+      ...clarificationResult,
+      message: {
+        ...publicMessage,
+        clarification: {
+          ...clarification,
+          status: 'resolved', selectedOptionId: 'age_45_74', resolvedByMessageId: 'message-2'
+        }
+      }
+    })).toThrow('INVALID_AI_RESPONSE')
     expect(() => parseAISendResponse({ ...clarificationResult, artifact: createArtifactPreviewDto() }))
       .toThrow('INVALID_AI_RESPONSE')
     expect(() => parseAISendResponse({ ...clarificationResult, attempts: 0 }))
