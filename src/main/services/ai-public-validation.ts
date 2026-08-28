@@ -1,0 +1,145 @@
+import type {
+  AIPublicAttemptFailure,
+  AIPublicFailureDetails,
+  AIPublicValidationIssue
+} from '@shared/ai-assistant-contract'
+
+export const PUBLIC_VALIDATION_CODES = {
+  AI_VALIDATION_ERROR: '问卷内容未通过本地校验。',
+  AI_CANDIDATE_LIMIT_EXCEEDED: '问卷内容超出允许的复杂度限制。',
+  AI_REGEX_GENERATION_NOT_ALLOWED: 'AI 不能新增、删除或修改正则表达式约束。',
+  AMBIGUOUS_QUESTION_REFERENCE: '题目引用存在歧义。',
+  CONDITION_ACTION_CONFLICT: '条件规则对同一题目设置了冲突操作。',
+  CONDITION_RULE_CYCLE: '条件规则形成了循环依赖。',
+  DUPLICATE_BASE_QUESTION_REFERENCE: '多个题目引用了同一个原始题目。',
+  DUPLICATE_OPTION_VALUE: '同一题目的选项值不能重复。',
+  DUPLICATE_QUESTION_ID: '题目 ID 不能重复。',
+  DUPLICATE_RULE_ID: '条件规则 ID 不能重复。',
+  DUPLICATE_TARGET: '条件规则的目标题目不能重复。',
+  DUPLICATE_VARIABLE_NAME: '变量名不能重复或与受保护变量冲突。',
+  EMPTY_CONDITION_VALUE: '条件值不能为空。',
+  EMPTY_CONDITIONS: '条件规则至少需要一个条件。',
+  EMPTY_NAME: '问卷名称不能为空。',
+  EMPTY_OPTION: '选项值和标签不能为空。',
+  EMPTY_QUESTION: '题目内容不能为空。',
+  EMPTY_TARGETS: '条件规则至少需要一个目标题目。',
+  FORBIDDEN_FIELD: '问卷包含不允许的字段。',
+  INVALID_ACTION: '条件规则操作无效。',
+  INVALID_ASSISTANT_MESSAGE: '助手说明文本无效。',
+  INVALID_CONDITION_VALUE: '条件值与题目定义不匹配。',
+  INVALID_CONSTRAINT_TYPE: '题目约束类型无效。',
+  INVALID_DEFAULT_VALUE: '默认值与题目定义不匹配。',
+  INVALID_DRAFT: '问卷草稿结构无效。',
+  INVALID_ENVELOPE_SIZE: '模型响应为空或超过大小限制。',
+  INVALID_FIXED_LENGTH: '固定长度必须是正整数。',
+  INVALID_JSON: '模型响应不是有效的严格 JSON。',
+  INVALID_LOGIC: '条件规则逻辑无效。',
+  INVALID_NUMBER: '数值约束必须是有限数值。',
+  INVALID_OPERATOR: '条件运算符无效。',
+  INVALID_ORDER: '题目顺序无效。',
+  INVALID_QUESTION_ID: '题目 ID 无效或重复。',
+  INVALID_QUESTION_TYPE: '题目类型无效。',
+  INVALID_RANGE: '最小值不能大于最大值。',
+  INVALID_REGEX: '正则表达式约束无效。',
+  INVALID_ROLLING_SUMMARY: '对话摘要文本无效。',
+  INVALID_RULE_ID: '条件规则 ID 无效或重复。',
+  INVALID_STEP: '数值步长必须大于零。',
+  INVALID_TYPE: '字段的数据类型不正确。',
+  INVALID_VARIABLE_NAME: '变量名格式无效。',
+  KEY_QUESTION_MISMATCH: '关键题目列表与题目标记不一致。',
+  MISSING_FIXED_LENGTH: '固定长度题目缺少长度设置。',
+  MISSING_OPTIONS: '选择题至少需要一个选项。',
+  MISSING_REGEX: '正则表达式约束缺少表达式。',
+  OPTION_TOO_LONG: '选项内容超过长度限制。',
+  QUESTION_TOO_LONG: '题目内容超过长度限制。',
+  SELF_REFERENTIAL_RULE: '条件规则不能以自身条件题目为目标。',
+  UNEXPECTED_CONDITION_VALUE: '该条件运算符不应包含条件值。',
+  UNEXPECTED_OPTIONS: '非选择题不能包含选项。',
+  UNEXPECTED_REGEX: '非正则约束不能包含正则字段。',
+  UNEXPECTED_SKIP_VALUE: '未允许跳过的题目不能设置跳过值。',
+  UNKNOWN_CONDITION_QUESTION: '条件引用的题目不存在。',
+  UNKNOWN_SOURCE: '条件规则的来源题目不存在。',
+  UNKNOWN_TARGET: '条件规则的目标题目不存在。',
+  UNREACHABLE_SHOW_CHAIN: '显示条件链没有可到达的起点。'
+} as const
+
+export type AIPublicValidationCode = keyof typeof PUBLIC_VALIDATION_CODES
+
+export interface AIInternalValidationIssue {
+  code?: unknown
+  path?: unknown
+  field?: unknown
+  message?: unknown
+}
+
+export interface AIInternalAttemptFailure {
+  attempt: unknown
+  errors?: readonly AIInternalValidationIssue[]
+  issues?: readonly AIInternalValidationIssue[]
+}
+
+const VALIDATION_FIELD_PATTERN =
+  /^\$(?:\.[A-Za-z][A-Za-z0-9]*|\[(?:0|[1-9][0-9]{0,2})\]){0,12}$/
+const CONTROL_CHARACTERS = /[\u0000-\u001f\u007f-\u009f]/gu
+const MAX_PUBLIC_ISSUES = 20
+
+function stripControlCharacters(value: string, maxLength: number): string {
+  return value.replace(CONTROL_CHARACTERS, '').trim().slice(0, maxLength)
+}
+
+function publicCode(value: unknown): AIPublicValidationCode {
+  if (typeof value !== 'string') return 'AI_VALIDATION_ERROR'
+  const code = stripControlCharacters(value, 128)
+  return Object.prototype.hasOwnProperty.call(PUBLIC_VALIDATION_CODES, code)
+    ? code as AIPublicValidationCode
+    : 'AI_VALIDATION_ERROR'
+}
+
+export function sanitizeAIValidationField(value: unknown): string {
+  if (typeof value !== 'string' || value.length > 256) return '$'
+  if (stripControlCharacters(value, 256) !== value) return '$'
+  return VALIDATION_FIELD_PATTERN.test(value) ? value : '$'
+}
+
+function publicIssue(issue: AIInternalValidationIssue): AIPublicValidationIssue {
+  const code = publicCode(issue.code)
+  const summary = stripControlCharacters(PUBLIC_VALIDATION_CODES[code], 200)
+  return {
+    code,
+    field: sanitizeAIValidationField(issue.field ?? issue.path),
+    summary
+  }
+}
+
+export function toAIPublicAttemptFailure(
+  attempt: 1 | 2 | 3,
+  issues: readonly AIInternalValidationIssue[]
+): AIPublicAttemptFailure {
+  const publicIssues: AIPublicValidationIssue[] = []
+  const seen = new Set<string>()
+  let truncated = false
+  for (const issue of issues) {
+    const sanitized = publicIssue(issue)
+    const key = `${sanitized.code}\0${sanitized.field}`
+    if (seen.has(key)) continue
+    seen.add(key)
+    if (publicIssues.length < MAX_PUBLIC_ISSUES) publicIssues.push(sanitized)
+    else truncated = true
+  }
+  return { attempt, issues: publicIssues, truncated }
+}
+
+export function toAIPublicFailureDetails(
+  attempts: readonly AIInternalAttemptFailure[]
+): AIPublicFailureDetails {
+  const byAttempt = new Map<1 | 2 | 3, AIPublicAttemptFailure>()
+  for (const input of [...attempts].sort((left, right) => Number(left.attempt) - Number(right.attempt))) {
+    if (input.attempt !== 1 && input.attempt !== 2 && input.attempt !== 3) continue
+    if (byAttempt.has(input.attempt)) continue
+    byAttempt.set(
+      input.attempt,
+      toAIPublicAttemptFailure(input.attempt, input.errors ?? input.issues ?? [])
+    )
+  }
+  return { attempts: [...byAttempt.values()].slice(0, 3) }
+}

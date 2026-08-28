@@ -16,9 +16,20 @@ import {
 import { runWithProjectAIQueue } from '@main/services/ai-questionnaire.orchestrator'
 import {
   AI_PRIVACY_NOTICE_VERSION,
+  parseAIProgressEvent,
+  parseAIPublicClarification,
+  parseAIPublicFailureDetails,
+  parseAIPublicRunSnapshot,
+  parseAISendResponse,
   parseAISendRequest,
   type AiVersionStamp
 } from '@shared/ai-assistant-contract'
+import {
+  PUBLIC_VALIDATION_CODES,
+  sanitizeAIValidationField,
+  toAIPublicAttemptFailure,
+  toAIPublicFailureDetails
+} from '@main/services/ai-public-validation'
 import type { ProjectData } from '@shared/types/project'
 import {
   AI_CANCEL_CHANNEL,
@@ -40,6 +51,47 @@ const versionStamp: AiVersionStamp = {
   promptHash: 'sha256:abc123',
   harnessVersion: '1.0.0',
   schemaVersion: 1
+}
+
+const at = '2026-08-28T00:00:00.000Z'
+
+const clarification = {
+  clarificationId: 'clarification-1',
+  options: [{ id: 'age_45_74', label: '45–74 岁' }],
+  status: 'unresolved' as const,
+  selectedOptionId: null,
+  resolvedByMessageId: null
+}
+
+const publicMessage = {
+  id: 'message-1',
+  role: 'assistant' as const,
+  content: '请选择筛查年龄范围。',
+  createdAt: at,
+  clarification
+}
+
+function createArtifactPreviewDto() {
+  const questionnaire = {
+    name: '安全测试', questions: [], conditionRules: [], keyQuestionIds: []
+  }
+  return {
+    artifactId: 'artifact-1', operationId: 'operation-1', kind: 'questionnaire-draft' as const,
+    status: 'completed' as const, createdAt: at, updatedAt: at,
+    value: {
+      draft: questionnaire,
+      diff: {
+        metadata: { name: null, description: null },
+        questions: { added: [], removed: [], modified: [] },
+        rules: { added: [], removed: [], modified: [] }
+      },
+      assistantMessage: '问卷已生成。', rollingSummary: '',
+      validation: { success: true as const, errors: [] },
+      baseQuestionnaireRevision: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      baseQuestionnaireHash: `sha256:${'a'.repeat(64)}`,
+      baseQuestionnaire: questionnaire
+    }
+  }
 }
 
 function createProjectData(): ProjectData {
@@ -261,6 +313,206 @@ describe('AI configuration security boundary', () => {
     } finally {
       rmSync(directory, { recursive: true, force: true })
     }
+  })
+})
+
+describe('AI streaming and clarification public contract', () => {
+  it('parses an exact public clarification and rejects unsafe option data or extra keys', () => {
+    expect(parseAIPublicClarification(clarification)).toEqual(clarification)
+    expect(() => parseAIPublicClarification({ ...clarification, internalPrompt: 'secret' }))
+      .toThrow('INVALID_AI_RESPONSE')
+    expect(() => parseAIPublicClarification({
+      ...clarification,
+      options: [{ id: '../unsafe', label: 'Unsafe' }]
+    })).toThrow('INVALID_AI_RESPONSE')
+    expect(() => parseAIPublicClarification({
+      ...clarification,
+      options: [{ id: 'safe', label: ' untrimmed ' }]
+    })).toThrow('INVALID_AI_RESPONSE')
+    expect(() => parseAIPublicClarification({
+      ...clarification,
+      status: 'resolved',
+      selectedOptionId: 'missing',
+      resolvedByMessageId: 'message-2'
+    })).toThrow('INVALID_AI_RESPONSE')
+  })
+
+  it('parses exact bounded failure details and rejects unsafe fields and unknown keys', () => {
+    const details = {
+      attempts: [{
+        attempt: 1,
+        issues: [{
+          code: 'INVALID_TYPE',
+          field: '$.questionnaire.questions[0].content',
+          summary: PUBLIC_VALIDATION_CODES.INVALID_TYPE
+        }],
+        truncated: false
+      }]
+    }
+    expect(parseAIPublicFailureDetails(details)).toEqual(details)
+    expect(() => parseAIPublicFailureDetails({
+      attempts: [{
+        ...details.attempts[0],
+        issues: [{ ...details.attempts[0].issues[0], field: 'C:\\Users\\secret.txt' }]
+      }]
+    })).toThrow('INVALID_AI_RESPONSE')
+    expect(() => parseAIPublicFailureDetails({
+      attempts: [{ ...details.attempts[0], rawMessage: 'internal' }]
+    })).toThrow('INVALID_AI_RESPONSE')
+  })
+
+  it('parses an exact public run snapshot and rejects unsafe stage, IDs, and extras', () => {
+    const snapshot = {
+      requestId: 'request-1', runId: 'run-1', stage: 'streaming', attempt: 2,
+      startedAt: at, updatedAt: at, streamFallback: false
+    }
+    expect(parseAIPublicRunSnapshot(snapshot)).toEqual(snapshot)
+    expect(() => parseAIPublicRunSnapshot({ ...snapshot, stage: 'thinking' }))
+      .toThrow('INVALID_AI_RESPONSE')
+    expect(() => parseAIPublicRunSnapshot({ ...snapshot, runId: 'run/unsafe' }))
+      .toThrow('INVALID_AI_RESPONSE')
+    expect(() => parseAIPublicRunSnapshot({ ...snapshot, providerRequestId: 'private' }))
+      .toThrow('INVALID_AI_RESPONSE')
+  })
+
+  it.each([
+    { type: 'started' },
+    { type: 'attempt_started', attempt: 1 },
+    { type: 'model_streaming', attempt: 1 },
+    { type: 'assistant_delta', attempt: 1, sequence: 0, delta: '正在生成' },
+    { type: 'validating', attempt: 1 },
+    {
+      type: 'validation_failed', attempt: 1,
+      failure: { attempt: 1, issues: [], truncated: false }
+    },
+    { type: 'repairing', attempt: 1, nextAttempt: 2 },
+    {
+      type: 'capability_fallback', attempt: 1,
+      capability: 'streaming', reason: 'unsupported'
+    },
+    {
+      type: 'clarification', attempt: 1, outcome: 'clarification',
+      messageId: 'message-1', clarification
+    },
+    {
+      type: 'completed', attempt: 1, outcome: 'questionnaire', artifactId: 'artifact-1'
+    },
+    { type: 'failed', attempt: 3, errorCode: 'AI_VALIDATION_FAILED' },
+    { type: 'cancelled', attempt: 1, errorCode: 'AI_CANCELLED' }
+  ])('parses the exact $type progress event', (specific) => {
+    const event = {
+      requestId: 'request-1', sessionId, runId: 'run-1', at, ...specific
+    }
+    expect(parseAIProgressEvent(event)).toEqual(event)
+  })
+
+  it('rejects progress events with unknown keys, unsafe values, or mismatched attempts', () => {
+    const base = { requestId: 'request-1', sessionId, runId: 'run-1', at }
+    expect(() => parseAIProgressEvent({ ...base, type: 'started', raw: '{}' }))
+      .toThrow('INVALID_AI_RESPONSE')
+    expect(() => parseAIProgressEvent({
+      ...base, type: 'assistant_delta', attempt: 1, sequence: -1, delta: 'x'
+    })).toThrow('INVALID_AI_RESPONSE')
+    expect(() => parseAIProgressEvent({
+      ...base, type: 'assistant_delta', attempt: 1, sequence: 0, delta: 'x'.repeat(4_097)
+    })).toThrow('INVALID_AI_RESPONSE')
+    expect(() => parseAIProgressEvent({
+      ...base, type: 'repairing', attempt: 2, nextAttempt: 2
+    })).toThrow('INVALID_AI_RESPONSE')
+    expect(() => parseAIProgressEvent({
+      ...base, type: 'cancelled', attempt: 1, errorCode: 'AI_PROVIDER_ERROR'
+    })).toThrow('INVALID_AI_RESPONSE')
+  })
+
+  it('requires exact empty content for quick replies and non-empty free text otherwise', () => {
+    const base = { requestId: 'request-1', sessionId, includeCurrentQuestionnaire: false }
+    expect(parseAISendRequest({
+      ...base,
+      content: '',
+      clarificationSelection: { clarificationId: 'clarification-1', optionId: 'age_45_74' }
+    })).toEqual({
+      ...base,
+      content: '',
+      clarificationSelection: { clarificationId: 'clarification-1', optionId: 'age_45_74' }
+    })
+    expect(() => parseAISendRequest({
+      ...base,
+      content: 'renderer supplied label',
+      clarificationSelection: { clarificationId: 'clarification-1', optionId: 'age_45_74' }
+    })).toThrow('INVALID_AI_REQUEST')
+    expect(() => parseAISendRequest({ ...base, content: '' })).toThrow('INVALID_AI_REQUEST')
+    expect(() => parseAISendRequest({
+      ...base,
+      content: '',
+      clarificationSelection: {
+        clarificationId: 'clarification-1', optionId: 'age_45_74', label: 'smuggled'
+      }
+    })).toThrow('INVALID_AI_REQUEST')
+  })
+
+  it('parses questionnaire, clarification, and detailed failure send outcomes exactly', () => {
+    const questionnaireResult = {
+      ok: true as const, requestId: 'request-1', outcome: 'questionnaire' as const,
+      artifact: createArtifactPreviewDto(), attempts: 1
+    }
+    const clarificationResult = {
+      ok: true as const, requestId: 'request-2', outcome: 'clarification' as const,
+      message: publicMessage, attempts: 2
+    }
+    const failureResult = {
+      ok: false as const, errorCode: 'AI_VALIDATION_FAILED', message: '问卷校验失败。',
+      details: { attempts: [{ attempt: 3, issues: [], truncated: false }] }
+    }
+    expect(parseAISendResponse(questionnaireResult)).toEqual(questionnaireResult)
+    expect(parseAISendResponse(clarificationResult)).toEqual(clarificationResult)
+    expect(parseAISendResponse(failureResult)).toEqual(failureResult)
+    expect(() => parseAISendResponse({ ...clarificationResult, artifact: createArtifactPreviewDto() }))
+      .toThrow('INVALID_AI_RESPONSE')
+    expect(() => parseAISendResponse({ ...clarificationResult, attempts: 0 }))
+      .toThrow('INVALID_AI_RESPONSE')
+    expect(() => parseAISendResponse({
+      ...clarificationResult,
+      message: { ...publicMessage, content: 'unsafe\u001bmessage' }
+    })).toThrow('INVALID_AI_RESPONSE')
+    expect(() => parseAISendResponse({ ...failureResult, internalMessage: 'raw' }))
+      .toThrow('INVALID_AI_RESPONSE')
+  })
+
+  it('sanitizes, deduplicates, and bounds internal Harness errors without exposing messages', () => {
+    expect(sanitizeAIValidationField('$.questionnaire\u0000.questions[0]')).toBe('$')
+    expect(sanitizeAIValidationField(`$.${'a'.repeat(300)}`)).toBe('$')
+    const errors = [
+      { code: 'INVALID_TYPE', path: '$.questionnaire.questions[0].content', message: 'raw secret' },
+      { code: 'INVALID_TYPE', path: '$.questionnaire.questions[0].content', message: 'different raw' },
+      { code: 'UNKNOWN\u0000CODE', path: 'file:///C:/secret', message: 'provider body' },
+      ...Array.from({ length: 25 }, (_, index) => ({
+        code: 'EMPTY_QUESTION', path: `$.questionnaire.questions[${index}].content`, message: `raw-${index}`
+      }))
+    ]
+    const failure = toAIPublicAttemptFailure(1, errors)
+    expect(failure.attempt).toBe(1)
+    expect(failure.issues).toHaveLength(20)
+    expect(failure.truncated).toBe(true)
+    expect(failure.issues[0]).toEqual({
+      code: 'INVALID_TYPE',
+      field: '$.questionnaire.questions[0].content',
+      summary: PUBLIC_VALIDATION_CODES.INVALID_TYPE
+    })
+    expect(failure.issues[1]).toEqual({
+      code: 'AI_VALIDATION_ERROR', field: '$',
+      summary: PUBLIC_VALIDATION_CODES.AI_VALIDATION_ERROR
+    })
+    expect(JSON.stringify(failure)).not.toContain('raw secret')
+    expect(JSON.stringify(failure)).not.toContain('provider body')
+
+    const details = toAIPublicFailureDetails([
+      { attempt: 3, errors: [] },
+      { attempt: 1, errors },
+      { attempt: 2, errors: [] },
+      { attempt: 2, errors }
+    ])
+    expect(details.attempts.map((entry) => entry.attempt)).toEqual([1, 2, 3])
+    expect(details.attempts).toHaveLength(3)
   })
 })
 

@@ -91,6 +91,85 @@ export interface AiVersionStamp {
 
 export type AISessionStatus = 'idle' | 'running' | 'completed' | 'failed' | 'cancelled'
 
+export type AIProgressStage =
+  | 'starting'
+  | 'connecting'
+  | 'streaming'
+  | 'validating'
+  | 'repairing'
+  | 'clarification'
+  | 'completed'
+  | 'failed'
+  | 'cancelled'
+
+export interface AIQuickReplyOption {
+  id: string
+  label: string
+}
+
+export interface AIClarification {
+  clarificationId: string
+  messageId: string
+  runId: string
+  options: AIQuickReplyOption[]
+  status: 'unresolved' | 'resolved'
+  createdAt: string
+  resolvedAt?: string
+  resolvedByMessageId?: string
+  selectedOptionId?: string
+}
+
+export interface AIPublicClarification {
+  clarificationId: string
+  options: AIQuickReplyOption[]
+  status: 'unresolved' | 'resolved'
+  selectedOptionId: string | null
+  resolvedByMessageId: string | null
+}
+
+export interface AIPublicValidationIssue {
+  code: string
+  field: string
+  summary: string
+}
+
+export interface AIPublicAttemptFailure {
+  attempt: 1 | 2 | 3
+  issues: AIPublicValidationIssue[]
+  truncated: boolean
+}
+
+export interface AIPublicFailureDetails {
+  attempts: AIPublicAttemptFailure[]
+}
+
+export interface AIPublicRunSnapshot {
+  requestId: string
+  runId: string
+  stage: AIProgressStage
+  attempt: 1 | 2 | 3
+  startedAt: string
+  updatedAt: string
+  streamFallback: boolean
+}
+
+export interface AIRunProgress {
+  stage: AIProgressStage
+  attempt: 1 | 2 | 3
+  updatedAt: string
+  streamFallback: boolean
+}
+
+export interface AIRunFailure {
+  errorCode: string
+  completedAt: string
+  details: AIPublicFailureDetails
+}
+
+export type AIRunResult =
+  | { kind: 'questionnaire'; artifactId: string }
+  | { kind: 'clarification'; messageId: string; clarificationId: string }
+
 export interface AIRun {
   runId: string
   status: Exclude<AISessionStatus, 'idle'>
@@ -98,6 +177,13 @@ export interface AIRun {
   completedAt?: string
   versionStamp: AiVersionStamp
   errorCode?: string
+  /** Optional so pre-v2 persisted run records remain readable until explicit migration. */
+  requestId?: string
+  operationId?: string
+  userMessageId?: string
+  progress?: AIRunProgress
+  failure?: AIRunFailure
+  result?: AIRunResult
 }
 
 export interface AISessionState {
@@ -110,6 +196,8 @@ export interface AISessionState {
 export interface AIConversationPartition {
   messages: AIMessage[]
   attachments: Record<string, AIMessageAttachment>
+  /** Present for v2 Sessions; absent on legacy records until explicit migration. */
+  clarifications?: Record<string, AIClarification>
 }
 
 export interface AICachePartition {
@@ -161,6 +249,15 @@ export interface AIPublicMessage {
   role: 'user' | 'assistant'
   content: string
   createdAt: string
+  clarification: AIPublicClarification | null
+}
+
+export interface AIPublicFailureRecord {
+  runId: string
+  userMessageId: string
+  completedAt: string
+  errorCode: string
+  details: AIPublicFailureDetails
 }
 
 export interface AIPublicAttachmentSummary {
@@ -185,6 +282,8 @@ export interface AISessionPage {
   attachments: AIPublicAttachmentSummary[]
   status: AISessionStatus
   activeArtifactId: string | null
+  activeRun: AIPublicRunSnapshot | null
+  failures: AIPublicFailureRecord[]
   artifacts: AIArtifactSummary[]
   total: number
   nextOffset: number | null
@@ -260,6 +359,10 @@ export interface AISendRequest {
   sessionId: string
   content: string
   includeCurrentQuestionnaire: boolean
+  clarificationSelection?: {
+    clarificationId: string
+    optionId: string
+  }
 }
 
 export interface AICancelRequest {
@@ -313,6 +416,65 @@ export interface AIErrorResult {
   message: string
 }
 
+interface AIProgressEventBase {
+  requestId: string
+  sessionId: string
+  runId: string
+  at: string
+}
+
+export type AIProgressEvent =
+  | (AIProgressEventBase & { type: 'started' })
+  | (AIProgressEventBase & { type: 'attempt_started'; attempt: 1 | 2 | 3 })
+  | (AIProgressEventBase & { type: 'model_streaming'; attempt: 1 | 2 | 3 })
+  | (AIProgressEventBase & {
+      type: 'assistant_delta'
+      attempt: 1 | 2 | 3
+      sequence: number
+      delta: string
+    })
+  | (AIProgressEventBase & { type: 'validating'; attempt: 1 | 2 | 3 })
+  | (AIProgressEventBase & {
+      type: 'validation_failed'
+      attempt: 1 | 2 | 3
+      failure: AIPublicAttemptFailure
+    })
+  | (AIProgressEventBase & {
+      type: 'repairing'
+      attempt: 1 | 2
+      nextAttempt: 2 | 3
+    })
+  | (AIProgressEventBase & {
+      type: 'capability_fallback'
+      attempt: 1 | 2 | 3
+      capability: 'streaming' | 'response_format'
+      reason: 'unsupported'
+    })
+  | (AIProgressEventBase & {
+      type: 'clarification'
+      attempt: 1 | 2 | 3
+      outcome: 'clarification'
+      messageId: string
+      clarification: AIPublicClarification
+    })
+  | (AIProgressEventBase & {
+      type: 'completed'
+      attempt: 1 | 2 | 3
+      outcome: 'questionnaire'
+      artifactId: string
+    })
+  | (AIProgressEventBase & {
+      type: 'failed'
+      attempt: 1 | 2 | 3
+      errorCode: string
+      details?: AIPublicFailureDetails
+    })
+  | (AIProgressEventBase & {
+      type: 'cancelled'
+      attempt: 1 | 2 | 3
+      errorCode: 'AI_CANCELLED'
+    })
+
 export type AIConfigIpcResult = { ok: true; config: AIProviderConfigView } | AIErrorResult
 export type AIConnectionTestResult = { ok: true } | AIErrorResult
 export type AIPrivacyStatusResult =
@@ -327,8 +489,21 @@ export type AISessionMigrateResult =
   | { ok: true; migrated: boolean; session: AISessionListItem }
   | AIErrorResult
 export type AISendResult =
-  | { ok: true; requestId: string; artifact: AIQuestionnaireArtifactPreviewDto; attempts: number }
-  | AIErrorResult
+  | {
+      ok: true
+      requestId: string
+      outcome: 'questionnaire'
+      artifact: AIQuestionnaireArtifactPreviewDto
+      attempts: number
+    }
+  | {
+      ok: true
+      requestId: string
+      outcome: 'clarification'
+      message: AIPublicMessage
+      attempts: number
+    }
+  | (AIErrorResult & { details?: AIPublicFailureDetails })
 export type AICancelResult = { ok: true; cancelled: boolean } | AIErrorResult
 export type AIArtifactPreviewResult = { ok: true; preview: AIArtifactPreview } | AIErrorResult
 export type AIArtifactApplyResult =
@@ -423,17 +598,35 @@ export function parseAISessionUpdateRequest(value: unknown): AISessionUpdateRequ
 
 export function parseAISendRequest(value: unknown): AISendRequest {
   const input = requestObject(value)
-  exactKeys(input, ['requestId', 'sessionId', 'content', 'includeCurrentQuestionnaire'])
+  exactKeys(
+    input,
+    ['requestId', 'sessionId', 'content', 'includeCurrentQuestionnaire'],
+    ['clarificationSelection']
+  )
   if (typeof input.includeCurrentQuestionnaire !== 'boolean') throw new Error('INVALID_AI_REQUEST')
-  const content = typeof input.content === 'string' ? input.content : ''
-  if (content.trim().length === 0 || content.length > 100_000 || content.includes('\0')) {
+  if (typeof input.content !== 'string') throw new Error('INVALID_AI_REQUEST')
+  const content = input.content
+  if (content.length > 100_000 || content.includes('\0')) {
     throw new Error('INVALID_AI_REQUEST')
+  }
+  let clarificationSelection: AISendRequest['clarificationSelection']
+  if (input.clarificationSelection === undefined) {
+    if (content.trim().length === 0) throw new Error('INVALID_AI_REQUEST')
+  } else {
+    if (content !== '') throw new Error('INVALID_AI_REQUEST')
+    const selection = requestObject(input.clarificationSelection)
+    exactKeys(selection, ['clarificationId', 'optionId'])
+    clarificationSelection = {
+      clarificationId: safeString(selection.clarificationId, 128, PUBLIC_ID_PATTERN),
+      optionId: safeString(selection.optionId, 128, PUBLIC_ID_PATTERN)
+    }
   }
   return {
     requestId: safeString(input.requestId, 128, PUBLIC_ID_PATTERN),
     sessionId: safeString(input.sessionId, 36, SESSION_ID_PATTERN),
     content,
-    includeCurrentQuestionnaire: input.includeCurrentQuestionnaire
+    includeCurrentQuestionnaire: input.includeCurrentQuestionnaire,
+    ...(clarificationSelection === undefined ? {} : { clarificationSelection })
   }
 }
 
@@ -506,6 +699,32 @@ function responseTimestamp(value: unknown): string {
   return timestamp
 }
 
+function responseAttempt(value: unknown): 1 | 2 | 3 {
+  const attempt = responseNumber(value, true)
+  if (attempt < 1 || attempt > 3) invalidResponse()
+  return attempt as 1 | 2 | 3
+}
+
+function responseErrorCode(value: unknown): string {
+  const code = responseString(value, 128)
+  if (!/^[A-Z][A-Z0-9_]{1,127}$/.test(code)) invalidResponse()
+  return code
+}
+
+function responsePlainText(value: unknown, maxLength: number): string {
+  const text = responseString(value, maxLength)
+  if (text !== text.trim() || /[\u0000-\u001f\u007f-\u009f]/u.test(text)) invalidResponse()
+  return text
+}
+
+function responseReadableText(value: unknown, maxLength: number, allowEmpty = false): string {
+  const text = responseString(value, maxLength, allowEmpty)
+  if (/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/u.test(text)) {
+    invalidResponse()
+  }
+  return text
+}
+
 function responseNumber(value: unknown, integer = false): number {
   if (typeof value !== 'number' || !Number.isFinite(value) || (integer && !Number.isInteger(value))) {
     invalidResponse()
@@ -562,8 +781,7 @@ function parseKnownResponse<T>(
     'ok' in value && value.ok === false ? ['errorCode', 'message'] : successKeys)
   if (input.ok === false) {
     responseKeys(input, ['ok', 'errorCode', 'message'])
-    const code = responseString(input.errorCode, 128)
-    if (!/^[A-Z][A-Z0-9_]{1,127}$/.test(code)) invalidResponse()
+    responseErrorCode(input.errorCode)
     responseString(input.message, 200)
   } else {
     if (input.ok !== true) invalidResponse()
@@ -748,6 +966,110 @@ function assertArtifactSummary(value: unknown): void {
   responseTimestamp(input.updatedAt)
 }
 
+const AI_PROGRESS_STAGES = new Set<AIProgressStage>([
+  'starting', 'connecting', 'streaming', 'validating', 'repairing',
+  'clarification', 'completed', 'failed', 'cancelled'
+])
+const AI_VALIDATION_FIELD_PATTERN =
+  /^\$(?:\.[A-Za-z][A-Za-z0-9]*|\[(?:0|[1-9][0-9]{0,2})\]){0,12}$/
+
+function assertQuickReplyOption(value: unknown): void {
+  const input = responseKeys(value, ['id', 'label'])
+  responseId(input.id)
+  responsePlainText(input.label, 200)
+}
+
+function assertPublicClarification(value: unknown): void {
+  const input = responseKeys(
+    value,
+    ['clarificationId', 'options', 'status', 'selectedOptionId', 'resolvedByMessageId']
+  )
+  responseId(input.clarificationId)
+  if (!Array.isArray(input.options) || input.options.length < 1 || input.options.length > 5) {
+    invalidResponse()
+  }
+  const optionIds = new Set<string>()
+  for (const option of input.options) {
+    assertQuickReplyOption(option)
+    const optionId = String((option as { id: unknown }).id)
+    if (optionIds.has(optionId)) invalidResponse()
+    optionIds.add(optionId)
+  }
+  if (input.status !== 'unresolved' && input.status !== 'resolved') invalidResponse()
+  if (input.selectedOptionId !== null) {
+    if (!optionIds.has(responseId(input.selectedOptionId))) invalidResponse()
+  }
+  if (input.resolvedByMessageId !== null) responseId(input.resolvedByMessageId)
+  if (input.status === 'unresolved') {
+    if (input.selectedOptionId !== null || input.resolvedByMessageId !== null) invalidResponse()
+  } else if (input.resolvedByMessageId === null) {
+    invalidResponse()
+  }
+}
+
+function assertPublicMessage(value: unknown): void {
+  const input = responseKeys(value, ['id', 'role', 'content', 'createdAt', 'clarification'])
+  responseId(input.id)
+  if (input.role !== 'user' && input.role !== 'assistant') invalidResponse()
+  responseReadableText(input.content, 100_000, true)
+  responseTimestamp(input.createdAt)
+  if (input.clarification !== null) {
+    if (input.role !== 'assistant') invalidResponse()
+    assertPublicClarification(input.clarification)
+  }
+}
+
+function assertPublicValidationIssue(value: unknown): void {
+  const input = responseKeys(value, ['code', 'field', 'summary'])
+  responseErrorCode(input.code)
+  const field = responseString(input.field, 256)
+  if (!AI_VALIDATION_FIELD_PATTERN.test(field)) invalidResponse()
+  responsePlainText(input.summary, 200)
+}
+
+function assertPublicAttemptFailure(value: unknown): void {
+  const input = responseKeys(value, ['attempt', 'issues', 'truncated'])
+  responseAttempt(input.attempt)
+  if (!Array.isArray(input.issues) || input.issues.length > 20) invalidResponse()
+  const issueKeys = new Set<string>()
+  for (const issue of input.issues) {
+    assertPublicValidationIssue(issue)
+    const parsed = issue as { code: unknown; field: unknown }
+    const key = `${String(parsed.code)}\0${String(parsed.field)}`
+    if (issueKeys.has(key)) invalidResponse()
+    issueKeys.add(key)
+  }
+  if (typeof input.truncated !== 'boolean') invalidResponse()
+}
+
+function assertPublicFailureDetails(value: unknown): void {
+  const input = responseKeys(value, ['attempts'])
+  if (!Array.isArray(input.attempts) || input.attempts.length > 3) invalidResponse()
+  let previousAttempt = 0
+  for (const failure of input.attempts) {
+    assertPublicAttemptFailure(failure)
+    const attempt = responseAttempt((failure as { attempt: unknown }).attempt)
+    if (attempt <= previousAttempt) invalidResponse()
+    previousAttempt = attempt
+  }
+}
+
+function assertPublicRunSnapshot(value: unknown): void {
+  const input = responseKeys(
+    value,
+    ['requestId', 'runId', 'stage', 'attempt', 'startedAt', 'updatedAt', 'streamFallback']
+  )
+  responseId(input.requestId)
+  responseId(input.runId)
+  if (typeof input.stage !== 'string' || !AI_PROGRESS_STAGES.has(input.stage as AIProgressStage)) {
+    invalidResponse()
+  }
+  responseAttempt(input.attempt)
+  responseTimestamp(input.startedAt)
+  responseTimestamp(input.updatedAt)
+  if (typeof input.streamFallback !== 'boolean') invalidResponse()
+}
+
 function assertManifest(value: unknown): void {
   const input = responseKeys(
     value,
@@ -764,19 +1086,16 @@ function assertSessionPage(value: unknown): void {
   const input = responseKeys(
     value,
     [
-      'manifest', 'messages', 'attachments', 'status', 'activeArtifactId', 'artifacts',
-      'total', 'nextOffset'
+      'manifest', 'messages', 'attachments', 'status', 'activeArtifactId', 'activeRun',
+      'failures', 'artifacts', 'total', 'nextOffset'
     ]
   )
   assertManifest(input.manifest)
   if (!Array.isArray(input.messages) || input.messages.length > 100) invalidResponse()
   const userMessageIds = new Set<string>()
   for (const message of input.messages) {
-    const item = responseKeys(message, ['id', 'role', 'content', 'createdAt'])
-    responseId(item.id)
-    if (item.role !== 'user' && item.role !== 'assistant') invalidResponse()
-    responseString(item.content, 100_000, true)
-    responseTimestamp(item.createdAt)
+    assertPublicMessage(message)
+    const item = message as { id: unknown; role: unknown }
     if (item.role === 'user') userMessageIds.add(String(item.id))
   }
   if (!Array.isArray(input.attachments) || input.attachments.length > 100) invalidResponse()
@@ -802,6 +1121,23 @@ function assertSessionPage(value: unknown): void {
   if (input.activeArtifactId !== null && !artifactIds.has(responseId(input.activeArtifactId))) {
     invalidResponse()
   }
+  if (input.activeRun !== null) assertPublicRunSnapshot(input.activeRun)
+  if (!Array.isArray(input.failures) || input.failures.length > 100) invalidResponse()
+  const failureRunIds = new Set<string>()
+  for (const failure of input.failures) {
+    const item = responseKeys(
+      failure,
+      ['runId', 'userMessageId', 'completedAt', 'errorCode', 'details']
+    )
+    const runId = responseId(item.runId)
+    if (failureRunIds.has(runId) || !userMessageIds.has(responseId(item.userMessageId))) {
+      invalidResponse()
+    }
+    failureRunIds.add(runId)
+    responseTimestamp(item.completedAt)
+    responseErrorCode(item.errorCode)
+    assertPublicFailureDetails(item.details)
+  }
   const total = responseNumber(input.total, true)
   if (total < input.messages.length || !Number.isSafeInteger(total)) invalidResponse()
   if (input.nextOffset !== null) {
@@ -821,6 +1157,124 @@ function assertQuestionnaireArtifactPreview(value: unknown): void {
   responseTimestamp(input.createdAt)
   responseTimestamp(input.updatedAt)
   assertArtifactPreview(input.value)
+}
+
+function parseExactPublicDto<T>(value: unknown, validate: (input: unknown) => void): T {
+  assertSafeResponseTree(value)
+  validate(value)
+  return structuredClone(value) as T
+}
+
+export function parseAIPublicClarification(value: unknown): AIPublicClarification {
+  return parseExactPublicDto<AIPublicClarification>(value, assertPublicClarification)
+}
+
+export function parseAIPublicFailureDetails(value: unknown): AIPublicFailureDetails {
+  return parseExactPublicDto<AIPublicFailureDetails>(value, assertPublicFailureDetails)
+}
+
+export function parseAIPublicRunSnapshot(value: unknown): AIPublicRunSnapshot {
+  return parseExactPublicDto<AIPublicRunSnapshot>(value, assertPublicRunSnapshot)
+}
+
+export function parseAIProgressEvent(value: unknown): AIProgressEvent {
+  assertSafeResponseTree(value)
+  const discriminator = responseKeys(value, ['requestId', 'sessionId', 'runId', 'at', 'type'], [
+    'attempt', 'sequence', 'delta', 'failure', 'nextAttempt', 'capability', 'reason',
+    'outcome', 'messageId', 'clarification', 'artifactId', 'errorCode', 'details'
+  ])
+  responseId(discriminator.requestId)
+  responseId(discriminator.sessionId, SESSION_ID_PATTERN)
+  responseId(discriminator.runId)
+  responseTimestamp(discriminator.at)
+  const baseKeys = ['requestId', 'sessionId', 'runId', 'at', 'type'] as const
+  switch (discriminator.type) {
+    case 'started':
+      responseKeys(discriminator, baseKeys)
+      break
+    case 'attempt_started':
+    case 'model_streaming':
+    case 'validating': {
+      const input = responseKeys(discriminator, [...baseKeys, 'attempt'])
+      responseAttempt(input.attempt)
+      break
+    }
+    case 'assistant_delta': {
+      const input = responseKeys(discriminator, [...baseKeys, 'attempt', 'sequence', 'delta'])
+      responseAttempt(input.attempt)
+      const sequence = responseNumber(input.sequence, true)
+      if (!Number.isSafeInteger(sequence) || sequence < 0) invalidResponse()
+      responseString(input.delta, 4_096)
+      break
+    }
+    case 'validation_failed': {
+      const input = responseKeys(discriminator, [...baseKeys, 'attempt', 'failure'])
+      const attempt = responseAttempt(input.attempt)
+      assertPublicAttemptFailure(input.failure)
+      if ((input.failure as { attempt: unknown }).attempt !== attempt) invalidResponse()
+      break
+    }
+    case 'repairing': {
+      const input = responseKeys(discriminator, [...baseKeys, 'attempt', 'nextAttempt'])
+      const attempt = responseAttempt(input.attempt)
+      const nextAttempt = responseAttempt(input.nextAttempt)
+      if (attempt >= 3 || nextAttempt !== attempt + 1) invalidResponse()
+      break
+    }
+    case 'capability_fallback': {
+      const input = responseKeys(
+        discriminator,
+        [...baseKeys, 'attempt', 'capability', 'reason']
+      )
+      responseAttempt(input.attempt)
+      if (input.capability !== 'streaming' && input.capability !== 'response_format') {
+        invalidResponse()
+      }
+      if (input.reason !== 'unsupported') invalidResponse()
+      break
+    }
+    case 'clarification': {
+      const input = responseKeys(
+        discriminator,
+        [...baseKeys, 'attempt', 'outcome', 'messageId', 'clarification']
+      )
+      responseAttempt(input.attempt)
+      if (input.outcome !== 'clarification') invalidResponse()
+      responseId(input.messageId)
+      assertPublicClarification(input.clarification)
+      break
+    }
+    case 'completed': {
+      const input = responseKeys(
+        discriminator,
+        [...baseKeys, 'attempt', 'outcome', 'artifactId']
+      )
+      responseAttempt(input.attempt)
+      if (input.outcome !== 'questionnaire') invalidResponse()
+      responseId(input.artifactId)
+      break
+    }
+    case 'failed': {
+      const input = responseKeys(
+        discriminator,
+        [...baseKeys, 'attempt', 'errorCode'],
+        ['details']
+      )
+      responseAttempt(input.attempt)
+      responseErrorCode(input.errorCode)
+      if (input.details !== undefined) assertPublicFailureDetails(input.details)
+      break
+    }
+    case 'cancelled': {
+      const input = responseKeys(discriminator, [...baseKeys, 'attempt', 'errorCode'])
+      responseAttempt(input.attempt)
+      if (input.errorCode !== 'AI_CANCELLED') invalidResponse()
+      break
+    }
+    default:
+      invalidResponse()
+  }
+  return structuredClone(discriminator) as AIProgressEvent
 }
 
 export function parseAIResponse<T>(value: unknown, successKeys: readonly string[]): T {
@@ -896,16 +1350,42 @@ export function parseAISessionMigrateResponse(value: unknown): AISessionMigrateR
 }
 
 export function parseAISendResponse(value: unknown): AISendResult {
-  return parseKnownResponse<AISendResult>(
-    value,
-    ['requestId', 'artifact', 'attempts'],
-    (result) => {
-      responseId(result.requestId)
-      assertQuestionnaireArtifactPreview(result.artifact)
-      const attempts = responseNumber(result.attempts, true)
-      if (attempts < 0 || attempts > 3) invalidResponse()
+  assertSafeResponseTree(value)
+  const discriminator = responseKeys(value, ['ok'], [
+    'requestId', 'outcome', 'artifact', 'message', 'attempts',
+    'errorCode', 'message', 'details'
+  ])
+  if (discriminator.ok === false) {
+    const failure = responseKeys(
+      discriminator,
+      ['ok', 'errorCode', 'message'],
+      ['details']
+    )
+    responseErrorCode(failure.errorCode)
+    responseString(failure.message, 200)
+    if (failure.details !== undefined) assertPublicFailureDetails(failure.details)
+  } else if (discriminator.ok === true) {
+    responseId(discriminator.requestId)
+    responseAttempt(discriminator.attempts)
+    if (discriminator.outcome === 'questionnaire') {
+      responseKeys(
+        discriminator,
+        ['ok', 'requestId', 'outcome', 'artifact', 'attempts']
+      )
+      assertQuestionnaireArtifactPreview(discriminator.artifact)
+    } else if (discriminator.outcome === 'clarification') {
+      responseKeys(
+        discriminator,
+        ['ok', 'requestId', 'outcome', 'message', 'attempts']
+      )
+      assertPublicMessage(discriminator.message)
+    } else {
+      invalidResponse()
     }
-  )
+  } else {
+    invalidResponse()
+  }
+  return structuredClone(discriminator) as AISendResult
 }
 
 export function parseAICancelResponse(value: unknown): AICancelResult {
