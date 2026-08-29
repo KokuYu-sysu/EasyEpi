@@ -10,6 +10,8 @@ export interface IpcInvokeEventLike {
 export interface IpcWebContentsLike {
   id?: number
   isDestroyed?(): boolean
+  once?(event: 'destroyed', listener: () => void): void
+  removeListener?(event: 'destroyed', listener: () => void): void
   send(channel: string, payload: unknown): void
 }
 

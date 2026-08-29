@@ -676,6 +676,14 @@ describe('AI IPC privacy boundary', () => {
     })
     expect(Buffer.byteLength(JSON.stringify(firstPage), 'utf8'))
       .toBeLessThanOrEqual(AI_SESSION_PAGE_MAX_UTF8_BYTES)
+    const originalManifest = structuredClone(stored.manifest)
+    const returnedManifest = firstPage.session.manifest as {
+      title: string
+      versionStamp: { promptHash: string }
+    }
+    returnedManifest.title = 'renderer mutation'
+    returnedManifest.versionStamp.promptHash = `sha256:${'f'.repeat(64)}`
+    expect(stored.manifest).toEqual(originalManifest)
 
     const activeOnly = await handlers.get(AI_SESSION_GET_CHANNEL)!(event, {
       sessionId, offset: 2, limit: 1
@@ -991,6 +999,125 @@ describe('AI IPC privacy boundary', () => {
     registration.dispose()
     await new Promise((resolve) => setTimeout(resolve, 20))
     expect(sent).toHaveLength(settledEventCount)
+  })
+
+  it('aborts an in-flight run when its captured sender is destroyed and removes the listener', async () => {
+    const handlers = new Map<string, (event: IpcInvokeEventLike, ...args: unknown[]) => Promise<unknown>>()
+    const ipcMain: IpcMainLike = {
+      handle: (channel, handler) => handlers.set(channel, handler),
+      removeHandler: (channel) => { handlers.delete(channel) }
+    }
+    const state = createProjectIpcState()
+    state.currentProject = createProjectData()
+    state.currentFilePath = 'D:\\destroyed.easyepi'
+    state.currentSaltHex = 'a'.repeat(64)
+    state.currentHashHex = 'b'.repeat(64)
+    state.auth.encryptionKey = Buffer.alloc(32, 1)
+    new AISessionRepository(state.currentProject, () => sessionId).create(versionStamp, 'Destroyed')
+    let releaseProvider!: () => void
+    let providerRequest: AIChatCompletionRequest | undefined
+    const providerPending = new Promise<void>((resolve) => { releaseProvider = resolve })
+    const configService = {
+      get: async () => ({ ok: true, config: { baseUrl: '', model: '', hasApiKey: false, maskedApiKey: null } } as const),
+      update: async () => ({ ok: false, code: 'INVALID_AI_CONFIG' } as const),
+      clear: async () => ({ ok: false, code: 'AI_CONFIG_SAVE_FAILED' } as const),
+      getPlaintextForMain: async () => ({ baseUrl: 'https://example.test/v1', model: 'model' }),
+      getPrivacyStatus: async () => ({ accepted: true, acceptedAt: at }),
+      acceptPrivacy: async () => ({ accepted: true, acceptedAt: at } as const)
+    } satisfies AIConfigService
+    const sent: unknown[] = []
+    const registration = registerAIIpcHandlers(ipcMain, state, {
+      configService,
+      saveProject: vi.fn(),
+      client: {
+        complete: vi.fn(async (request) => {
+          providerRequest = request
+          await providerPending
+          return {
+            content: validQuestionnaireCompletion(),
+            streamingSupported: true,
+            responseFormatSupported: true
+          }
+        })
+      }
+    }, 'file:///app/index.html')
+    let destructionListener: (() => void) | undefined
+    const removeListener = vi.fn((name: string, listener: () => void) => {
+      if (name === 'destroyed' && listener === destructionListener) destructionListener = undefined
+    })
+    const event = {
+      senderFrame: { url: 'file:///app/index.html' },
+      sender: {
+        id: 7,
+        isDestroyed: () => false,
+        send: (_channel: string, value: unknown) => sent.push(value),
+        once: (name: string, listener: () => void) => {
+          if (name === 'destroyed') destructionListener = listener
+        },
+        removeListener
+      }
+    }
+    const send = handlers.get(AI_SEND_CHANNEL)!(event, {
+      requestId: 'destroy-request', sessionId, content: 'Create', includeCurrentQuestionnaire: false
+    })
+    await vi.waitFor(() => expect(providerRequest).toBeDefined())
+    expect(destructionListener).toBeTypeOf('function')
+
+    const deliveredBeforeDestroy = sent.length
+    destructionListener!()
+    expect(providerRequest!.signal?.aborted).toBe(true)
+    releaseProvider()
+
+    await expect(send).resolves.toMatchObject({ ok: false, errorCode: 'AI_CANCELLED' })
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(sent).toHaveLength(deliveredBeforeDestroy)
+    expect(destructionListener).toBeUndefined()
+    expect(removeListener).toHaveBeenCalledOnce()
+    registration.dispose()
+  })
+
+  it('normalizes an internal failed progress code before sending it to the renderer', async () => {
+    const handlers = new Map<string, (event: IpcInvokeEventLike, ...args: unknown[]) => Promise<unknown>>()
+    const ipcMain: IpcMainLike = {
+      handle: (channel, handler) => handlers.set(channel, handler),
+      removeHandler: (channel) => { handlers.delete(channel) }
+    }
+    const state = createProjectIpcState()
+    state.currentProject = createProjectData()
+    state.currentFilePath = 'D:\\internal-progress.easyepi'
+    state.currentSaltHex = 'a'.repeat(64)
+    state.currentHashHex = 'b'.repeat(64)
+    state.auth.encryptionKey = Buffer.alloc(32, 1)
+    new AISessionRepository(state.currentProject, () => sessionId).create(versionStamp, 'Internal')
+    const configService = {
+      get: async () => ({ ok: true, config: { baseUrl: '', model: '', hasApiKey: false, maskedApiKey: null } } as const),
+      update: async () => ({ ok: false, code: 'INVALID_AI_CONFIG' } as const),
+      clear: async () => ({ ok: false, code: 'AI_CONFIG_SAVE_FAILED' } as const),
+      getPlaintextForMain: async () => ({ baseUrl: 'https://example.test/v1', model: 'model' }),
+      getPrivacyStatus: async () => ({ accepted: true, acceptedAt: at }),
+      acceptPrivacy: async () => ({ accepted: true, acceptedAt: at } as const)
+    } satisfies AIConfigService
+    const sent: unknown[] = []
+    const registration = registerAIIpcHandlers(ipcMain, state, {
+      configService,
+      saveProject: vi.fn(),
+      client: {
+        complete: vi.fn(async () => {
+          throw new Error('AI_RUN_NOT_ACTIVE')
+        })
+      }
+    }, 'file:///app/index.html')
+    const event = {
+      senderFrame: { url: 'file:///app/index.html' },
+      sender: { id: 7, isDestroyed: () => false, send: (_channel: string, value: unknown) => sent.push(value) }
+    }
+
+    await expect(handlers.get(AI_SEND_CHANNEL)!(event, {
+      requestId: 'internal-request', sessionId, content: 'Create', includeCurrentQuestionnaire: false
+    })).resolves.toMatchObject({ ok: false, errorCode: 'AI_INTERNAL_ERROR' })
+    expect(sent.at(-1)).toMatchObject({ type: 'failed', errorCode: 'AI_INTERNAL_ERROR' })
+    expect(JSON.stringify(sent)).not.toContain('AI_RUN_NOT_ACTIVE')
+    registration.dispose()
   })
 
   it('rejects renderer attempts to smuggle sensitive fields into send', () => {

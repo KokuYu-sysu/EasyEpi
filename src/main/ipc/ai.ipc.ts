@@ -100,6 +100,7 @@ interface InFlightRequest {
   project: ProjectData
   filePath: string
   sender: IpcWebContentsLike
+  removeDestroyedListener(): void
   settled: Promise<void>
   settle(): void
 }
@@ -247,7 +248,10 @@ function toPublicSessionPage(session: AISessionData, offset: number, limit: numb
       }
     : null
   const page: AISessionPage = {
-    manifest: session.manifest,
+    manifest: {
+      ...session.manifest,
+      versionStamp: { ...session.manifest.versionStamp }
+    },
     messages: [],
     attachments: [],
     status: session.state.status,
@@ -647,12 +651,37 @@ export function registerAIIpcHandlers(
     const key = inFlightKey(owner, captured.projectId, request.requestId)
     if (inFlight.has(key)) return publicError('AI_REQUEST_IN_PROGRESS')
     const controller = new AbortController()
+    const sender = event.sender!
+    let senderDestroyed = false
+    let destroyedListenerAttached = false
+    const removeDestroyedListener = (): void => {
+      if (!destroyedListenerAttached) return
+      destroyedListenerAttached = false
+      try {
+        sender.removeListener?.('destroyed', onSenderDestroyed)
+      } catch {
+        // The sender may have completed destruction while cleanup was running.
+      }
+    }
+    const onSenderDestroyed = (): void => {
+      senderDestroyed = true
+      controller.abort()
+      removeDestroyedListener()
+    }
+    if (sender.isDestroyed?.() === true) {
+      senderDestroyed = true
+      controller.abort()
+    } else if (sender.once !== undefined) {
+      destroyedListenerAttached = true
+      sender.once('destroyed', onSenderDestroyed)
+    }
     let settle!: () => void
     const entry: InFlightRequest = {
       controller,
       project: captured.project,
       filePath: captured.filePath,
-      sender: event.sender!,
+      sender,
+      removeDestroyedListener,
       settled: new Promise<void>((resolve) => { settle = resolve }),
       settle: () => settle()
     }
@@ -663,7 +692,7 @@ export function registerAIIpcHandlers(
     const queuedDeltas: Array<Extract<AIProgressEvent, { type: 'assistant_delta' }>> = []
     const canDeliver = (): boolean => {
       if (deliveryStopped || inFlight.get(key) !== entry ||
-        !isCurrentProject(state, captured) || entry.sender.isDestroyed?.() === true) {
+        !isCurrentProject(state, captured) || senderDestroyed || entry.sender.isDestroyed?.() === true) {
         deliveryStopped = true
         if (deltaFlushTimer !== undefined) clearTimeout(deltaFlushTimer)
         deltaFlushTimer = undefined
@@ -710,6 +739,9 @@ export function registerAIIpcHandlers(
         progress = parseAIProgressEvent(rawProgress)
       } catch {
         return
+      }
+      if (progress.type === 'failed') {
+        progress = { ...progress, errorCode: errorCode(progress.errorCode) }
       }
       if (progress.requestId !== request.requestId || progress.sessionId !== request.sessionId ||
         terminalDelivered || !canDeliver()) return
@@ -783,6 +815,7 @@ export function registerAIIpcHandlers(
     } catch (error) {
       return publicError(error)
     } finally {
+      entry.removeDestroyedListener()
       if (inFlight.get(key) === entry) inFlight.delete(key)
       entry.settle()
     }
@@ -887,7 +920,10 @@ export function registerAIIpcHandlers(
     },
     dispose: () => {
       acceptingRequests = false
-      for (const request of inFlight.values()) request.controller.abort()
+      for (const request of inFlight.values()) {
+        request.removeDestroyedListener()
+        request.controller.abort()
+      }
       inFlight.clear()
       for (const channel of channels) ipcMain.removeHandler(channel)
     }
