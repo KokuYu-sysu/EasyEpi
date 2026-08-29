@@ -1212,11 +1212,11 @@ export class AISessionRepository {
       ])
       const interrupted = interruptedRunIds.size > 0 || session.state.status === 'running'
       if (runCount > 0 || interrupted) {
-        const completedAt = this.timestamp()
         for (const runId of interruptedRunIds) {
           const run = session.state.runs[runId]
           if (run?.status === 'running') {
             const currentV2 = isCurrentV2Run(session, run)
+            const completedAt = currentV2 ? this.terminalTimestamp(run) : this.timestamp()
             const failure: AIRunFailure = {
               errorCode: 'AI_RUN_INTERRUPTED', completedAt, details: { attempts: [] }
             }

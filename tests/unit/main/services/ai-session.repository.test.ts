@@ -507,6 +507,17 @@ describe('AI session repository v2 persistence', () => {
     expect(repo.get(sessionId)?.state.activeRunId).toBeUndefined()
   })
 
+  it('rejects recovery when the clock precedes an interrupted v2 run progress snapshot', () => {
+    const { repository: repo, sessionId } = repository()
+    seedRunning(repo, sessionId)
+    repo.updateRunProgress(sessionId, RUN_ID, {
+      stage: 'connecting', attempt: 1, updatedAt: '2026-08-29T00:00:10.000Z', streamFallback: false
+    })
+    const before = JSON.stringify(repo.get(sessionId))
+    expect(() => repo.recoverInterruptedRuns()).toThrow('INVALID_AI_RUN_CHRONOLOGY')
+    expect(JSON.stringify(repo.get(sessionId))).toBe(before)
+  })
+
   it('parses progress without coercion and only permits running stages for running runs', () => {
     const { repository: repo, sessionId } = repository()
     repo.appendMessage(sessionId, {
