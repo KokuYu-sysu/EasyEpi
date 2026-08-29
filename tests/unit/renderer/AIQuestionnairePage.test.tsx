@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { vi } from 'vitest'
 
@@ -7,6 +7,8 @@ import { ToastProvider } from '@renderer/components/ui'
 import {
   AI_PRIVACY_NOTICE,
   type AIArtifactPreview,
+  type AIPublicFailureDetails,
+  type AIProgressEvent,
   type AIQuestionnaireArtifactPreviewDto,
   type AISessionPage
 } from '@shared/ai-assistant-contract'
@@ -38,6 +40,8 @@ const page: AISessionPage = {
   attachments: [],
   status: 'idle',
   activeArtifactId: null,
+  activeRun: null,
+  failures: [],
   artifacts: [],
   total: 0,
   nextOffset: null
@@ -128,6 +132,7 @@ function artifactDto(
 function installApi(accepted: boolean) {
   const api = {
     ai: {
+      onProgress: vi.fn((_scope: { requestId: string; sessionId: string }, _callback: (event: AIProgressEvent) => void) => vi.fn()),
       config: {
         get: vi.fn().mockResolvedValue({
           ok: true,
@@ -183,6 +188,239 @@ function renderPage() {
 }
 
 describe('AIQuestionnairePage boundaries', () => {
+  it('streams attempts, resolves clarification, and exposes grouped repair actions without accepting stale progress', async () => {
+    const user = userEvent.setup()
+    const api = installApi(true)
+    const progressCallbacks: Array<(event: AIProgressEvent) => void> = []
+    const unsubscribers = [vi.fn(), vi.fn(), vi.fn()]
+    api.ai.onProgress.mockImplementation((_scope, callback) => {
+      progressCallbacks.push(callback)
+      return unsubscribers[progressCallbacks.length - 1] ?? vi.fn()
+    })
+
+    let resolveClarification!: (value: {
+      ok: true
+      requestId: string
+      outcome: 'clarification'
+      message: AISessionPage['messages'][number]
+      attempts: number
+    }) => void
+    const clarificationSend = new Promise<Parameters<typeof resolveClarification>[0]>((resolve) => {
+      resolveClarification = resolve
+    })
+    let resolveFailure!: (value: {
+      ok: false
+      errorCode: string
+      message: string
+      details: AISessionPage['failures'][number]['details']
+    }) => void
+    const failureSend = new Promise<Parameters<typeof resolveFailure>[0]>((resolve) => {
+      resolveFailure = resolve
+    })
+    api.ai.send
+      .mockReturnValueOnce(clarificationSend)
+      .mockReturnValueOnce(failureSend)
+      .mockReturnValue(new Promise(() => undefined))
+
+    const clarification = {
+      clarificationId: 'clarification-age',
+      options: [
+        { id: 'age-18-39', label: '18–39 岁' },
+        { id: 'age-40-64', label: '40–64 岁' }
+      ],
+      status: 'unresolved' as const,
+      selectedOptionId: null,
+      resolvedByMessageId: null
+    }
+    const initialUserMessage = {
+      id: 'message-user-initial',
+      role: 'user' as const,
+      content: '设计筛查问卷',
+      createdAt: '2026-08-25T01:01:00.000Z',
+      clarification: null
+    }
+    const assistantClarification = {
+      id: 'message-assistant-clarification',
+      role: 'assistant' as const,
+      content: '请选择筛查年龄范围。',
+      createdAt: '2026-08-25T01:02:00.000Z',
+      clarification
+    }
+    const failureDetails: AIPublicFailureDetails = {
+      attempts: [{
+        attempt: 1 as const,
+        issues: [
+          { code: 'UNKNOWN_CONDITION_QUESTION', field: '$.conditionRules[0]', summary: '条件引用的题目不存在。' },
+          { code: 'DUPLICATE_VARIABLE_NAME', field: '$.questions[1].variableName', summary: '变量名不能重复或与受保护变量冲突。' }
+        ],
+        truncated: true
+      }, {
+        attempt: 2 as const,
+        issues: [{ code: 'KEY_QUESTION_MISMATCH', field: '$.keyQuestionIds[0]', summary: '关键题目列表与题目标记不一致。' }],
+        truncated: false
+      }]
+    }
+    const selectedUserMessage = {
+      id: 'message-user-selection',
+      role: 'user' as const,
+      content: '我选择：40–64 岁',
+      createdAt: '2026-08-25T01:03:00.000Z',
+      clarification: null
+    }
+    const resolvedClarificationMessage = {
+      ...assistantClarification,
+      clarification: {
+        ...clarification,
+        status: 'resolved' as const,
+        selectedOptionId: 'age-40-64',
+        resolvedByMessageId: selectedUserMessage.id
+      }
+    }
+    const clarificationPage: AISessionPage = {
+      ...page,
+      messages: [initialUserMessage, assistantClarification],
+      total: 2
+    }
+    const failurePage: AISessionPage = {
+      ...page,
+      status: 'failed',
+      messages: [initialUserMessage, resolvedClarificationMessage, selectedUserMessage],
+      failures: [{
+        runId: 'run-selection',
+        userMessageId: selectedUserMessage.id,
+        completedAt: '2026-08-25T01:04:00.000Z',
+        errorCode: 'AI_HARNESS_VALIDATION_FAILED',
+        details: failureDetails
+      }],
+      total: 3
+    }
+    let loadedPage: AISessionPage = page
+    api.ai.session.get.mockImplementation(({ limit }: { limit?: number }) => Promise.resolve({
+      ok: true,
+      session: limit === 1 && loadedPage.total > 0
+        ? { ...loadedPage, messages: [loadedPage.messages[0]!], nextOffset: 1 }
+        : loadedPage
+    }))
+
+    const view = renderPage()
+    await screen.findByRole('heading', { name: '调查问卷讨论', level: 3 })
+    await user.type(screen.getByRole('textbox', { name: '给 AI 的消息' }), '设计筛查问卷')
+    await user.click(screen.getByRole('button', { name: '发送消息' }))
+    await waitFor(() => expect(api.ai.send).toHaveBeenCalledTimes(1))
+    expect(api.ai.onProgress).toHaveBeenCalledWith({
+      requestId: api.ai.send.mock.calls[0]?.[0].requestId,
+      sessionId: session.sessionId
+    }, expect.any(Function))
+    expect(api.ai.onProgress.mock.invocationCallOrder[0]).toBeLessThan(api.ai.send.mock.invocationCallOrder[0]!)
+
+    const requestId = api.ai.send.mock.calls[0]![0].requestId
+    const baseEvent = {
+      requestId,
+      sessionId: session.sessionId,
+      runId: 'run-initial',
+      at: '2026-08-25T01:01:01.000Z'
+    }
+    act(() => {
+      progressCallbacks[0]!({ ...baseEvent, type: 'attempt_started', attempt: 1 })
+      progressCallbacks[0]!({ ...baseEvent, type: 'model_streaming', attempt: 1 })
+      progressCallbacks[0]!({ ...baseEvent, type: 'assistant_delta', attempt: 1, sequence: 1, delta: '这是一段' })
+      progressCallbacks[0]!({ ...baseEvent, type: 'assistant_delta', attempt: 1, sequence: 2, delta: '无效回答' })
+      progressCallbacks[0]!({ ...baseEvent, type: 'assistant_delta', attempt: 1, sequence: 2, delta: '重复片段' })
+      progressCallbacks[0]!({ ...baseEvent, requestId: 'stale-request', type: 'assistant_delta', attempt: 1, sequence: 3, delta: '不应出现' })
+    })
+    expect(await screen.findByText('这是一段无效回答')).toBeVisible()
+    expect(screen.queryByText('不应出现')).not.toBeInTheDocument()
+    expect(screen.queryByText(/重复片段/)).not.toBeInTheDocument()
+    expect(screen.getByText('正在接收模型回答')).toBeVisible()
+
+    act(() => {
+      progressCallbacks[0]!({
+        ...baseEvent,
+        type: 'validation_failed',
+        attempt: 1,
+        failure: failureDetails.attempts[0]!
+      })
+      progressCallbacks[0]!({ ...baseEvent, type: 'repairing', attempt: 1, nextAttempt: 2 })
+    })
+    expect(screen.queryByText('这是一段无效回答')).not.toBeInTheDocument()
+    expect(screen.getByText('第 1 次尝试未通过本地校验')).toBeVisible()
+    expect(screen.getByText('正在进行第 1 次自动修复')).toBeVisible()
+    act(() => progressCallbacks[0]!({ ...baseEvent, type: 'assistant_delta', attempt: 2, sequence: 1, delta: '请选择筛查年龄范围。' }))
+    expect(await screen.findByText('请选择筛查年龄范围。')).toBeVisible()
+    act(() => progressCallbacks[0]!({ ...baseEvent, type: 'clarification', attempt: 2, outcome: 'clarification', messageId: assistantClarification.id, clarification }))
+    expect(unsubscribers[0]).toHaveBeenCalledTimes(1)
+    loadedPage = clarificationPage
+    await act(async () => {
+      resolveClarification({
+        ok: true,
+        requestId,
+        outcome: 'clarification',
+        message: assistantClarification,
+        attempts: 2
+      })
+    })
+
+    const option = await screen.findByRole('button', { name: '40–64 岁' })
+    expect(option).toBeEnabled()
+    await user.click(option)
+    await waitFor(() => expect(api.ai.send).toHaveBeenCalledTimes(2))
+    expect(api.ai.send).toHaveBeenNthCalledWith(2, {
+      requestId: expect.any(String),
+      sessionId: session.sessionId,
+      content: '',
+      includeCurrentQuestionnaire: false,
+      clarificationSelection: {
+        clarificationId: 'clarification-age',
+        optionId: 'age-40-64'
+      }
+    })
+    expect(option).toBeDisabled()
+
+    loadedPage = failurePage
+    await act(async () => {
+      resolveFailure({
+        ok: false,
+        errorCode: 'AI_HARNESS_VALIDATION_FAILED',
+        message: 'raw provider detail must stay hidden',
+        details: failureDetails
+      })
+    })
+    expect(await screen.findByText('我选择：40–64 岁')).toBeVisible()
+    expect(await screen.findByText('第 1 次尝试')).toBeVisible()
+    expect(screen.getByText('第 2 次尝试')).toBeVisible()
+    expect(screen.getByText('另有错误未显示')).toBeVisible()
+    expect(screen.queryByText('raw provider detail must stay hidden')).not.toBeInTheDocument()
+    await user.click(screen.getByText('查看技术详情'))
+    expect(screen.getByText('UNKNOWN_CONDITION_QUESTION')).toBeVisible()
+    expect(screen.getByText('$.conditionRules[0]')).toBeVisible()
+
+    await user.click(screen.getByRole('button', { name: '修改要求' }))
+    expect(screen.getByRole('textbox', { name: '给 AI 的消息' })).toHaveFocus()
+    await user.click(screen.getByRole('button', { name: '根据错误重新生成' }))
+    await waitFor(() => expect(api.ai.send).toHaveBeenCalledTimes(3))
+    expect(api.ai.send.mock.calls[2]?.[0]).toMatchObject({
+      sessionId: session.sessionId,
+      includeCurrentQuestionnaire: false,
+      content: expect.stringContaining('条件引用的题目不存在。')
+    })
+    expect(api.ai.send.mock.calls[2]?.[0].content.length).toBeLessThanOrEqual(1000)
+
+    act(() => {
+      progressCallbacks[2]!({
+        ...baseEvent,
+        requestId: api.ai.send.mock.calls[2]![0].requestId,
+        sessionId: secondSession.sessionId,
+        type: 'assistant_delta',
+        attempt: 1,
+        sequence: 1,
+        delta: '其他对话的内容'
+      })
+    })
+    expect(screen.queryByText('其他对话的内容')).not.toBeInTheDocument()
+    view.unmount()
+    expect(unsubscribers[2]).toHaveBeenCalledTimes(1)
+  })
+
   it('clears switched session state and ignores its late response', async () => {
     let resolveSecond!: (value: { ok: true; session: AISessionPage }) => void
     let resolveConfig!: (value: {
@@ -350,6 +588,7 @@ describe('AIQuestionnairePage boundaries', () => {
     let resolveSend!: (value: {
       ok: true
       requestId: string
+      outcome: 'questionnaire'
       artifact: AIQuestionnaireArtifactPreviewDto
       attempts: number
     }) => void
@@ -432,6 +671,7 @@ describe('AIQuestionnairePage boundaries', () => {
     resolveSend({
       ok: true,
       requestId: api.ai.send.mock.calls[0]?.[0].requestId,
+      outcome: 'questionnaire',
       artifact: artifactDto('artifact-b', 'operation-b', previewB),
       attempts: 1
     })

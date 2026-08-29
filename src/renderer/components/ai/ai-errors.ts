@@ -1,3 +1,5 @@
+import type { AIProgressStage } from '@shared/ai-assistant-contract'
+
 const ERROR_MESSAGES: Readonly<Record<string, string>> = {
   INVALID_AI_CONFIG: '请填写有效的 AI 服务地址和模型名称。',
   AI_CONFIG_READ_FAILED: '无法读取 AI 服务配置，请稍后重试。',
@@ -20,6 +22,7 @@ const ERROR_MESSAGES: Readonly<Record<string, string>> = {
   AI_INVALID_RESPONSE: 'AI 服务返回的内容无法使用。',
   AI_RESPONSE_TOO_LARGE: 'AI 返回内容过大，请缩短要求后重试。',
   AI_HARNESS_VALIDATION_FAILED: '生成的问卷未通过本地校验，请调整要求后重试。',
+  AI_VALIDATION_ERROR: '生成内容存在无法使用的字段，请根据校验摘要重新生成。',
   AI_ARTIFACT_STALE: '正式问卷已变更，此草稿已过期，不能应用。',
   AI_ARTIFACT_NOT_APPLICABLE: '此 AI 草稿当前不可应用。',
   AI_ARTIFACT_DERIVED_CONFLICT: '草稿与现有衍生变量冲突，未进行应用。',
@@ -27,6 +30,23 @@ const ERROR_MESSAGES: Readonly<Record<string, string>> = {
   AI_PERSIST_FAILED: '无法保存 AI 对话，请重试。',
   AI_SESSION_PAGE_TOO_LARGE: '此段对话内容过大，暂时无法显示。',
   AI_VERSION_MIGRATION_REQUIRED: '该对话版本较旧，需要迁移后才能继续。'
+}
+
+export const AI_PROGRESS_STAGE_LABELS: Readonly<Record<AIProgressStage, string>> = {
+  starting: '正在提交请求',
+  connecting: '正在连接模型',
+  streaming: '正在接收模型回答',
+  validating: '正在进行本地校验',
+  repairing: '正在自动修复',
+  clarification: '已收到补充问题',
+  completed: '生成完成',
+  failed: '生成失败',
+  cancelled: '已取消生成'
+}
+
+export function aiProgressStageLabel(stage: AIProgressStage, attempt: 1 | 2 | 3): string {
+  if (stage === 'repairing') return `正在进行第 ${Math.max(1, attempt - 1)} 次自动修复`
+  return AI_PROGRESS_STAGE_LABELS[stage]
 }
 
 export function friendlyAIError(code: string | undefined, fallback: string): string {

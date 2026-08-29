@@ -9,7 +9,7 @@ import {
   Trash2,
   X
 } from 'lucide-react'
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { Fragment, useCallback, useEffect, useRef, useState } from 'react'
 
 import { MilestonePage } from '@renderer/components/common/MilestonePage'
 import {
@@ -28,11 +28,17 @@ import {
 } from '@renderer/components/ui'
 import { friendlyAIError, isProjectBoundaryError } from '@renderer/components/ai/ai-errors'
 import { subscribeAIConfigChanged } from '@renderer/components/ai/ai-config-events'
+import { AIClarificationReplies } from '@renderer/components/ai/AIClarificationReplies'
+import { AIRunProgress, type AIRunProgressState } from '@renderer/components/ai/AIRunProgress'
+import { AIValidationFailure } from '@renderer/components/ai/AIValidationFailure'
 import {
   AI_PRIVACY_NOTICE,
   type AIArtifactPreview,
+  type AIPublicFailureDetails,
+  type AIPublicFailureRecord,
   type AIPublicAttachmentSummary,
   type AIPublicMessage,
+  type AIProgressEvent,
   type AIQuestionnaireArtifactPreviewDto,
   type AISessionListItem,
   type AISessionPage,
@@ -72,6 +78,25 @@ interface PendingSendIntent {
   content: string
   includeCurrentQuestionnaire: boolean
   attachmentFingerprint: string | null
+  clarificationSelection?: {
+    clarificationId: string
+    optionId: string
+  }
+}
+
+interface LiveRunState extends AIRunProgressState {
+  requestId: string
+  sessionId: string
+  runId: string | null
+  attemptText: Partial<Record<1 | 2 | 3, string>>
+  sequences: Partial<Record<1 | 2 | 3, number>>
+}
+
+interface ProgressSubscription {
+  requestId: string
+  sessionId: string
+  generation: number
+  unsubscribe: () => void
 }
 
 const STATUS_LABELS: Record<AISessionStatus, string> = {
@@ -178,9 +203,118 @@ function mergeAttachments(...groups: AIPublicAttachmentSummary[][]): AIPublicAtt
   return [...byId.values()]
 }
 
+function mergeFailures(...groups: AIPublicFailureRecord[][]): AIPublicFailureRecord[] {
+  const byRunId = new Map<string, AIPublicFailureRecord>()
+  for (const group of groups) {
+    for (const failure of group) {
+      if (!byRunId.has(failure.runId)) byRunId.set(failure.runId, failure)
+    }
+  }
+  return [...byRunId.values()]
+}
+
 function isTerminalArtifactError(code: string | undefined): boolean {
   return code === 'AI_ARTIFACT_STALE' || code === 'AI_ARTIFACT_NOT_APPLICABLE' ||
     code === 'AI_ARTIFACT_DERIVED_CONFLICT'
+}
+
+function createLiveRun(
+  requestId: string,
+  sessionId: string,
+  startedAt = new Date().toISOString(),
+  attempt: 1 | 2 | 3 = 1,
+  stage: LiveRunState['stage'] = 'starting',
+  runId: string | null = null,
+  streamFallback = false
+): LiveRunState {
+  return {
+    requestId,
+    sessionId,
+    runId,
+    stage,
+    attempt,
+    startedAt,
+    updatedAt: startedAt,
+    streamFallback,
+    responseFormatFallback: false,
+    provisionalText: '',
+    rejectedAttempts: [],
+    attemptText: {},
+    sequences: {}
+  }
+}
+
+function updateLiveRun(previous: LiveRunState, event: AIProgressEvent): LiveRunState {
+  if (event.requestId !== previous.requestId || event.sessionId !== previous.sessionId) return previous
+  const base = { ...previous, runId: event.runId, updatedAt: event.at }
+  switch (event.type) {
+    case 'started':
+      return { ...base, stage: 'starting' }
+    case 'attempt_started':
+      return { ...base, stage: event.attempt === 1 ? 'connecting' : 'repairing', attempt: event.attempt, provisionalText: '' }
+    case 'model_streaming':
+      return { ...base, stage: 'streaming', attempt: event.attempt }
+    case 'assistant_delta': {
+      const lastSequence = previous.sequences[event.attempt] ?? -1
+      if (event.sequence <= lastSequence) return previous
+      const text = `${previous.attemptText[event.attempt] ?? ''}${event.delta}`
+      return {
+        ...base,
+        stage: 'streaming',
+        attempt: event.attempt,
+        attemptText: { ...previous.attemptText, [event.attempt]: text },
+        sequences: { ...previous.sequences, [event.attempt]: event.sequence },
+        provisionalText: text
+      }
+    }
+    case 'validating':
+      return { ...base, stage: 'validating', attempt: event.attempt }
+    case 'validation_failed':
+      return {
+        ...base,
+        stage: 'validating',
+        attempt: event.attempt,
+        provisionalText: '',
+        attemptText: { ...previous.attemptText, [event.attempt]: '' },
+        rejectedAttempts: [
+          ...previous.rejectedAttempts.filter(({ attempt }) => attempt !== event.attempt),
+          event.failure
+        ].sort((left, right) => left.attempt - right.attempt)
+      }
+    case 'repairing':
+      return { ...base, stage: 'repairing', attempt: event.nextAttempt, provisionalText: '' }
+    case 'capability_fallback':
+      return {
+        ...base,
+        attempt: event.attempt,
+        streamFallback: previous.streamFallback || event.capability === 'streaming',
+        responseFormatFallback: previous.responseFormatFallback || event.capability === 'response_format'
+      }
+    case 'clarification':
+      return { ...base, stage: 'clarification', attempt: event.attempt }
+    case 'completed':
+      return { ...base, stage: 'completed', attempt: event.attempt }
+    case 'failed':
+      return { ...base, stage: 'failed', attempt: event.attempt, provisionalText: '' }
+    case 'cancelled':
+      return { ...base, stage: 'cancelled', attempt: event.attempt, provisionalText: '' }
+  }
+}
+
+function buildValidationRetryPrompt(details: AIPublicFailureDetails): string {
+  const summaries = [...new Set(details.attempts.flatMap(({ issues }) => issues.map(({ summary }) => summary)))]
+  const prefix = '请根据以下本地校验结果重新生成问卷，并逐项修正：'
+  const body = summaries.slice(0, 12).map((summary, index) => `${index + 1}. ${summary}`).join('\n')
+  return `${prefix}\n${body}`.slice(0, 1000)
+}
+
+function latestActionableClarificationMessageId(messages: AIPublicMessage[]): string | null {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index]
+    if (message?.role !== 'assistant' || message.clarification?.status !== 'unresolved') continue
+    return messages.slice(index + 1).some(({ role }) => role === 'user') ? null : message.id
+  }
+  return null
 }
 
 function ArtifactPreviewCard({
@@ -303,6 +437,12 @@ export function AIQuestionnairePage() {
   const [renameOpen, setRenameOpen] = useState(false)
   const [renameTitle, setRenameTitle] = useState('')
   const [announcement, setAnnouncement] = useState('')
+  const [liveRun, setLiveRun] = useState<LiveRunState | null>(null)
+  const [liveFailure, setLiveFailure] = useState<{
+    errorCode: string
+    details: AIPublicFailureDetails
+  } | null>(null)
+  const [pendingClarificationId, setPendingClarificationId] = useState<string | null>(null)
   const generationRef = useRef(0)
   const configRequestRef = useRef(0)
   const sessionLoadRequestRef = useRef(0)
@@ -320,6 +460,7 @@ export function AIQuestionnairePage() {
   const privacyBusyRef = useRef(false)
   const clearingCacheRef = useRef(false)
   const activeRequestIdRef = useRef<string | null>(null)
+  const progressSubscriptionRef = useRef<ProgressSubscription | null>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const toast = useToast()
 
@@ -369,14 +510,23 @@ export function AIQuestionnairePage() {
     setClearingCache(busy)
   }, [])
 
+  const cleanupProgressSubscription = useCallback((requestId?: string) => {
+    const subscription = progressSubscriptionRef.current
+    if (subscription === null || (requestId !== undefined && subscription.requestId !== requestId)) return
+    progressSubscriptionRef.current = null
+    subscription.unsubscribe()
+  }, [])
+
   const releasePendingSend = useCallback((intent?: PendingSendIntent) => {
     if (intent !== undefined && pendingSendRef.current?.requestId !== intent.requestId) return
     pendingSendRef.current = null
     setPendingSend(false)
+    if (intent?.clarificationSelection !== undefined || intent === undefined) setPendingClarificationId(null)
     setPrivacyBusySynchronized(false)
   }, [setPrivacyBusySynchronized])
 
   const clearSessionContent = useCallback(() => {
+    cleanupProgressSubscription()
     invalidateSessionLoad()
     setSessionPage(null)
     setMessages([])
@@ -394,6 +544,9 @@ export function AIQuestionnairePage() {
     setAttachmentLoading(false)
     setDraft('')
     setError(null)
+    setLiveRun(null)
+    setLiveFailure(null)
+    setPendingClarificationId(null)
     activeRequestIdRef.current = null
     pendingSendRef.current = null
     privacyBusyRef.current = false
@@ -407,7 +560,7 @@ export function AIQuestionnairePage() {
     setPrivacyOpen(false)
     setRenameOpen(false)
     setRenameTitle('')
-  }, [commitActiveArtifact, invalidateArtifactPreview, invalidateSessionLoad])
+  }, [cleanupProgressSubscription, commitActiveArtifact, invalidateArtifactPreview, invalidateSessionLoad])
 
   const activateSession = useCallback((sessionId: string | null) => {
     if (activeSessionIdRef.current === sessionId) return
@@ -451,6 +604,7 @@ export function AIQuestionnairePage() {
     let latest = basis
     const collectedMessages: AIPublicMessage[] = []
     const collectedAttachments: AIPublicAttachmentSummary[] = []
+    const collectedFailures: AIPublicFailureRecord[] = []
     for (let iteration = 0; cursor < targetEnd && iteration <= PAGE_SIZE; iteration += 1) {
       const result = await window.easyEpi.ai.session.get({
         sessionId,
@@ -470,6 +624,7 @@ export function AIQuestionnairePage() {
       if (returnedCount === 0) throw new Error('AI_SESSION_PAGINATION_STALLED')
       collectedMessages.push(...result.session.messages)
       collectedAttachments.push(...result.session.attachments)
+      collectedFailures.push(...result.session.failures)
       const expectedNext = cursor + returnedCount
       if (expectedNext >= targetEnd) {
         cursor = expectedNext
@@ -486,6 +641,7 @@ export function AIQuestionnairePage() {
       ...latest,
       messages: mergeMessages(collectedMessages),
       attachments: mergeAttachments(collectedAttachments),
+      failures: mergeFailures(collectedFailures),
       total: latest.total,
       nextOffset: null
     }
@@ -608,6 +764,44 @@ export function AIQuestionnairePage() {
     }
   }, [activateSession, clearSessionContent, handleFailure, isCurrent])
 
+  const subscribeProgress = useCallback((
+    requestId: string,
+    sessionId: string,
+    generation: number,
+    recovered = false,
+    initialRun?: LiveRunState
+  ) => {
+    const current = progressSubscriptionRef.current
+    if (current?.requestId === requestId && current.sessionId === sessionId &&
+      current.generation === generation) return
+    cleanupProgressSubscription()
+    if (initialRun !== undefined) setLiveRun(initialRun)
+    const unsubscribe = window.easyEpi.ai.onProgress({ requestId, sessionId }, (event) => {
+      const subscription = progressSubscriptionRef.current
+      if (subscription?.requestId !== requestId || subscription.sessionId !== sessionId ||
+        subscription.generation !== generation || event.requestId !== requestId ||
+        event.sessionId !== sessionId || !isCurrent(generation, sessionId)) return
+      setLiveRun((previous) => previous === null ? previous : updateLiveRun(previous, event))
+      if (event.type === 'failed' && event.details !== undefined) {
+        setLiveFailure({ errorCode: event.errorCode, details: event.details })
+      }
+      if (event.type === 'clarification' || event.type === 'completed' ||
+        event.type === 'failed' || event.type === 'cancelled') {
+        cleanupProgressSubscription(requestId)
+        if (recovered) {
+          activeRequestIdRef.current = null
+          void Promise.all([
+            loadLatestSession(sessionId, generation),
+            loadSessions(sessionId, generation)
+          ]).finally(() => {
+            if (isCurrent(generation, sessionId)) setLiveRun(null)
+          })
+        }
+      }
+    })
+    progressSubscriptionRef.current = { requestId, sessionId, generation, unsubscribe }
+  }, [cleanupProgressSubscription, isCurrent, loadLatestSession, loadSessions])
+
   useEffect(() => {
     mountedRef.current = true
     const generation = generationRef.current
@@ -620,16 +814,40 @@ export function AIQuestionnairePage() {
       generationRef.current += 1
       configRequestRef.current += 1
       activeSessionIdRef.current = null
+      cleanupProgressSubscription()
       unsubscribeConfig()
       unsubscribe?.()
     }
-  }, [clearProjectContent, loadSessions, refreshAIConfig])
+  }, [cleanupProgressSubscription, clearProjectContent, loadSessions, refreshAIConfig])
 
   useEffect(() => {
     if (activeSessionId === null) return
     const generation = generationRef.current
     void Promise.resolve().then(() => loadLatestSession(activeSessionId, generation))
   }, [activeSessionId, loadLatestSession])
+
+  useEffect(() => {
+    const snapshot = sessionPage?.activeRun
+    if (snapshot === null || snapshot === undefined || activeSessionId === null ||
+      snapshot.requestId === activeRequestIdRef.current) return
+    const generation = generationRef.current
+    activeRequestIdRef.current = snapshot.requestId
+    subscribeProgress(
+      snapshot.requestId,
+      activeSessionId,
+      generation,
+      true,
+      createLiveRun(
+        snapshot.requestId,
+        activeSessionId,
+        snapshot.startedAt,
+        snapshot.attempt,
+        snapshot.stage,
+        snapshot.runId,
+        snapshot.streamFallback
+      )
+    )
+  }, [activeSessionId, sessionPage?.activeRun, subscribeProgress])
 
   const createSession = async () => {
     if (sending || applying) return
@@ -729,6 +947,7 @@ export function AIQuestionnairePage() {
       setSessionPage((current) => current === null ? result : {
         ...current,
         attachments: mergeAttachments(result.attachments, current.attachments),
+        failures: mergeFailures(result.failures, current.failures),
         total: result.total
       })
     } catch {
@@ -821,25 +1040,53 @@ export function AIQuestionnairePage() {
     setSending(true)
     setPrivacyBusySynchronized(false)
     setError(null)
-    setAnnouncement('消息已发送，AI 正在生成问卷草稿。')
+    setLiveFailure(null)
+    setAnnouncement('消息已发送，AI 正在处理。')
     try {
+      subscribeProgress(
+        intent.requestId,
+        intent.sessionId,
+        intent.generation,
+        false,
+        createLiveRun(intent.requestId, intent.sessionId)
+      )
       const result = await window.easyEpi.ai.send({
         requestId: intent.requestId,
         sessionId: intent.sessionId,
         content: intent.content,
-        includeCurrentQuestionnaire: intent.includeCurrentQuestionnaire
+        includeCurrentQuestionnaire: intent.includeCurrentQuestionnaire,
+        ...(intent.clarificationSelection === undefined
+          ? {}
+          : { clarificationSelection: intent.clarificationSelection })
       })
       if (!isCurrent(intent.generation, intent.sessionId) ||
         activeRequestIdRef.current !== intent.requestId ||
         pendingSendRef.current?.requestId !== intent.requestId) return
       if (!result.ok) {
-        handleFailure(result.errorCode, 'AI 生成失败，请重试。')
+        if (result.details !== undefined) {
+          setError(null)
+          setLiveFailure({ errorCode: result.errorCode, details: result.details })
+          await Promise.all([
+            loadLatestSession(intent.sessionId, intent.generation),
+            loadSessions(intent.sessionId, intent.generation)
+          ])
+        } else {
+          handleFailure(result.errorCode, 'AI 生成失败，请重试。')
+        }
         setAnnouncement('AI 请求未完成。')
         return
       }
       setDraft('')
-      setAnnouncement('AI 问卷草稿已生成。')
-      await refreshAfterSend(intent.sessionId, result.artifact, intent.generation)
+      if (result.outcome === 'clarification') {
+        setAnnouncement('AI 提出了一个补充问题。')
+        await Promise.all([
+          loadLatestSession(intent.sessionId, intent.generation),
+          loadSessions(intent.sessionId, intent.generation)
+        ])
+      } else {
+        setAnnouncement('AI 问卷草稿已生成。')
+        await refreshAfterSend(intent.sessionId, result.artifact, intent.generation)
+      }
     } catch {
       if (isCurrent(intent.generation, intent.sessionId) &&
         activeRequestIdRef.current === intent.requestId &&
@@ -848,6 +1095,7 @@ export function AIQuestionnairePage() {
         setAnnouncement('AI 请求未完成。')
       }
     } finally {
+      cleanupProgressSubscription(intent.requestId)
       if (activeRequestIdRef.current === intent.requestId &&
         pendingSendRef.current?.requestId === intent.requestId) {
         activeRequestIdRef.current = null
@@ -857,6 +1105,7 @@ export function AIQuestionnairePage() {
           setAttachmentPreview(null)
           setAttachmentNotice(null)
           setSending(false)
+          setLiveRun(null)
           focusTextarea(intent.generation, intent.sessionId)
         }
         releasePendingSend(intent)
@@ -895,14 +1144,18 @@ export function AIQuestionnairePage() {
     }
   }
 
-  const startSend = () => {
+  const beginSend = (
+    content: string,
+    clarificationSelection?: PendingSendIntent['clarificationSelection']
+  ) => {
     if (pendingSendRef.current !== null || clearingCacheRef.current) return
     const sessionId = activeSessionIdRef.current
     const generation = generationRef.current
-    const content = draft
-    if (sessionId === null || content.trim().length === 0 || sending || applying || configMissing ||
+    if (sessionId === null || (clarificationSelection === undefined && content.trim().length === 0) ||
+      (clarificationSelection !== undefined && content !== '') || sending || applying || configMissing ||
       sessionPage?.status === 'running') return
-    if (includeCurrentQuestionnaire && confirmedAttachmentFingerprint === null) {
+    if (clarificationSelection === undefined && includeCurrentQuestionnaire &&
+      confirmedAttachmentFingerprint === null) {
       setError('请先确认当前问卷的发送预览。')
       return
     }
@@ -911,13 +1164,30 @@ export function AIQuestionnairePage() {
       sessionId,
       generation,
       content,
-      includeCurrentQuestionnaire,
-      attachmentFingerprint: includeCurrentQuestionnaire ? confirmedAttachmentFingerprint : null
+      includeCurrentQuestionnaire: clarificationSelection === undefined && includeCurrentQuestionnaire,
+      attachmentFingerprint: clarificationSelection === undefined && includeCurrentQuestionnaire
+        ? confirmedAttachmentFingerprint
+        : null,
+      ...(clarificationSelection === undefined ? {} : { clarificationSelection })
     }
     pendingSendRef.current = intent
+    if (clarificationSelection !== undefined) {
+      setPendingClarificationId(clarificationSelection.clarificationId)
+    }
     setPendingSend(true)
     setPrivacyBusySynchronized(true)
     void continuePendingSend(intent)
+  }
+
+  const startSend = () => beginSend(draft)
+
+  const selectClarification = (clarificationId: string, optionId: string) => {
+    if (pendingClarificationId !== null) return
+    beginSend('', { clarificationId, optionId })
+  }
+
+  const retryValidationFailure = (details: AIPublicFailureDetails) => {
+    beginSend(buildValidationRetryPrompt(details))
   }
 
   const rejectPrivacy = () => {
@@ -1022,12 +1292,17 @@ export function AIQuestionnairePage() {
 
   const activeSession = sessions.find(({ sessionId }) => sessionId === activeSessionId)
   const sessionOperationsLocked = sending || applying || clearingCache || pendingSend || privacyBusy
+  const activeLiveRun = liveRun?.sessionId === activeSessionId ? liveRun : null
+  const sessionRunActive = sessionPage?.status === 'running' || activeLiveRun !== null
+  const latestUnresolvedClarificationMessageId = latestActionableClarificationMessageId(messages)
+  const quickRepliesEnabled = !sessionOperationsLocked && !sessionRunActive && !projectBlocked &&
+    !configMissing && pendingClarificationId === null
   const activeArtifactRequiresRegeneration = activeArtifact !== null &&
     artifactApplicability?.artifactId === activeArtifact.artifactId &&
     !artifactApplicability.applicable
   const canSend = activeSessionId !== null && draft.trim().length > 0 && !sending && !applying &&
     !clearingCache && !pendingSend && !privacyBusy &&
-    !projectBlocked && !configMissing && sessionPage?.status !== 'running'
+    !projectBlocked && !configMissing && !sessionRunActive
 
   return (
     <MilestonePage
@@ -1125,9 +1400,9 @@ export function AIQuestionnairePage() {
                     <Button size="sm" variant="secondary" onClick={() => void loadLatestSession(activeSessionId)} disabled={loading} aria-label="刷新当前对话"><RefreshCw aria-hidden="true" size={16} />刷新</Button>
                   </CardHeader>
                   <CardContent className="grid gap-[var(--space-3)]">
-                    {sessionPage?.status === 'running' ? (
+                    {sessionPage?.status === 'running' && activeLiveRun === null ? (
                       <p className="m-0 rounded-[var(--radius-1)] bg-[var(--color-warning-soft)] p-[var(--space-3)] text-[var(--color-text-secondary)]">
-                        此对话仍在处理中。请等待后使用「刷新」查看最新状态，期间不能重复发送。
+                        此对话仍在处理中。正在恢复可用的进度信息，期间不能重复发送。
                       </p>
                     ) : null}
                     {messageOffset > 0 ? <Button variant="ghost" loading={loadingEarlier} onClick={() => void loadEarlier()}>加载更早</Button> : null}
@@ -1135,18 +1410,48 @@ export function AIQuestionnairePage() {
                     {!loading && messages.length === 0 ? <EmptyState title="开始这段对话" description="描述研究目的、目标人群和希望收集的信息。" /> : null}
                     <ol aria-label="对话消息" className="m-0 grid list-none gap-[var(--space-3)] p-0">
                       {messages.map((message) => (
-                        <li key={message.id} className={`max-w-[90%] rounded-[var(--radius-2)] p-[var(--space-3)] ${message.role === 'user' ? 'ml-auto bg-[var(--color-brand-soft)]' : 'mr-auto bg-[var(--color-surface-sunken)]'}`}>
+                        <Fragment key={message.id}>
+                        <li className={`max-w-[90%] rounded-[var(--radius-2)] p-[var(--space-3)] ${message.role === 'user' ? 'ml-auto bg-[var(--color-brand-soft)]' : 'mr-auto bg-[var(--color-surface-sunken)]'}`}>
                           <div className="mb-[var(--space-1)] flex items-center gap-[var(--space-2)] text-[length:var(--font-size-sm)] font-[var(--font-weight-semibold)]">
                             {message.role === 'user' ? '你' : <><Bot aria-hidden="true" size={16} />AI 助手</>}
                           </div>
                           <p className="m-0 whitespace-pre-wrap break-words">{message.content}</p>
+                          {message.role === 'assistant' && message.clarification ? (
+                            <AIClarificationReplies
+                              clarification={message.clarification}
+                              enabled={quickRepliesEnabled && message.id === latestUnresolvedClarificationMessageId}
+                              onSelect={selectClarification}
+                            />
+                          ) : null}
                           {sessionPage?.attachments.some(({ messageId }) => messageId === message.id) ? (
                             <Badge className="mt-[var(--space-2)]" variant="info">本次消息附加了当时的问卷</Badge>
                           ) : null}
                           <time className="mt-[var(--space-2)] block text-[length:var(--font-size-xs)] text-[var(--color-text-muted)]" dateTime={message.createdAt}>{localTime(message.createdAt)}</time>
                         </li>
+                        {sessionPage?.failures.filter(({ userMessageId }) => userMessageId === message.id).map((failure) => (
+                          <li key={failure.runId} className="list-none">
+                            <AIValidationFailure
+                              errorCode={failure.errorCode}
+                              details={failure.details}
+                              busy={sessionOperationsLocked || sessionRunActive}
+                              onRetry={retryValidationFailure}
+                              onEdit={() => textareaRef.current?.focus({ preventScroll: true })}
+                            />
+                          </li>
+                        ))}
+                        </Fragment>
                       ))}
                     </ol>
+                    {activeLiveRun !== null ? <AIRunProgress run={activeLiveRun} /> : null}
+                    {liveFailure !== null && (sessionPage?.failures.length ?? 0) === 0 ? (
+                      <AIValidationFailure
+                        errorCode={liveFailure.errorCode}
+                        details={liveFailure.details}
+                        busy={sessionOperationsLocked || sessionRunActive}
+                        onRetry={retryValidationFailure}
+                        onEdit={() => textareaRef.current?.focus({ preventScroll: true })}
+                      />
+                    ) : null}
                   </CardContent>
                 </Card>
 
@@ -1178,7 +1483,7 @@ export function AIQuestionnairePage() {
                       ref={textareaRef}
                       label="给 AI 的消息"
                       value={draft}
-                      disabled={sending || applying || clearingCache || privacyBusy}
+                      disabled={sending || applying || clearingCache || privacyBusy || sessionPage?.status === 'running'}
                       placeholder="例如：为社区高血压筛查设计一份简洁问卷……"
                       hint="Enter 发送，Shift+Enter 换行。只有对话内容和你明确加入的当前问卷会发送。"
                       onChange={(event) => setDraft(event.target.value)}
@@ -1192,7 +1497,7 @@ export function AIQuestionnairePage() {
                     />
                     <div className="flex flex-wrap justify-between gap-[var(--space-2)]">
                       <Button variant="secondary" loading={attachmentLoading} disabled={sending || applying || clearingCache || pendingSend || privacyBusy || includeCurrentQuestionnaire} onClick={() => void previewQuestionnaireAttachment()}><Paperclip aria-hidden="true" size={16} />加入当前问卷</Button>
-                      {sending ? (
+                      {sending || activeLiveRun !== null ? (
                         <Button variant="danger" onClick={() => void cancelSend()}><Square aria-hidden="true" size={14} />取消生成</Button>
                       ) : (
                         <Button onClick={startSend} loading={privacyBusy} disabled={!canSend} aria-label="发送消息"><Send aria-hidden="true" size={16} />发送</Button>
