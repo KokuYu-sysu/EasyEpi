@@ -23,7 +23,10 @@ import type {
 } from '@shared/ai-assistant-contract'
 import { parseAIPublicFailureDetails } from '@shared/ai-assistant-contract'
 import type { ProjectData } from '@shared/types/project'
-import { migrateAISessionVersion as validateAISessionVersionMigration } from './ai-questionnaire.harness'
+import {
+  getAiVersionStamp,
+  migrateAISessionVersion as validateAISessionVersionMigration
+} from './ai-questionnaire.harness'
 
 const SESSION_ID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
@@ -39,6 +42,9 @@ const DANGEROUS_OBJECT_KEYS = new Set(['__proto__', 'prototype', 'constructor'])
 const MAX_VIRTUAL_PATH_LENGTH = 2_048
 const MAX_CLARIFICATION_OPTIONS = 5
 const MAX_CLARIFICATION_LABEL_LENGTH = 200
+const ISO_TIMESTAMP_PATTERN =
+  /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?(?:Z|[+-]\d{2}:\d{2})$/
+const PUBLIC_ERROR_CODE_PATTERN = /^[A-Z][A-Z0-9_]{0,127}$/
 
 export interface AISessionUpdate {
   title?: string
@@ -229,6 +235,7 @@ function parseMessage(value: unknown): AIMessage {
   }
   validatePathSegment(id)
   if (runId !== undefined) validatePathSegment(runId)
+  validateTimestamp(createdAt)
   return { id, role: role as AIMessage['role'], content, createdAt, ...(runId === undefined ? {} : { runId }) }
 }
 
@@ -247,6 +254,7 @@ function parseAttachment(value: unknown): AIMessageAttachment {
   }
   validatePathSegment(attachmentId)
   validatePathSegment(messageId)
+  validateTimestamp(createdAt)
   assertJsonValue(attachmentValue)
   return { attachmentId, messageId, kind, createdAt, value: clone(attachmentValue) }
 }
@@ -350,19 +358,45 @@ function exactKeys(value: Record<string, unknown>, required: readonly string[], 
   }
 }
 
-function validateTimestamp(value: unknown): asserts value is string {
-  if (typeof value !== 'string' || value.length === 0 || value.length > 64 || hasControlCharacter(value)) {
+function timestampEpoch(value: unknown): number {
+  if (typeof value !== 'string' || value.length === 0 || value.length > 64 ||
+    hasControlCharacter(value) || !ISO_TIMESTAMP_PATTERN.test(value)) {
     throw new Error('INVALID_AI_TIMESTAMP')
   }
+  const year = Number(value.slice(0, 4))
+  const month = Number(value.slice(5, 7))
+  const day = Number(value.slice(8, 10))
+  const hour = Number(value.slice(11, 13))
+  const minute = Number(value.slice(14, 16))
+  const second = Number(value.slice(17, 19))
+  const leapYear = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0)
+  const daysInMonth = [31, leapYear ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+  const timezone = value.endsWith('Z') ? undefined : value.slice(-6)
+  const timezoneHour = timezone === undefined ? 0 : Number(timezone.slice(1, 3))
+  const timezoneMinute = timezone === undefined ? 0 : Number(timezone.slice(4, 6))
+  if (month < 1 || month > 12 || day < 1 || day > daysInMonth[month - 1]! ||
+    hour > 23 || minute > 59 || second > 59 || timezoneHour > 23 || timezoneMinute > 59) {
+    throw new Error('INVALID_AI_TIMESTAMP')
+  }
+  const epoch = Date.parse(value)
+  if (!Number.isFinite(epoch)) throw new Error('INVALID_AI_TIMESTAMP')
+  return epoch
+}
+
+function validateTimestamp(value: unknown): asserts value is string {
+  timestampEpoch(value)
 }
 
 function validateProgress(value: unknown): AIRunProgress {
   if (!isPlainObject(value)) throw new Error('INVALID_AI_RUN_PROGRESS')
   exactKeys(value, ['stage', 'attempt', 'updatedAt', 'streamFallback'])
-  if (![
+  if (
+    typeof value.stage !== 'string' ||
+    typeof value.attempt !== 'number' ||
+    ![
     'starting', 'connecting', 'streaming', 'validating', 'repairing', 'clarification',
     'completed', 'failed', 'cancelled'
-  ].includes(String(value.stage)) || ![1, 2, 3].includes(Number(value.attempt)) ||
+  ].includes(value.stage) || !Number.isInteger(value.attempt) || ![1, 2, 3].includes(value.attempt) ||
     typeof value.streamFallback !== 'boolean') {
     throw new Error('INVALID_AI_RUN_PROGRESS')
   }
@@ -388,9 +422,7 @@ function validateRunResult(value: unknown): AIRunResult {
 function validateFailureInput(value: unknown): AIRunFailureInput {
   if (!isPlainObject(value)) throw new Error('INVALID_AI_RUN_FAILURE')
   exactKeys(value, ['errorCode', 'details'])
-  if (typeof value.errorCode !== 'string' || value.errorCode.length === 0 ||
-    value.errorCode.length > 128 || value.errorCode !== value.errorCode.trim() ||
-    hasControlCharacter(value.errorCode)) {
+  if (typeof value.errorCode !== 'string' || !PUBLIC_ERROR_CODE_PATTERN.test(value.errorCode)) {
     throw new Error('INVALID_AI_RUN_FAILURE')
   }
   try {
@@ -477,9 +509,13 @@ const SAME_ATTEMPT_PROGRESS_TRANSITIONS: Record<string, ReadonlySet<string>> = {
   repairing: new Set(['repairing']),
   clarification: new Set(['clarification'])
 }
+const RUNNING_PROGRESS_STAGES = new Set([
+  'starting', 'connecting', 'streaming', 'validating', 'repairing'
+])
 
 function assertProgressTransition(current: AIRunProgress, next: AIRunProgress): void {
-  if (next.updatedAt < current.updatedAt || current.streamFallback && !next.streamFallback) {
+  if (timestampEpoch(next.updatedAt) < timestampEpoch(current.updatedAt) ||
+    current.streamFallback && !next.streamFallback) {
     throw new Error('INVALID_AI_RUN_PROGRESS_TRANSITION')
   }
   if (next.attempt === current.attempt) {
@@ -525,7 +561,13 @@ export class AISessionRepository {
   }
 
   private touch(session: AISessionData): void {
-    session.manifest.updatedAt = this.now()
+    session.manifest.updatedAt = this.timestamp()
+  }
+
+  private timestamp(): string {
+    const timestamp = this.now()
+    validateTimestamp(timestamp)
+    return timestamp
   }
 
   private requireActiveRun(session: AISessionData, runId: string): AIRun {
@@ -540,12 +582,18 @@ export class AISessionRepository {
   }
 
   create(versionStamp: AiVersionStamp, title = 'New session'): AIMutationResult<AISessionData> {
+    const normalizedVersionStamp = validateVersionStamp(versionStamp)
+    if (!structurallyEqual(
+      versionStampValue(normalizedVersionStamp),
+      versionStampValue(getAiVersionStamp())
+    )) {
+      throw new Error('AI_VERSION_NOT_SUPPORTED')
+    }
     const sessionId = this.createId()
     validateSessionId(sessionId)
     const sessions = this.mutableSessions()
     if (sessions[sessionId] !== undefined) throw new Error('AI_SESSION_ID_COLLISION')
-    const timestamp = this.now()
-    const normalizedVersionStamp = validateVersionStamp(versionStamp)
+    const timestamp = this.timestamp()
     const session: AISessionData = {
       manifest: {
         sessionId,
@@ -616,7 +664,7 @@ export class AISessionRepository {
       throw new Error('INVALID_AI_VERSION_MIGRATION_AUDIT')
     }
     const from = clone(session.manifest.versionStamp)
-    const migratedAt = this.now()
+    const migratedAt = this.timestamp()
     session.manifest.versionStamp = target
     session.cache.values = {}
     session.temp.runs = {}
@@ -639,22 +687,16 @@ export class AISessionRepository {
     update: AISessionStateUpdate
   ): AIMutationResult<AISessionState> {
     const session = this.requireSession(sessionId)
-    let mutated = false
+    const next = clone(session.state)
     if (update.status !== undefined) {
       if (!['idle', 'running', 'completed', 'failed', 'cancelled'].includes(update.status)) {
         throw new Error('INVALID_AI_SESSION_STATE')
       }
-      if (session.state.status !== update.status) {
-        session.state.status = update.status
-        mutated = true
-      }
+      next.status = update.status
     }
     if (update.activeRunId !== undefined) {
       if (update.activeRunId === null) {
-        if (session.state.activeRunId !== undefined) {
-          delete session.state.activeRunId
-          mutated = true
-        }
+        delete next.activeRunId
       } else {
         validatePathSegment(update.activeRunId)
         const run = session.state.runs[update.activeRunId]
@@ -666,21 +708,30 @@ export class AISessionRepository {
         if (session.state.activeRunId !== undefined && session.state.activeRunId !== update.activeRunId) {
           throw new Error('AI_RUN_ALREADY_ACTIVE')
         }
-        if (session.state.activeRunId !== update.activeRunId) {
-          session.state.activeRunId = update.activeRunId
-          mutated = true
-        }
+        next.activeRunId = update.activeRunId
       }
     }
     if (update.values !== undefined) {
       assertJsonValue(update.values)
-      if (!structurallyEqual(session.state.values, update.values)) {
-        session.state.values = clone(update.values)
-        mutated = true
-      }
+      next.values = clone(update.values)
     }
-    if (mutated) this.touch(session)
-    return { value: clone(session.state), mutated }
+    const activeRun = next.activeRunId === undefined ? undefined : session.state.runs[next.activeRunId]
+    if (next.status === 'running') {
+      if (activeRun === undefined) throw new Error('AI_RUN_NOT_FOUND')
+      if (!isCurrentV2Run(session, activeRun)) throw new Error('AI_RUN_VERSION_NOT_CURRENT')
+      if (activeRun.status !== 'running') throw new Error('AI_RUN_NOT_ACTIVE')
+    } else if (next.activeRunId !== undefined) {
+      throw new Error('INVALID_AI_SESSION_STATE')
+    }
+    const mutated = !structurallyEqual(
+      session.state as unknown as AIJsonValue,
+      next as unknown as AIJsonValue
+    )
+    if (mutated) {
+      session.state = next
+      this.touch(session)
+    }
+    return { value: clone(next), mutated }
   }
 
   appendMessage(sessionId: string, input: unknown): AIMutationResult<AIMessage> {
@@ -764,6 +815,20 @@ export class AISessionRepository {
       ({ id }) => id === input.resolvedByMessageId
     )
     if (resolvingMessage?.role !== 'user') throw new Error('AI_MESSAGE_NOT_FOUND')
+    const clarificationMessageIndex = session.conversation.messages.findIndex(
+      ({ id }) => id === latest.messageId
+    )
+    const resolvingMessageIndex = session.conversation.messages.findIndex(
+      ({ id }) => id === resolvingMessage.id
+    )
+    const clarificationMessage = session.conversation.messages[clarificationMessageIndex]
+    if (clarificationMessage === undefined ||
+      timestampEpoch(resolvingMessage.createdAt) < Math.max(
+        timestampEpoch(latest.createdAt),
+        timestampEpoch(clarificationMessage.createdAt)
+      ) || resolvingMessageIndex <= clarificationMessageIndex) {
+      throw new Error('AI_CLARIFICATION_STALE_RESOLUTION')
+    }
     if (input.selectedOptionId === undefined && resolvingMessage.content.trim().length === 0) {
       throw new Error('AI_CLARIFICATION_FREE_TEXT_REQUIRED')
     }
@@ -774,7 +839,7 @@ export class AISessionRepository {
     const resolved: AIClarification = {
       ...latest,
       status: 'resolved',
-      resolvedAt: this.now(),
+      resolvedAt: this.timestamp(),
       resolvedByMessageId: input.resolvedByMessageId,
       ...(input.selectedOptionId === undefined ? {} : { selectedOptionId: input.selectedOptionId })
     }
@@ -801,14 +866,14 @@ export class AISessionRepository {
     if (
       !['running', 'completed', 'failed', 'cancelled'].includes(input.status) ||
       typeof input.startedAt !== 'string' ||
-      input.startedAt.length === 0 ||
-      (input.completedAt !== undefined &&
-        (typeof input.completedAt !== 'string' || input.completedAt.length === 0)) ||
+      (input.completedAt !== undefined && typeof input.completedAt !== 'string') ||
       (input.errorCode !== undefined &&
         (typeof input.errorCode !== 'string' || input.errorCode.length === 0))
     ) {
       throw new Error('INVALID_AI_RUN')
     }
+    validateTimestamp(input.startedAt)
+    if (input.completedAt !== undefined) validateTimestamp(input.completedAt)
     const session = this.requireSession(sessionId)
     const versionStamp = validateVersionStamp(input.versionStamp)
     assertVersionMatchesSession(session, versionStamp)
@@ -833,6 +898,10 @@ export class AISessionRepository {
     if (input.status === 'running' &&
       (input.completedAt !== undefined || input.errorCode !== undefined || result !== undefined || input.failure !== undefined)) {
       throw new Error('INVALID_AI_RUN')
+    }
+    if (input.status === 'running' &&
+      (progress === undefined || !RUNNING_PROGRESS_STAGES.has(progress.stage))) {
+      throw new Error('INVALID_AI_RUN_PROGRESS')
     }
     if (input.status === 'completed' && (input.completedAt === undefined ||
       session.manifest.versionStamp.schemaVersion === 2 && result === undefined)) {
@@ -883,7 +952,7 @@ export class AISessionRepository {
     const session = this.requireSession(sessionId)
     const run = this.requireActiveRun(session, runId)
     const progress = validateProgress(input)
-    if (progress.stage === 'completed' || progress.stage === 'failed' || progress.stage === 'cancelled') {
+    if (!RUNNING_PROGRESS_STAGES.has(progress.stage)) {
       throw new Error('INVALID_AI_RUN_PROGRESS')
     }
     if (run.progress === undefined) throw new Error('INVALID_AI_RUN_PROGRESS')
@@ -916,7 +985,7 @@ export class AISessionRepository {
         throw new Error('AI_CLARIFICATION_NOT_FOUND')
       }
     }
-    const completedAt = this.now()
+    const completedAt = this.timestamp()
     const updated: AIRun = {
       ...run,
       status: 'completed',
@@ -945,7 +1014,7 @@ export class AISessionRepository {
     const session = this.requireSession(sessionId)
     const run = this.requireActiveRun(session, runId)
     const failureInput = validateFailureInput(input)
-    const completedAt = this.now()
+    const completedAt = this.timestamp()
     const failure: AIRunFailure = { ...failureInput, completedAt }
     const updated: AIRun = {
       ...run,
@@ -979,8 +1048,10 @@ export class AISessionRepository {
 
   setRunTemp(sessionId: string, input: AIRunTemp): AIMutationResult<AIRunTemp> {
     validatePathSegment(input.runId)
-    if (typeof input.createdAt !== 'string' || input.createdAt.length === 0) {
-      throw new Error('INVALID_AI_RUN_TEMP')
+    try {
+      validateTimestamp(input.createdAt)
+    } catch {
+      throw new Error('INVALID_AI_TIMESTAMP')
     }
     assertJsonValue(input.values)
     const session = this.requireSession(sessionId)
@@ -1109,16 +1180,29 @@ export class AISessionRepository {
       ])
       const interrupted = interruptedRunIds.size > 0 || session.state.status === 'running'
       if (runCount > 0 || interrupted) {
-        const completedAt = this.now()
+        const completedAt = this.timestamp()
         for (const runId of interruptedRunIds) {
           const run = session.state.runs[runId]
           if (run?.status === 'running') {
-            session.state.runs[runId] = {
-              ...run,
-              status: 'failed',
-              completedAt,
-              errorCode: 'AI_RUN_INTERRUPTED'
+            const currentV2 = isCurrentV2Run(session, run)
+            const failure: AIRunFailure = {
+              errorCode: 'AI_RUN_INTERRUPTED', completedAt, details: { attempts: [] }
             }
+            session.state.runs[runId] = currentV2
+              ? {
+                  ...run,
+                  status: 'failed',
+                  completedAt,
+                  errorCode: failure.errorCode,
+                  failure,
+                  progress: {
+                    stage: 'failed',
+                    attempt: run.progress?.attempt ?? 1,
+                    updatedAt: completedAt,
+                    streamFallback: run.progress?.streamFallback ?? false
+                  }
+                }
+              : { ...run, status: 'failed', completedAt, errorCode: failure.errorCode }
           }
         }
         if (runCount > 0) session.temp.runs = {}
@@ -1166,7 +1250,7 @@ export class AISessionRepository {
       throw new Error('AI_ARTIFACT_OPERATION_CONFLICT')
     }
 
-    const timestamp = this.now()
+    const timestamp = this.timestamp()
     const artifact: AIArtifact = {
       artifactId: input.artifactId,
       operationId: input.operationId,

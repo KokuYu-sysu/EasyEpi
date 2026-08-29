@@ -38,7 +38,7 @@ function repository(stamp = getAiVersionStamp()): {
   const repo = new AISessionRepository(
     value,
     () => SESSION_ID,
-    () => `2026-08-29T00:00:0${now++}.000Z`
+    () => `2026-08-29T00:00:${String(now++).padStart(2, '0')}.000Z`
   )
   return { project: value, repository: repo, sessionId: repo.create(stamp, 'Session').value.manifest.sessionId }
 }
@@ -71,8 +71,10 @@ function seedRunning(repo: AISessionRepository, sessionId: string): void {
 
 describe('AI session repository v2 persistence', () => {
   it('creates a v2 clarification partition and migrates schema 1 to 2 without losing audit data', () => {
-    const { project: value, repository: repo, sessionId } = repository(V1_STAMP)
+    const { project: value, repository: repo, sessionId } = repository()
     const raw = value.aiAssistant!.sessions[sessionId]!
+    raw.manifest.versionStamp = V1_STAMP
+    delete raw.conversation.clarifications
     raw.conversation.messages.push({
       id: 'legacy-message', role: 'assistant', content: 'Legacy', createdAt: '2026-08-28T00:00:00.000Z'
     })
@@ -145,6 +147,13 @@ describe('AI session repository v2 persistence', () => {
     const read = repo.getLatestUnresolvedClarification(sessionId)!
     read.options[0]!.label = 'mutated'
     expect(repo.getLatestUnresolvedClarification(sessionId)?.options[0]?.label).toBe('Option A')
+
+    repo.appendMessage(sessionId, {
+      id: 'stale-user', role: 'user', content: 'Too early', createdAt: '2026-08-29T00:00:01.000Z'
+    })
+    expect(() => repo.resolveLatestClarification(sessionId, {
+      clarificationId: 'clarification-1', resolvedByMessageId: 'stale-user', selectedOptionId: 'a'
+    })).toThrow('AI_CLARIFICATION_STALE_RESOLUTION')
 
     repo.appendMessage(sessionId, {
       id: 'user-2', role: 'user', content: 'I choose A', createdAt: '2026-08-29T00:00:03.000Z'
@@ -274,7 +283,7 @@ describe('AI session repository v2 persistence', () => {
       stage: 'connecting', attempt: 1,
       updatedAt: '2026-08-29T00:00:07.000Z', streamFallback: true
     })).toThrow('INVALID_AI_RUN_PROGRESS_TRANSITION')
-    repo.updateState(sessionId, { activeRunId: null })
+    repo.updateState(sessionId, { status: 'idle', activeRunId: null })
     expect(() => repo.updateRunProgress(sessionId, RUN_ID, {
       stage: 'streaming', attempt: 2,
       updatedAt: '2026-08-29T00:00:07.000Z', streamFallback: true
@@ -374,6 +383,89 @@ describe('AI session repository v2 persistence', () => {
     })).toThrow('INVALID_AI_RUN_FAILURE')
   })
 
+  it('recovers current-v2 interrupted runs as valid failed terminal records', () => {
+    const { repository: repo, sessionId } = repository()
+    seedRunning(repo, sessionId)
+    repo.setRunTemp(sessionId, {
+      runId: RUN_ID, versionStamp: getAiVersionStamp(), createdAt: '2026-08-29T00:00:02.000Z', values: {}
+    })
+    expect(repo.recoverInterruptedRuns()).toMatchObject({ value: 2, mutated: true })
+    expect(repo.get(sessionId)?.state).toMatchObject({
+      status: 'failed',
+      runs: {
+        [RUN_ID]: {
+          status: 'failed', errorCode: 'AI_RUN_INTERRUPTED',
+          failure: { errorCode: 'AI_RUN_INTERRUPTED', details: { attempts: [] } },
+          progress: { stage: 'failed', attempt: 1, streamFallback: false }
+        }
+      }
+    })
+    expect(repo.get(sessionId)?.state.activeRunId).toBeUndefined()
+  })
+
+  it('parses progress without coercion and only permits running stages for running runs', () => {
+    const { repository: repo, sessionId } = repository()
+    repo.appendMessage(sessionId, {
+      id: USER_MESSAGE_ID, role: 'user', content: 'Create', createdAt: '2026-08-29T00:00:01.000Z'
+    })
+    expect(() => repo.upsertRun(sessionId, runningRun({
+      progress: { stage: 'starting', attempt: '1' as unknown as 1, updatedAt: '2026-08-29T00:00:01.000Z', streamFallback: false }
+    }))).toThrow('INVALID_AI_RUN_PROGRESS')
+    expect(() => repo.upsertRun(sessionId, runningRun({
+      progress: { stage: 'clarification', attempt: 1, updatedAt: '2026-08-29T00:00:01.000Z', streamFallback: false }
+    }))).toThrow('INVALID_AI_RUN_PROGRESS')
+  })
+
+  it('validates strict timestamps and compares progress instants by epoch', () => {
+    const { repository: repo, sessionId } = repository()
+    expect(() => repo.appendMessage(sessionId, {
+      id: USER_MESSAGE_ID, role: 'user', content: 'Create', createdAt: 'not-a-timestamp'
+    })).toThrow('INVALID_AI_TIMESTAMP')
+    expect(() => repo.appendMessage(sessionId, {
+      id: USER_MESSAGE_ID, role: 'user', content: 'Create', createdAt: '2026-02-30T00:00:00.000Z'
+    })).toThrow('INVALID_AI_TIMESTAMP')
+    repo.appendMessage(sessionId, {
+      id: USER_MESSAGE_ID, role: 'user', content: 'Create', createdAt: '2026-08-29T00:00:01.000Z'
+    })
+    expect(() => repo.upsertRun(sessionId, runningRun({ startedAt: 'not-a-timestamp' })))
+      .toThrow('INVALID_AI_TIMESTAMP')
+    repo.upsertRun(sessionId, runningRun({
+      progress: {
+        stage: 'starting', attempt: 1, updatedAt: '2026-08-29T00:00:03.000+08:00', streamFallback: false
+      }
+    }))
+    repo.updateState(sessionId, { status: 'running', activeRunId: RUN_ID })
+    expect(() => repo.updateRunProgress(sessionId, RUN_ID, {
+      stage: 'clarification', attempt: 1, updatedAt: '2026-08-28T20:00:00.000Z', streamFallback: false
+    })).toThrow('INVALID_AI_RUN_PROGRESS')
+    expect(repo.updateRunProgress(sessionId, RUN_ID, {
+      stage: 'connecting', attempt: 1, updatedAt: '2026-08-28T20:00:00.000Z', streamFallback: false
+    }).value.progress?.stage).toBe('connecting')
+    expect(() => repo.setRunTemp(sessionId, {
+      runId: RUN_ID, versionStamp: getAiVersionStamp(), createdAt: 'not-a-timestamp', values: {}
+    })).toThrow('INVALID_AI_TIMESTAMP')
+  })
+
+  it('validates state updates atomically against active-run invariants', () => {
+    const { repository: repo, sessionId } = repository()
+    const before = JSON.stringify(repo.get(sessionId))
+    expect(() => repo.updateState(sessionId, { status: 'running', activeRunId: 'missing' }))
+      .toThrow('AI_RUN_NOT_FOUND')
+    expect(JSON.stringify(repo.get(sessionId))).toBe(before)
+    seedRunning(repo, sessionId)
+    const runningBefore = JSON.stringify(repo.get(sessionId))
+    expect(() => repo.updateState(sessionId, { status: 'idle' })).toThrow('INVALID_AI_SESSION_STATE')
+    expect(JSON.stringify(repo.get(sessionId))).toBe(runningBefore)
+  })
+
+  it('creates only sessions stamped with the current supported registry version', () => {
+    const value = project()
+    const repo = new AISessionRepository(value, () => SESSION_ID)
+    expect(() => repo.create(V1_STAMP, 'Legacy session')).toThrow('AI_VERSION_NOT_SUPPORTED')
+    expect(repo.create(getAiVersionStamp(), 'Current session').value.manifest.versionStamp)
+      .toEqual(getAiVersionStamp())
+  })
+
   it('rejects unknown run fields, duplicate request ids and malformed public failure details', () => {
     const { repository: repo, sessionId } = repository()
     repo.appendMessage(sessionId, {
@@ -395,6 +487,9 @@ describe('AI session repository v2 persistence', () => {
     expect(() => repo.failRun(sessionId, RUN_ID, {
       errorCode: 'AI_VALIDATION_FAILED',
       details: { attempts: [{ attempt: 4, issues: [], truncated: false }] }
+    })).toThrow('INVALID_AI_RUN_FAILURE')
+    expect(() => repo.failRun(sessionId, RUN_ID, {
+      errorCode: 'ai validation failed', details: { attempts: [] }
     })).toThrow('INVALID_AI_RUN_FAILURE')
     expect(() => repo.failRun(sessionId, RUN_ID, {
       errorCode: 'AI_VALIDATION_FAILED',
@@ -427,11 +522,14 @@ describe('AI session repository v2 persistence', () => {
   })
 
   it('keeps legacy runs readable but rejects v2-only persistence on a schema-1 session', () => {
-    const { repository: repo, sessionId } = repository(V1_STAMP)
-    repo.upsertRun(sessionId, {
+    const { project: value, repository: repo, sessionId } = repository()
+    const raw = value.aiAssistant!.sessions[sessionId]!
+    raw.manifest.versionStamp = V1_STAMP
+    delete raw.conversation.clarifications
+    raw.state.runs.legacy = {
       runId: 'legacy', status: 'completed', startedAt: '2026-08-28T00:00:00.000Z',
       completedAt: '2026-08-28T00:00:01.000Z', versionStamp: V1_STAMP
-    })
+    }
     expect(repo.get(sessionId)?.state.runs.legacy).toMatchObject({ status: 'completed' })
     expect(() => repo.addClarification(sessionId, {
       clarificationId: 'new', messageId: 'missing', runId: 'legacy',
