@@ -14,6 +14,7 @@ import {
   parseAISessionVirtualPath
 } from '@main/services/ai-session.repository'
 import { runWithProjectAIQueue } from '@main/services/ai-questionnaire.orchestrator'
+import { getAiVersionStamp } from '@main/services/ai-questionnaire.harness'
 import {
   AI_PRIVACY_NOTICE_VERSION,
   parseAIProgressEvent,
@@ -33,6 +34,7 @@ import {
 import type { ProjectData } from '@shared/types/project'
 import {
   AI_CANCEL_CHANNEL,
+  AI_PROGRESS_CHANNEL,
   AI_SEND_CHANNEL,
   AI_SESSION_PAGE_MAX_UTF8_BYTES,
   AI_SESSION_CREATE_CHANNEL,
@@ -45,11 +47,12 @@ import type { IpcInvokeEventLike, IpcMainLike } from '@main/ipc/types'
 import type { AIConfigService } from '@main/services/ai-config.service'
 
 const sessionId = '123e4567-e89b-42d3-a456-426614174000'
-const versionStamp: AiVersionStamp = {
-  promptId: 'questionnaire-assistant',
-  promptVersion: '1.0.0',
-  promptHash: 'sha256:abc123',
-  harnessVersion: '1.0.0',
+const versionStamp: AiVersionStamp = getAiVersionStamp()
+const legacyVersionStamp: AiVersionStamp = {
+  promptId: versionStamp.promptId,
+  promptVersion: '1.1.0',
+  promptHash: 'sha256:d407a445883fa9a015c8772201af387fdbca41df3f33545a58017ba79d47c832',
+  harnessVersion: '1.1.0',
   schemaVersion: 1
 }
 
@@ -111,6 +114,45 @@ function createProjectData(): ProjectData {
       keyQuestionIds: []
     }
   }
+}
+
+function validQuestionnaireCompletion(): string {
+  return JSON.stringify({
+    kind: 'questionnaire',
+    assistantMessage: '问卷已生成。',
+    rollingSummary: '一题问卷。',
+    options: [],
+    questionnaire: {
+      name: '安全测试',
+      questions: [{
+        id: 'q1', content: '年龄', variableName: 'age', type: 'numeric_range', options: [],
+        constraint: { type: 'integer', minValue: 0, maxValue: 120 }, isKey: false,
+        allowSkip: false, order: 0
+      }],
+      conditionRules: [],
+      keyQuestionIds: []
+    }
+  })
+}
+
+function validClarificationCompletion(): string {
+  return JSON.stringify({
+    kind: 'clarification',
+    assistantMessage: '请选择筛查年龄范围？',
+    rollingSummary: '等待年龄范围。',
+    options: [{ id: 'age-range', label: '45–74 岁' }],
+    questionnaire: null
+  })
+}
+
+function invalidQuestionnaireCompletion(): string {
+  return JSON.stringify({
+    kind: 'questionnaire',
+    assistantMessage: 'raw secret assistant text',
+    rollingSummary: 'invalid draft',
+    options: [],
+    questionnaire: { name: '', questions: [], conditionRules: [], keyQuestionIds: [] }
+  })
 }
 
 describe('AI configuration security boundary', () => {
@@ -549,6 +591,325 @@ describe('AI streaming and clarification public contract', () => {
 })
 
 describe('AI IPC privacy boundary', () => {
+  it('projects only page-scoped clarifications and failures with the current active run under budget', async () => {
+    const handlers = new Map<string, (event: IpcInvokeEventLike, ...args: unknown[]) => Promise<unknown>>()
+    const ipcMain: IpcMainLike = {
+      handle: (channel, handler) => handlers.set(channel, handler),
+      removeHandler: (channel) => { handlers.delete(channel) }
+    }
+    const state = createProjectIpcState()
+    state.currentProject = createProjectData()
+    state.currentFilePath = 'D:\\page.easyepi'
+    state.currentSaltHex = 'a'.repeat(64)
+    state.currentHashHex = 'b'.repeat(64)
+    state.auth.encryptionKey = Buffer.alloc(32, 1)
+    const repository = new AISessionRepository(state.currentProject, () => sessionId)
+    repository.create(versionStamp, 'Projection')
+    const stored = state.currentProject.aiAssistant!.sessions[sessionId]!
+    stored.conversation.messages.push(
+      { id: 'user-failed', role: 'user', content: '失败请求', createdAt: at, runId: 'run-failed' },
+      { id: 'assistant-clarify', role: 'assistant', content: '请选择范围。', createdAt: at, runId: 'run-clarify' },
+      { id: 'user-active', role: 'user', content: '继续生成', createdAt: at, runId: 'run-active' }
+    )
+    stored.conversation.clarifications = {
+      'clarification-1': {
+        clarificationId: 'clarification-1', messageId: 'assistant-clarify', runId: 'run-clarify',
+        options: [{ id: 'age-range', label: '45–74 岁' }], status: 'unresolved', createdAt: at
+      }
+    }
+    stored.state.status = 'running'
+    stored.state.activeRunId = 'run-active'
+    stored.state.runs = {
+      'run-failed': {
+        runId: 'run-failed', status: 'failed', startedAt: at, completedAt: at,
+        versionStamp, requestId: 'failed-request', operationId: 'failed-operation',
+        userMessageId: 'user-failed', errorCode: 'AI_HARNESS_VALIDATION_FAILED',
+        progress: { stage: 'failed', attempt: 3, updatedAt: at, streamFallback: false },
+        failure: {
+          errorCode: 'AI_HARNESS_VALIDATION_FAILED', completedAt: at,
+          details: { attempts: [{
+            attempt: 3,
+            issues: [{ code: 'EMPTY_NAME', field: '$.name', summary: '问卷名称不能为空。' }],
+            truncated: false
+          }] }
+        }
+      },
+      'run-active': {
+        runId: 'run-active', status: 'running', startedAt: at, versionStamp,
+        requestId: 'active-request', operationId: 'active-operation', userMessageId: 'user-active',
+        progress: { stage: 'streaming', attempt: 2, updatedAt: at, streamFallback: true }
+      }
+    }
+    const configService = {
+      get: async () => ({ ok: true, config: { baseUrl: '', model: '', hasApiKey: false, maskedApiKey: null } } as const),
+      update: async () => ({ ok: false, code: 'INVALID_AI_CONFIG' } as const),
+      clear: async () => ({ ok: false, code: 'AI_CONFIG_SAVE_FAILED' } as const),
+      getPlaintextForMain: async () => ({ baseUrl: '', model: '' }),
+      getPrivacyStatus: async () => ({ accepted: true, acceptedAt: at }),
+      acceptPrivacy: async () => ({ accepted: true, acceptedAt: at } as const)
+    } satisfies AIConfigService
+    const registration = registerAIIpcHandlers(
+      ipcMain, state, { configService, saveProject: vi.fn() }, 'file:///app/index.html'
+    )
+    const event = {
+      senderFrame: { url: 'file:///app/index.html' },
+      sender: { id: 7, send: () => undefined }
+    }
+
+    const firstPage = await handlers.get(AI_SESSION_GET_CHANNEL)!(event, {
+      sessionId, offset: 0, limit: 2
+    }) as { ok: true; session: Record<string, unknown> }
+    expect(firstPage.session).toMatchObject({
+      messages: [
+        { id: 'user-failed', clarification: null },
+        { id: 'assistant-clarify', clarification: { clarificationId: 'clarification-1' } }
+      ],
+      activeRun: {
+        requestId: 'active-request', runId: 'run-active', stage: 'streaming', attempt: 2,
+        startedAt: at, updatedAt: at, streamFallback: true
+      },
+      failures: [{
+        runId: 'run-failed', userMessageId: 'user-failed',
+        errorCode: 'AI_HARNESS_VALIDATION_FAILED'
+      }]
+    })
+    expect(Buffer.byteLength(JSON.stringify(firstPage), 'utf8'))
+      .toBeLessThanOrEqual(AI_SESSION_PAGE_MAX_UTF8_BYTES)
+
+    const activeOnly = await handlers.get(AI_SESSION_GET_CHANNEL)!(event, {
+      sessionId, offset: 2, limit: 1
+    }) as { ok: true; session: { messages: unknown[]; failures: unknown[] } }
+    expect(activeOnly.session.messages).toEqual([
+      expect.objectContaining({ id: 'user-active', clarification: null })
+    ])
+    expect(activeOnly.session.failures).toEqual([])
+    expect(JSON.stringify(activeOnly)).not.toContain('clarification-1')
+
+    stored.manifest.versionStamp = legacyVersionStamp
+    delete stored.conversation.clarifications
+    stored.state.status = 'idle'
+    delete stored.state.activeRunId
+    const legacyPage = await handlers.get(AI_SESSION_GET_CHANNEL)!(event, {
+      sessionId, offset: 1, limit: 1
+    }) as { ok: true; session: { messages: unknown[]; activeRun: unknown; failures: unknown[] } }
+    expect(legacyPage.session).toMatchObject({
+      messages: [{ id: 'assistant-clarify', clarification: null }],
+      activeRun: null,
+      failures: []
+    })
+    await expect(handlers.get(AI_SEND_CHANNEL)!(event, {
+      requestId: 'legacy-request', sessionId, content: 'Create',
+      includeCurrentQuestionnaire: false
+    })).resolves.toMatchObject({ ok: false, errorCode: 'AI_VERSION_MIGRATION_REQUIRED' })
+    registration.dispose()
+  })
+
+  it('routes ordered progress only to the initiating live owner and sends terminal before resolution', async () => {
+    const handlers = new Map<string, (event: IpcInvokeEventLike, ...args: unknown[]) => Promise<unknown>>()
+    const ipcMain: IpcMainLike = {
+      handle: (channel, handler) => handlers.set(channel, handler),
+      removeHandler: (channel) => { handlers.delete(channel) }
+    }
+    const state = createProjectIpcState()
+    state.currentProject = createProjectData()
+    state.currentFilePath = 'D:\\stream.easyepi'
+    state.currentSaltHex = 'a'.repeat(64)
+    state.currentHashHex = 'b'.repeat(64)
+    state.auth.encryptionKey = Buffer.alloc(32, 1)
+    new AISessionRepository(state.currentProject, () => sessionId).create(versionStamp, 'Stream')
+    const order: string[] = []
+    const sent: unknown[] = []
+    let destroySecondOwner = false
+    let secondOwnerDestroyed = false
+    let failRun = false
+    let providerCalls = 0
+    const event = {
+      senderFrame: { url: 'file:///app/index.html' },
+      sender: {
+        id: 7,
+        isDestroyed: () => false,
+        send: (channel: string, payload: unknown) => {
+          expect(channel).toBe(AI_PROGRESS_CHANNEL)
+          sent.push(payload)
+          order.push((payload as { type: string }).type)
+        }
+      }
+    }
+    const configService = {
+      get: async () => ({ ok: true, config: { baseUrl: '', model: '', hasApiKey: false, maskedApiKey: null } } as const),
+      update: async () => ({ ok: false, code: 'INVALID_AI_CONFIG' } as const),
+      clear: async () => ({ ok: false, code: 'AI_CONFIG_SAVE_FAILED' } as const),
+      getPlaintextForMain: async () => ({ baseUrl: 'https://example.test/v1', model: 'model' }),
+      getPrivacyStatus: async () => ({ accepted: true, acceptedAt: at }),
+      acceptPrivacy: async () => ({ accepted: true, acceptedAt: at } as const)
+    } satisfies AIConfigService
+    const registration = registerAIIpcHandlers(ipcMain, state, {
+      configService,
+      saveProject: vi.fn(),
+      client: {
+        complete: vi.fn(async (request) => {
+          providerCalls += 1
+          if (destroySecondOwner) secondOwnerDestroyed = true
+          request.onModelStreaming?.()
+          request.onContentDelta?.({ content: '问卷', sequence: 1 })
+          request.onContentDelta?.({ content: '已生成', sequence: 2 })
+          if (providerCalls === 1) {
+            await Promise.resolve()
+            expect(sent.some((value) => (value as { type: string }).type === 'assistant_delta'))
+              .toBe(false)
+          }
+          return {
+            content: failRun
+              ? invalidQuestionnaireCompletion()
+              : destroySecondOwner
+                ? validClarificationCompletion()
+                : validQuestionnaireCompletion(),
+            streamingSupported: true,
+            responseFormatSupported: true
+          }
+        })
+      }
+    }, 'file:///app/index.html')
+
+    const result = await handlers.get(AI_SEND_CHANNEL)!(event, {
+      requestId: 'request-1', sessionId, content: 'Create', includeCurrentQuestionnaire: false
+    }).then((value) => {
+      order.push('resolved')
+      return value
+    })
+
+    expect(result).toMatchObject({
+      ok: true, requestId: 'request-1', outcome: 'questionnaire', attempts: 1
+    })
+    expect(sent.map((value) => (value as { type: string }).type)).toEqual([
+      'started', 'attempt_started', 'model_streaming', 'assistant_delta', 'assistant_delta',
+      'validating', 'completed'
+    ])
+    expect(sent.filter((value) => ['completed', 'clarification', 'failed', 'cancelled']
+      .includes((value as { type: string }).type))).toHaveLength(1)
+    expect(sent.filter((value) => (value as { type: string }).type === 'assistant_delta'))
+      .toMatchObject([{ sequence: 1, delta: '问卷' }, { sequence: 2, delta: '已生成' }])
+    expect(order.at(-2)).toBe('completed')
+    expect(order.at(-1)).toBe('resolved')
+
+    const firstOwnerEventCount = sent.length
+    const secondOwnerSent: unknown[] = []
+    const secondOwnerEvent = {
+      senderFrame: { url: 'file:///app/index.html' },
+      sender: {
+        id: 8,
+        isDestroyed: () => secondOwnerDestroyed,
+        send: (_channel: string, payload: unknown) => secondOwnerSent.push(payload)
+      }
+    }
+    destroySecondOwner = true
+    const secondResult = await handlers.get(AI_SEND_CHANNEL)!(secondOwnerEvent, {
+      requestId: 'request-2', sessionId, content: 'Create again', includeCurrentQuestionnaire: false
+    })
+    expect(secondResult).toMatchObject({
+      ok: true,
+      outcome: 'clarification',
+      message: {
+        role: 'assistant',
+        clarification: { status: 'unresolved', options: [{ id: 'age-range' }] }
+      }
+    })
+    expect(secondOwnerSent.map((value) => (value as { type: string }).type))
+      .toEqual(['started', 'attempt_started'])
+    expect(sent).toHaveLength(firstOwnerEventCount)
+
+    destroySecondOwner = false
+    failRun = true
+    const failedEvents: unknown[] = []
+    const failedResult = await handlers.get(AI_SEND_CHANNEL)!({
+      senderFrame: { url: 'file:///app/index.html' },
+      sender: { id: 9, isDestroyed: () => false, send: (_channel, value) => failedEvents.push(value) }
+    }, {
+      requestId: 'request-3', sessionId, content: 'Use adults', includeCurrentQuestionnaire: false
+    })
+    expect(failedResult).toMatchObject({
+      ok: false,
+      errorCode: 'AI_HARNESS_VALIDATION_FAILED',
+      details: { attempts: [{ attempt: 1 }, { attempt: 2 }, { attempt: 3 }] }
+    })
+    expect(failedEvents.at(-1)).toMatchObject({
+      type: 'failed', errorCode: 'AI_HARNESS_VALIDATION_FAILED',
+      details: { attempts: [{ attempt: 1 }, { attempt: 2 }, { attempt: 3 }] }
+    })
+    expect(JSON.stringify({ failedResult, failedEvents })).not.toContain('raw secret assistant text')
+    registration.dispose()
+  })
+
+  it('cancels after navigation with the persisted activeRun request id', async () => {
+    const handlers = new Map<string, (event: IpcInvokeEventLike, ...args: unknown[]) => Promise<unknown>>()
+    const ipcMain: IpcMainLike = {
+      handle: (channel, handler) => handlers.set(channel, handler),
+      removeHandler: (channel) => { handlers.delete(channel) }
+    }
+    const state = createProjectIpcState()
+    state.currentProject = createProjectData()
+    state.currentFilePath = 'D:\\navigation.easyepi'
+    state.currentSaltHex = 'a'.repeat(64)
+    state.currentHashHex = 'b'.repeat(64)
+    state.auth.encryptionKey = Buffer.alloc(32, 1)
+    new AISessionRepository(state.currentProject, () => sessionId).create(versionStamp, 'Navigation')
+    let releaseProvider!: () => void
+    let providerEntered = false
+    const providerPending = new Promise<void>((resolve) => { releaseProvider = resolve })
+    const configService = {
+      get: async () => ({ ok: true, config: { baseUrl: '', model: '', hasApiKey: false, maskedApiKey: null } } as const),
+      update: async () => ({ ok: false, code: 'INVALID_AI_CONFIG' } as const),
+      clear: async () => ({ ok: false, code: 'AI_CONFIG_SAVE_FAILED' } as const),
+      getPlaintextForMain: async () => ({ baseUrl: 'https://example.test/v1', model: 'model' }),
+      getPrivacyStatus: async () => ({ accepted: true, acceptedAt: at }),
+      acceptPrivacy: async () => ({ accepted: true, acceptedAt: at } as const)
+    } satisfies AIConfigService
+    const oldPageEvents: unknown[] = []
+    const registration = registerAIIpcHandlers(ipcMain, state, {
+      configService,
+      saveProject: vi.fn(),
+      client: {
+        complete: vi.fn(async () => {
+          providerEntered = true
+          await providerPending
+          return {
+            content: validQuestionnaireCompletion(),
+            streamingSupported: true,
+            responseFormatSupported: true
+          }
+        })
+      }
+    }, 'file:///app/index.html')
+    const oldPageEvent = {
+      senderFrame: { url: 'file:///app/index.html' },
+      sender: { id: 7, send: (_channel: string, value: unknown) => oldPageEvents.push(value) }
+    }
+    const send = handlers.get(AI_SEND_CHANNEL)!(oldPageEvent, {
+      requestId: 'navigation-request', sessionId, content: 'Create',
+      includeCurrentQuestionnaire: false
+    })
+    await vi.waitFor(() => expect(providerEntered).toBe(true))
+
+    const reopenedPageEvent = {
+      senderFrame: { url: 'file:///app/index.html' },
+      sender: { id: 7, send: () => undefined }
+    }
+    const page = await handlers.get(AI_SESSION_GET_CHANNEL)!(reopenedPageEvent, {
+      sessionId, offset: 0, limit: 100
+    }) as { ok: true; session: { activeRun: { requestId: string } | null } }
+    expect(page.session.activeRun?.requestId).toBe('navigation-request')
+    await expect(handlers.get(AI_CANCEL_CHANNEL)!(reopenedPageEvent, {
+      requestId: page.session.activeRun!.requestId
+    })).resolves.toEqual({ ok: true, cancelled: true })
+    releaseProvider()
+
+    await expect(send).resolves.toMatchObject({ ok: false, errorCode: 'AI_CANCELLED' })
+    expect(oldPageEvents.at(-1)).toMatchObject({
+      type: 'cancelled', requestId: 'navigation-request', errorCode: 'AI_CANCELLED'
+    })
+    registration.dispose()
+  })
+
   it('rejects renderer attempts to smuggle sensitive fields into send', () => {
     expect(() => parseAISendRequest({
       requestId: 'request-1',
@@ -743,13 +1104,13 @@ describe('AI IPC privacy boundary', () => {
     expect(repository.get(second.manifest.sessionId)!.cache.values).toEqual({ other: true })
 
     repository.writeVirtual(`session://${first.manifest.sessionId}/cache/values/three`, true, first.manifest.sessionId)
-    repository.updateState(first.manifest.sessionId, { status: 'running' })
+    state.currentProject.aiAssistant!.sessions[first.manifest.sessionId]!.state.status = 'running'
     await expect(handler!(event, { sessionId: first.manifest.sessionId }))
       .resolves.toMatchObject({ ok: false, errorCode: 'AI_SESSION_RUNNING' })
     expect(repository.get(first.manifest.sessionId)!.cache.values).toEqual({ three: true })
     expect(saveProject).toHaveBeenCalledTimes(1)
 
-    repository.updateState(first.manifest.sessionId, { status: 'idle' })
+    state.currentProject.aiAssistant!.sessions[first.manifest.sessionId]!.state.status = 'idle'
     await expect(handler!(event, { sessionId: first.manifest.sessionId }))
       .resolves.toEqual({ ok: true, removed: 1 })
     expect(saveProject).toHaveBeenCalledTimes(2)
@@ -909,13 +1270,7 @@ describe('AI Session version and artifact idempotency', () => {
       operationId: 'operation-1',
       kind: 'questionnaire-patch',
       status: 'completed',
-      versionStamp: {
-        schemaVersion: 1,
-        harnessVersion: '1.0.0',
-        promptHash: 'sha256:abc123',
-        promptVersion: '1.0.0',
-        promptId: 'questionnaire-assistant'
-      },
+      versionStamp: structuredClone(versionStamp),
       value: { enabled: true, section: { order: 1, title: 'A' } }
     })
 
@@ -959,11 +1314,25 @@ describe('AI Session version and artifact idempotency', () => {
       () => '2026-08-25T01:00:00.000Z'
     )
     repository.create(versionStamp, 'Review')
+    repository.appendMessage(sessionId, {
+      id: 'user-message-1',
+      role: 'user',
+      content: 'Create',
+      createdAt: '2026-08-25T01:00:00.000Z',
+      runId: 'run-1'
+    })
     repository.upsertRun(sessionId, {
       runId: 'run-1',
       status: 'running',
       startedAt: '2026-08-25T01:00:00.000Z',
-      versionStamp
+      versionStamp,
+      requestId: 'request-1',
+      operationId: 'operation-1',
+      userMessageId: 'user-message-1',
+      progress: {
+        stage: 'starting', attempt: 1, updatedAt: '2026-08-25T01:00:00.000Z',
+        streamFallback: false
+      }
     })
     repository.setRunTemp(sessionId, {
       runId: 'run-1',
@@ -992,7 +1361,7 @@ describe('AI Session version and artifact idempotency', () => {
       activeRunId: 'run-1'
     })
     expect(repository.get(sessionId)?.conversation).toMatchObject({
-      messages: [{ id: 'message-1' }],
+      messages: [{ id: 'user-message-1' }, { id: 'message-1' }],
       attachments: { 'attachment-1': { messageId: 'message-1' } }
     })
     for (const path of [

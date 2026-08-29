@@ -4,10 +4,13 @@ export interface IpcInvokeEventLike {
   senderFrame?: {
     url: string
   } | null
-  sender?: {
-    id?: number
-    send(channel: string, payload: unknown): void
-  }
+  sender?: IpcWebContentsLike
+}
+
+export interface IpcWebContentsLike {
+  id?: number
+  isDestroyed?(): boolean
+  send(channel: string, payload: unknown): void
 }
 
 export interface IpcMainLike {

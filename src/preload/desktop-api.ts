@@ -124,6 +124,7 @@ import {
   AI_CONFIG_UPDATE_CHANNEL,
   AI_PRIVACY_ACCEPT_CHANNEL,
   AI_PRIVACY_STATUS_CHANNEL,
+  AI_PROGRESS_CHANNEL,
   AI_SEND_CHANNEL,
   AI_SESSION_CLEAR_CACHE_CHANNEL,
   AI_SESSION_CREATE_CHANNEL,
@@ -142,6 +143,7 @@ import {
   parseAIConfigUpdateRequest,
   parseAIConnectionTestResponse,
   parseAIPrivacyStatusResponse,
+  parseAIProgressEvent,
   parseAISendRequest,
   parseAISendResponse,
   parseAISessionClearCacheResponse,
@@ -163,6 +165,8 @@ import {
   type AIConfigUpdateRequest,
   type AIConnectionTestResult,
   type AIPrivacyStatusResult,
+  type AIProgressEvent,
+  type AIProgressSubscriptionScope,
   type AISendRequest,
   type AISendResult,
   type AISessionClearCacheResult,
@@ -273,6 +277,13 @@ export interface DesktopInvoke {
   (channel: typeof AI_ARTIFACT_APPLY_CHANNEL, request: AIArtifactApplyRequest): Promise<unknown>
 }
 
+type DesktopProgressListener = (event: unknown, value: unknown) => void
+
+export interface DesktopEventBridge {
+  on(channel: typeof AI_PROGRESS_CHANNEL, listener: DesktopProgressListener): void
+  removeListener(channel: typeof AI_PROGRESS_CHANNEL, listener: DesktopProgressListener): void
+}
+
 function parsePublicPreferencesResult(value: unknown): PreferencesResult {
   try {
     return parsePreferencesResult(value)
@@ -312,7 +323,22 @@ function parsePublicAIConfigResult(value: unknown): AIConfigIpcResult {
   }
 }
 
-export function createDesktopApi(invoke: DesktopInvoke): DesktopApi {
+function parseAIProgressScope(value: AIProgressSubscriptionScope): AIProgressSubscriptionScope {
+  if (typeof value !== 'object' || value === null || Array.isArray(value) ||
+    Object.keys(value).length !== 2 ||
+    typeof value.requestId !== 'string' ||
+    !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(value.requestId) ||
+    typeof value.sessionId !== 'string' ||
+    !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value.sessionId)) {
+    throw new Error('INVALID_AI_REQUEST')
+  }
+  return { requestId: value.requestId, sessionId: value.sessionId }
+}
+
+export function createDesktopApi(
+  invoke: DesktopInvoke,
+  events: DesktopEventBridge = ipcRenderer
+): DesktopApi {
   const system = Object.freeze({
     ping: (request: PingRequest) => invoke(SYSTEM_PING_CHANNEL, request)
   })
@@ -487,6 +513,31 @@ export function createDesktopApi(invoke: DesktopInvoke): DesktopApi {
   })
 
   const ai = Object.freeze({
+    onProgress: (
+      rawScope: AIProgressSubscriptionScope,
+      callback: (event: AIProgressEvent) => void
+    ): (() => void) => {
+      const scope = parseAIProgressScope(rawScope)
+      if (typeof callback !== 'function') throw new Error('INVALID_AI_REQUEST')
+      let subscribed = true
+      const listener: DesktopProgressListener = (_event, value) => {
+        let progress: AIProgressEvent
+        try {
+          progress = parseAIProgressEvent(value)
+        } catch {
+          return
+        }
+        if (progress.requestId === scope.requestId && progress.sessionId === scope.sessionId) {
+          callback(progress)
+        }
+      }
+      events.on(AI_PROGRESS_CHANNEL, listener)
+      return () => {
+        if (!subscribed) return
+        subscribed = false
+        events.removeListener(AI_PROGRESS_CHANNEL, listener)
+      }
+    },
     config: Object.freeze({
       get: async () => parsePublicAIConfigResult(await invoke(AI_CONFIG_GET_CHANNEL)),
       update: async (request: AIConfigUpdateRequest) =>

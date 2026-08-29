@@ -65,6 +65,8 @@ import type {
   AIConfigUpdateRequest,
   AIConnectionTestResult,
   AIPrivacyStatusResult,
+  AIProgressEvent,
+  AIProgressSubscriptionScope,
   AISendRequest,
   AISendResult,
   AISessionClearCacheResult,
@@ -94,6 +96,10 @@ export interface DesktopApi {
     update(preferences: PreferencesV1): Promise<PreferencesResult>
   }
   ai: {
+    onProgress(
+      scope: AIProgressSubscriptionScope,
+      callback: (event: AIProgressEvent) => void
+    ): () => void
     config: {
       get(): Promise<AIConfigIpcResult>
       update(request: AIConfigUpdateRequest): Promise<AIConfigIpcResult>

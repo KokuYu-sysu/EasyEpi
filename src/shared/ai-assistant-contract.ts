@@ -65,6 +65,7 @@ export const AI_SESSION_CLEAR_CACHE_CHANNEL = 'ai:session:clearCache'
 export const AI_SESSION_MIGRATE_CHANNEL = 'ai:session:migrate'
 export const AI_SEND_CHANNEL = 'ai:send'
 export const AI_CANCEL_CHANNEL = 'ai:cancel'
+export const AI_PROGRESS_CHANNEL = 'ai:progress'
 export const AI_ARTIFACT_PREVIEW_CHANNEL = 'ai:artifact:preview'
 export const AI_ARTIFACT_APPLY_CHANNEL = 'ai:artifact:apply'
 
@@ -479,6 +480,11 @@ export type AIProgressEvent =
       attempt: 1 | 2 | 3
       errorCode: 'AI_CANCELLED'
     })
+
+export interface AIProgressSubscriptionScope {
+  requestId: string
+  sessionId: string
+}
 
 export type AIConfigIpcResult = { ok: true; config: AIProviderConfigView } | AIErrorResult
 export type AIConnectionTestResult = { ok: true } | AIErrorResult

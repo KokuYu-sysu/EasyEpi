@@ -12,6 +12,8 @@ import type {
   AIConnectionTestResult,
   AIErrorResult,
   AIPrivacyStatusResult,
+  AIProgressEvent,
+  AIPublicFailureDetails,
   AIQuestionnaireArtifactPreviewDto,
   AISendResult,
   AISessionClearCacheResult,
@@ -34,6 +36,7 @@ import {
   AI_PRIVACY_ACCEPT_CHANNEL,
   AI_PRIVACY_NOTICE,
   AI_PRIVACY_STATUS_CHANNEL,
+  AI_PROGRESS_CHANNEL,
   AI_SESSION_PAGE_MAX_UTF8_BYTES,
   AI_SEND_CHANNEL,
   AI_SESSION_CLEAR_CACHE_CHANNEL,
@@ -48,6 +51,7 @@ import {
   parseAICancelRequest,
   parseAIConfigUpdateRequest,
   parseAISendRequest,
+  parseAIProgressEvent,
   parseAISessionCreateRequest,
   parseAISessionGetRequest,
   parseAISessionIdRequest,
@@ -75,7 +79,12 @@ import { saveProjectToPath } from '../services/project.service'
 import { resolveProjectDataFilePath } from '../services/record.service'
 
 import type { ProjectIpcState } from './project.ipc'
-import { assertTrustedSender, type IpcInvokeEventLike, type IpcMainLike } from './types'
+import {
+  assertTrustedSender,
+  type IpcInvokeEventLike,
+  type IpcMainLike,
+  type IpcWebContentsLike
+} from './types'
 
 interface CapturedProject {
   project: ProjectData
@@ -90,6 +99,7 @@ interface InFlightRequest {
   controller: AbortController
   project: ProjectData
   filePath: string
+  sender: IpcWebContentsLike
   settled: Promise<void>
   settle(): void
 }
@@ -146,9 +156,16 @@ function errorCode(error: unknown): string {
   return Object.prototype.hasOwnProperty.call(ERROR_MESSAGES, code) ? code : 'AI_INTERNAL_ERROR'
 }
 
-function publicError(error: unknown): AIErrorResult {
+function publicError(error: unknown, details?: AIPublicFailureDetails): AIErrorResult & {
+  details?: AIPublicFailureDetails
+} {
   const code = errorCode(error)
-  return { ok: false, errorCode: code, message: ERROR_MESSAGES[code]! }
+  return {
+    ok: false,
+    errorCode: code,
+    message: ERROR_MESSAGES[code]!,
+    ...(details === undefined ? {} : { details: structuredClone(details) })
+  }
 }
 
 function configError(code: string): AIErrorResult {
@@ -213,12 +230,30 @@ function toPublicSessionPage(session: AISessionData, offset: number, limit: numb
     session.artifacts.byId[session.state.values.activeArtifactId] !== undefined
     ? session.state.values.activeArtifactId
     : null
+  const isV2 = session.manifest.versionStamp.schemaVersion === 2
+  const activeRunRecord = isV2 && session.state.activeRunId !== undefined
+    ? session.state.runs[session.state.activeRunId]
+    : undefined
+  const activeRun = activeRunRecord?.status === 'running' &&
+    activeRunRecord.requestId !== undefined && activeRunRecord.progress !== undefined
+    ? {
+        requestId: activeRunRecord.requestId,
+        runId: activeRunRecord.runId,
+        stage: activeRunRecord.progress.stage,
+        attempt: activeRunRecord.progress.attempt,
+        startedAt: activeRunRecord.startedAt,
+        updatedAt: activeRunRecord.progress.updatedAt,
+        streamFallback: activeRunRecord.progress.streamFallback
+      }
+    : null
   const page: AISessionPage = {
     manifest: session.manifest,
     messages: [],
     attachments: [],
     status: session.state.status,
     activeArtifactId,
+    activeRun,
+    failures: [],
     artifacts: activeArtifactId === null
       ? []
       : [artifactSummary(session.artifacts.byId[activeArtifactId]!)],
@@ -250,27 +285,71 @@ function toPublicSessionPage(session: AISessionData, offset: number, limit: numb
     attachmentsByMessage.set(attachment.messageId, summaries)
     attachmentCount += 1
   }
+  const clarificationsByMessage = new Map<string, NonNullable<AISessionPage['messages'][number]['clarification']>>()
+  if (isV2) {
+    for (const clarification of Object.values(session.conversation.clarifications ?? {})) {
+      clarificationsByMessage.set(clarification.messageId, {
+        clarificationId: clarification.clarificationId,
+        options: structuredClone(clarification.options),
+        status: clarification.status,
+        selectedOptionId: clarification.selectedOptionId ?? null,
+        resolvedByMessageId: clarification.resolvedByMessageId ?? null
+      })
+    }
+  }
+  const failuresByUserMessage = new Map<string, AISessionPage['failures']>()
+  if (isV2) {
+    for (const run of Object.values(session.state.runs)) {
+      if (run.failure === undefined || run.userMessageId === undefined) continue
+      const userMessage = session.conversation.messages.find(
+        (message) => message.id === run.userMessageId && message.role === 'user' &&
+          message.runId === run.runId
+      )
+      if (userMessage === undefined) continue
+      const failures = failuresByUserMessage.get(run.userMessageId) ?? []
+      failures.push({
+        runId: run.runId,
+        userMessageId: run.userMessageId,
+        completedAt: run.failure.completedAt,
+        errorCode: run.failure.errorCode,
+        details: structuredClone(run.failure.details)
+      })
+      failuresByUserMessage.set(run.userMessageId, failures)
+    }
+  }
   for (const message of candidates) {
     if (message.content.length > 100_000 || message.content.includes('\0')) {
       throw new Error('AI_SESSION_PAGE_TOO_LARGE')
     }
     const previousAttachmentCount = page.attachments.length
+    const previousFailureCount = page.failures.length
+    const clarification = message.role === 'assistant'
+      ? clarificationsByMessage.get(message.id) ?? null
+      : null
     page.messages.push({
       id: message.id,
       role: message.role as 'user' | 'assistant',
       content: message.content,
-      createdAt: message.createdAt
+      createdAt: message.createdAt,
+      clarification
     })
     page.attachments.push(...(attachmentsByMessage.get(message.id) ?? []).slice(
       0,
       100 - page.attachments.length
     ))
+    if (message.role === 'user') {
+      page.failures.push(...(failuresByUserMessage.get(message.id) ?? []).slice(
+        0,
+        100 - page.failures.length
+      ))
+    }
     page.nextOffset = offset + page.messages.length < total
       ? offset + page.messages.length
       : null
     if (fitsBudget()) continue
     page.messages.pop()
     page.attachments.length = previousAttachmentCount
+    page.failures.length = previousFailureCount
     page.nextOffset = offset + page.messages.length < total
       ? offset + page.messages.length
       : null
@@ -573,10 +652,68 @@ export function registerAIIpcHandlers(
       controller,
       project: captured.project,
       filePath: captured.filePath,
+      sender: event.sender!,
       settled: new Promise<void>((resolve) => { settle = resolve }),
       settle: () => settle()
     }
     inFlight.set(key, entry)
+    let terminalDelivered = false
+    let deliveryStopped = false
+    let deltaFlushTimer: ReturnType<typeof setTimeout> | undefined
+    const queuedDeltas: AIProgressEvent[] = []
+    const canDeliver = (): boolean => {
+      if (deliveryStopped || !acceptingRequests || inFlight.get(key) !== entry ||
+        !isCurrentProject(state, captured) || entry.sender.isDestroyed?.() === true) {
+        deliveryStopped = true
+        if (deltaFlushTimer !== undefined) clearTimeout(deltaFlushTimer)
+        deltaFlushTimer = undefined
+        queuedDeltas.length = 0
+        return false
+      }
+      return true
+    }
+    const sendProgress = (progress: AIProgressEvent): boolean => {
+      if (!canDeliver()) return false
+      try {
+        entry.sender.send(AI_PROGRESS_CHANNEL, structuredClone(progress))
+        return true
+      } catch {
+        deliveryStopped = true
+        queuedDeltas.length = 0
+        return false
+      }
+    }
+    const flushDeltas = (): void => {
+      if (deltaFlushTimer !== undefined) clearTimeout(deltaFlushTimer)
+      deltaFlushTimer = undefined
+      if (!canDeliver()) return
+      while (queuedDeltas.length > 0) {
+        const delta = queuedDeltas.shift()!
+        if (!sendProgress(delta)) return
+      }
+    }
+    const deliverProgress = (rawProgress: AIProgressEvent): void => {
+      let progress: AIProgressEvent
+      try {
+        progress = parseAIProgressEvent(rawProgress)
+      } catch {
+        return
+      }
+      if (progress.requestId !== request.requestId || progress.sessionId !== request.sessionId ||
+        terminalDelivered || !canDeliver()) return
+      if (progress.type === 'assistant_delta') {
+        queuedDeltas.push(progress)
+        if (deltaFlushTimer === undefined) {
+          deltaFlushTimer = setTimeout(flushDeltas, 16)
+        }
+        return
+      }
+      flushDeltas()
+      const terminal = progress.type === 'clarification' || progress.type === 'completed' ||
+        progress.type === 'failed' || progress.type === 'cancelled'
+      if (terminal) terminalDelivered = true
+      sendProgress(progress)
+    }
     try {
       const privacy = await dependencies.configService.getPrivacyStatus()
       if (!privacy.accepted) throw new Error('AI_PRIVACY_NOTICE_REQUIRED')
@@ -600,9 +737,23 @@ export function registerAIIpcHandlers(
           ? { explicitAttachment: structuredClone(captured.project.questionnaire) }
           : {}),
         signal: controller.signal,
-        operationId: `ipc-${createHash('sha256').update(key).digest('hex')}`
+        requestId: request.requestId,
+        operationId: `ipc-${createHash('sha256').update(key).digest('hex')}`,
+        ...(request.clarificationSelection === undefined
+          ? {}
+          : { clarificationSelection: request.clarificationSelection }),
+        onProgress: deliverProgress
       })
-      if (!result.ok) return publicError(result.errorCode)
+      if (!result.ok) return publicError(result.errorCode, result.details)
+      if (result.outcome === 'clarification') {
+        return {
+          ok: true,
+          requestId: request.requestId,
+          outcome: 'clarification',
+          message: result.message,
+          attempts: result.attempts
+        } satisfies AISendResult
+      }
       const preview = previewQuestionnaireArtifact(
         captured.project,
         request.sessionId,
@@ -613,6 +764,7 @@ export function registerAIIpcHandlers(
       return {
         ok: true,
         requestId: request.requestId,
+        outcome: 'questionnaire',
         artifact: toPublicQuestionnaireArtifact(result.artifact, preview),
         attempts: result.attempts
       } satisfies AISendResult

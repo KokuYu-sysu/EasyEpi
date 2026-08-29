@@ -13,7 +13,10 @@ import {
 import { EXPORT_CSV_CHANNEL } from '@shared/export-contract'
 import type { DesktopInvoke } from '../../../src/preload/desktop-api'
 import { createDesktopApi } from '../../../src/preload/desktop-api'
-import { AI_CONFIG_UPDATE_CHANNEL } from '@shared/ai-assistant-contract'
+import {
+  AI_CONFIG_UPDATE_CHANNEL,
+  AI_PROGRESS_CHANNEL
+} from '@shared/ai-assistant-contract'
 
 function assertDesktopInvokeShape(invoke: DesktopInvoke, checkCalls: boolean): void {
   if (checkCalls) {
@@ -56,6 +59,111 @@ describe('createDesktopApi', () => {
     expect(Object.isFrozen(api.preferences)).toBe(true)
     expect(Object.isFrozen(api.ai)).toBe(true)
     expect(Object.isFrozen(api.ai.config)).toBe(true)
+  })
+
+  it('subscribes to only the fixed AI progress channel and filters the exact request scope', () => {
+    const listeners = new Map<string, (event: unknown, value: unknown) => void>()
+    const on = vi.fn((channel: string, listener: (event: unknown, value: unknown) => void) => {
+      listeners.set(channel, listener)
+    })
+    const removeListener = vi.fn()
+    const api = createDesktopApi(vi.fn(), { on, removeListener })
+    const callback = vi.fn()
+
+    api.ai.onProgress({ requestId: 'request-1', sessionId: '123e4567-e89b-42d3-a456-426614174000' }, callback)
+
+    expect(on).toHaveBeenCalledOnce()
+    expect(on).toHaveBeenCalledWith(AI_PROGRESS_CHANNEL, expect.any(Function))
+    const listener = listeners.get(AI_PROGRESS_CHANNEL)!
+    listener({}, {
+      type: 'started', requestId: 'other-request',
+      sessionId: '123e4567-e89b-42d3-a456-426614174000', runId: 'run-1',
+      at: '2026-08-29T00:00:00.000Z'
+    })
+    listener({}, {
+      type: 'started', requestId: 'request-1',
+      sessionId: '16fd2706-8baf-433b-82eb-8c7fada847da', runId: 'run-1',
+      at: '2026-08-29T00:00:00.000Z'
+    })
+    const expected = {
+      type: 'started', requestId: 'request-1',
+      sessionId: '123e4567-e89b-42d3-a456-426614174000', runId: 'run-1',
+      at: '2026-08-29T00:00:00.000Z'
+    }
+    listener({}, expected)
+
+    expect(callback).toHaveBeenCalledOnce()
+    expect(callback).toHaveBeenCalledWith(expected)
+  })
+
+  it('rejects invalid progress scopes before listening and ignores malformed event payloads', () => {
+    let listener: ((event: unknown, value: unknown) => void) | undefined
+    const events = {
+      on: vi.fn((_channel: string, value: (event: unknown, payload: unknown) => void) => {
+        listener = value
+      }),
+      removeListener: vi.fn()
+    }
+    const api = createDesktopApi(vi.fn(), events)
+    const callback = vi.fn()
+
+    expect(() => api.ai.onProgress({
+      requestId: 'request-1',
+      sessionId: '123e4567-e89b-42d3-a456-426614174000',
+      extra: 'unsafe'
+    } as never, callback)).toThrow('INVALID_AI_REQUEST')
+    expect(events.on).not.toHaveBeenCalled()
+
+    api.ai.onProgress({
+      requestId: 'request-1', sessionId: '123e4567-e89b-42d3-a456-426614174000'
+    }, callback)
+    listener!({}, {
+      type: 'assistant_delta', requestId: 'request-1',
+      sessionId: '123e4567-e89b-42d3-a456-426614174000', runId: 'run-1',
+      at: '2026-08-29T00:00:00.000Z', attempt: 1, sequence: 0, delta: 'ok',
+      apiKey: 'sk-unsafe'
+    })
+    listener!({}, {
+      type: 'assistant_delta', requestId: 'request-1',
+      sessionId: '123e4567-e89b-42d3-a456-426614174000', runId: 'run-1',
+      at: '2026-08-29T00:00:00.000Z', attempt: 1, sequence: -1, delta: 'unsafe'
+    })
+
+    expect(callback).not.toHaveBeenCalled()
+  })
+
+  it('supports subscribe-before-send and removes the exact listener only once', async () => {
+    const order: string[] = []
+    let listener: ((event: unknown, value: unknown) => void) | undefined
+    const events = {
+      on: vi.fn((_channel: string, value: (event: unknown, payload: unknown) => void) => {
+        order.push('subscribe')
+        listener = value
+      }),
+      removeListener: vi.fn((_channel: string, value: (event: unknown, payload: unknown) => void) => {
+        expect(value).toBe(listener)
+        order.push('unsubscribe')
+      })
+    }
+    const invoke = vi.fn(async () => {
+      order.push('send')
+      return { ok: false, errorCode: 'AI_CANCELLED', message: 'AI 请求已取消。' }
+    })
+    const api = createDesktopApi(invoke as unknown as DesktopInvoke, events)
+
+    const unsubscribe = api.ai.onProgress({
+      requestId: 'request-1', sessionId: '123e4567-e89b-42d3-a456-426614174000'
+    }, vi.fn())
+    await api.ai.send({
+      requestId: 'request-1', sessionId: '123e4567-e89b-42d3-a456-426614174000',
+      content: 'Create', includeCurrentQuestionnaire: false
+    })
+    unsubscribe()
+    unsubscribe()
+
+    expect(order).toEqual(['subscribe', 'send', 'unsubscribe'])
+    expect(events.removeListener).toHaveBeenCalledOnce()
+    expect(events.removeListener).toHaveBeenCalledWith(AI_PROGRESS_CHANNEL, listener)
   })
 
   it('gets preferences through only the fixed get channel and normalizes the response', async () => {
@@ -240,13 +348,14 @@ describe('createDesktopApi', () => {
           manifest,
           messages: [{
             id: 'message-1', role: 'user', content: 'Create',
-            createdAt: '2026-08-25T00:00:00.000Z'
+            createdAt: '2026-08-25T00:00:00.000Z', clarification: null
           }],
           attachments: [{
             attachmentId: 'attachment-1', messageId: 'message-1', kind: 'questionnaire',
             createdAt: '2026-08-25T00:00:00.000Z'
           }],
-          status: 'running', activeArtifactId: null, artifacts: [], total: 1, nextOffset: null
+          status: 'running', activeArtifactId: null, activeRun: null, failures: [],
+          artifacts: [], total: 1, nextOffset: null
         }
       })
       .mockResolvedValueOnce({
@@ -255,10 +364,10 @@ describe('createDesktopApi', () => {
           manifest,
           messages: Array.from({ length: 11 }, (_, index) => ({
             id: `message-${index}`, role: 'assistant', content: 'x'.repeat(100_000),
-            createdAt: '2026-08-25T00:00:00.000Z'
+            createdAt: '2026-08-25T00:00:00.000Z', clarification: null
           })),
           attachments: [], status: 'completed', activeArtifactId: null,
-          artifacts: [], total: 11, nextOffset: null
+          activeRun: null, failures: [], artifacts: [], total: 11, nextOffset: null
         }
       })
     const api = createDesktopApi(invoke)
