@@ -21,6 +21,7 @@ import type {
   AISessionStatus,
   AISessionVirtualPath
 } from '@shared/ai-assistant-contract'
+import { parseAIPublicFailureDetails } from '@shared/ai-assistant-contract'
 import type { ProjectData } from '@shared/types/project'
 import { migrateAISessionVersion as validateAISessionVersionMigration } from './ai-questionnaire.harness'
 
@@ -392,39 +393,11 @@ function validateFailureInput(value: unknown): AIRunFailureInput {
     hasControlCharacter(value.errorCode)) {
     throw new Error('INVALID_AI_RUN_FAILURE')
   }
-  if (!isPlainObject(value.details)) throw new Error('INVALID_AI_RUN_FAILURE')
-  exactKeys(value.details, ['attempts'])
-  if (!Array.isArray(value.details.attempts) || value.details.attempts.length > 3) {
+  try {
+    return { errorCode: value.errorCode, details: parseAIPublicFailureDetails(value.details) }
+  } catch {
     throw new Error('INVALID_AI_RUN_FAILURE')
   }
-  let previousAttempt = 0
-  for (const attempt of value.details.attempts) {
-    if (!isPlainObject(attempt)) throw new Error('INVALID_AI_RUN_FAILURE')
-    exactKeys(attempt, ['attempt', 'issues', 'truncated'])
-    if (![1, 2, 3].includes(Number(attempt.attempt)) || Number(attempt.attempt) <= previousAttempt ||
-      !Array.isArray(attempt.issues) || attempt.issues.length > 20 ||
-      typeof attempt.truncated !== 'boolean') {
-      throw new Error('INVALID_AI_RUN_FAILURE')
-    }
-    previousAttempt = Number(attempt.attempt)
-    const issues = new Set<string>()
-    for (const issue of attempt.issues) {
-      if (!isPlainObject(issue)) throw new Error('INVALID_AI_RUN_FAILURE')
-      exactKeys(issue, ['code', 'field', 'summary'])
-      if (typeof issue.code !== 'string' || !/^[A-Z][A-Z0-9_]{0,127}$/.test(issue.code) ||
-        typeof issue.field !== 'string' || issue.field.length > 256 ||
-        !/^\$(?:\.[A-Za-z][A-Za-z0-9]*|\[(?:0|[1-9][0-9]{0,2})\]){0,12}$/.test(issue.field) ||
-        typeof issue.summary !== 'string' || issue.summary.length < 1 || issue.summary.length > 200 ||
-        issue.summary !== issue.summary.trim() || hasControlCharacter(issue.summary)) {
-        throw new Error('INVALID_AI_RUN_FAILURE')
-      }
-      const key = `${issue.code}\u0000${issue.field}`
-      if (issues.has(key)) throw new Error('INVALID_AI_RUN_FAILURE')
-      issues.add(key)
-    }
-  }
-  assertJsonValue(value.details)
-  return clone(value) as unknown as AIRunFailureInput
 }
 
 function validateClarification(value: unknown): AIClarification {
@@ -485,6 +458,42 @@ function requireV2Session(session: AISessionData): Record<string, AIClarificatio
   return session.conversation.clarifications
 }
 
+function isCurrentV2Version(session: AISessionData, versionStamp: AiVersionStamp): boolean {
+  return session.manifest.versionStamp.schemaVersion === 2 && structurallyEqual(
+    versionStampValue(versionStamp),
+    versionStampValue(session.manifest.versionStamp)
+  )
+}
+
+function isCurrentV2Run(session: AISessionData, run: AIRun): boolean {
+  return isCurrentV2Version(session, run.versionStamp)
+}
+
+const SAME_ATTEMPT_PROGRESS_TRANSITIONS: Record<string, ReadonlySet<string>> = {
+  starting: new Set(['starting', 'connecting']),
+  connecting: new Set(['connecting', 'streaming', 'validating']),
+  streaming: new Set(['streaming', 'validating']),
+  validating: new Set(['validating', 'repairing', 'clarification']),
+  repairing: new Set(['repairing']),
+  clarification: new Set(['clarification'])
+}
+
+function assertProgressTransition(current: AIRunProgress, next: AIRunProgress): void {
+  if (next.updatedAt < current.updatedAt || current.streamFallback && !next.streamFallback) {
+    throw new Error('INVALID_AI_RUN_PROGRESS_TRANSITION')
+  }
+  if (next.attempt === current.attempt) {
+    if (SAME_ATTEMPT_PROGRESS_TRANSITIONS[current.stage]?.has(next.stage) !== true) {
+      throw new Error('INVALID_AI_RUN_PROGRESS_TRANSITION')
+    }
+    return
+  }
+  if (next.attempt !== current.attempt + 1 || current.stage !== 'repairing' ||
+    (next.stage !== 'starting' && next.stage !== 'connecting')) {
+    throw new Error('INVALID_AI_RUN_PROGRESS_TRANSITION')
+  }
+}
+
 export class AISessionRepository {
   constructor(
     private readonly project: ProjectData,
@@ -523,10 +532,10 @@ export class AISessionRepository {
     validatePathSegment(runId)
     const run = session.state.runs[runId]
     if (run === undefined) throw new Error('AI_RUN_NOT_FOUND')
-    if (run.status !== 'running') throw new Error('AI_RUN_NOT_ACTIVE')
-    if (session.manifest.versionStamp.schemaVersion !== 2) {
-      throw new Error('AI_SESSION_VERSION_MIGRATION_REQUIRED')
+    if (session.state.activeRunId !== runId || run.status !== 'running') {
+      throw new Error('AI_RUN_NOT_ACTIVE')
     }
+    if (!isCurrentV2Run(session, run)) throw new Error('AI_RUN_VERSION_NOT_CURRENT')
     return run
   }
 
@@ -594,9 +603,6 @@ export class AISessionRepository {
     targetVersionStamp: AiVersionStamp
   ): AIMutationResult<AISessionData> {
     const session = this.requireSession(sessionId)
-    if (session.state.activeRunId !== undefined || session.state.status === 'running') {
-      throw new Error('AI_RUN_ALREADY_ACTIVE')
-    }
     const target = validateVersionStamp(targetVersionStamp)
     if (structurallyEqual(
       versionStampValue(session.manifest.versionStamp),
@@ -651,9 +657,11 @@ export class AISessionRepository {
         }
       } else {
         validatePathSegment(update.activeRunId)
-        if (!hasOwn(session.state.runs, update.activeRunId)) {
+        const run = session.state.runs[update.activeRunId]
+        if (run === undefined) {
           throw new Error('AI_RUN_NOT_FOUND')
         }
+        if (!isCurrentV2Run(session, run)) throw new Error('AI_RUN_VERSION_NOT_CURRENT')
         if (session.state.activeRunId !== update.activeRunId) {
           session.state.activeRunId = update.activeRunId
           mutated = true
@@ -715,7 +723,9 @@ export class AISessionRepository {
     if (message === undefined || message.role !== 'assistant' || message.runId !== clarification.runId) {
       throw new Error('AI_CLARIFICATION_MESSAGE_MISMATCH')
     }
-    if (!hasOwn(session.state.runs, clarification.runId)) throw new Error('AI_RUN_NOT_FOUND')
+    const run = session.state.runs[clarification.runId]
+    if (run === undefined) throw new Error('AI_RUN_NOT_FOUND')
+    if (!isCurrentV2Run(session, run)) throw new Error('AI_RUN_VERSION_NOT_CURRENT')
     clarifications[clarification.clarificationId] = clarification
     this.touch(session)
     return { value: clone(clarification), mutated: true }
@@ -724,7 +734,7 @@ export class AISessionRepository {
   getLatestUnresolvedClarification(sessionId: string): AIClarification | undefined {
     const session = this.requireSession(sessionId)
     const clarifications = requireV2Session(session)
-    for (const message of session.conversation.messages.toReversed()) {
+    for (const message of session.conversation.messages.slice().reverse()) {
       const clarification = Object.values(clarifications).find(
         (candidate) => candidate.messageId === message.id && candidate.status === 'unresolved'
       )
@@ -874,6 +884,8 @@ export class AISessionRepository {
     if (progress.stage === 'completed' || progress.stage === 'failed' || progress.stage === 'cancelled') {
       throw new Error('INVALID_AI_RUN_PROGRESS')
     }
+    if (run.progress === undefined) throw new Error('INVALID_AI_RUN_PROGRESS')
+    assertProgressTransition(run.progress, progress)
     const updated = { ...run, progress }
     session.state.runs[runId] = updated
     this.touch(session)
@@ -890,11 +902,10 @@ export class AISessionRepository {
     const result = validateRunResult(input)
     if (result.kind === 'questionnaire') {
       const artifact = session.artifacts.byId[result.artifactId]
-      if (artifact === undefined || artifact.status !== 'completed') {
-        throw new Error('AI_ARTIFACT_NOT_FOUND')
-      }
-      if (run.operationId !== undefined && artifact.operationId !== run.operationId) {
-        throw new Error('AI_ARTIFACT_OPERATION_CONFLICT')
+      if (artifact === undefined) throw new Error('AI_ARTIFACT_NOT_FOUND')
+      if (artifact.kind !== 'questionnaire-draft' || artifact.status !== 'completed' ||
+        artifact.operationId !== run.operationId || !isCurrentV2Version(session, artifact.versionStamp)) {
+        throw new Error('AI_ARTIFACT_NOT_APPLICABLE')
       }
     } else {
       const clarification = requireV2Session(session)[result.clarificationId]
@@ -957,8 +968,9 @@ export class AISessionRepository {
 
   findRunByOperationId(sessionId: string, operationId: string): AIRun | undefined {
     validatePathSegment(operationId)
-    const matches = Object.values(this.requireSession(sessionId).state.runs)
-      .filter((run) => run.operationId === operationId)
+    const session = this.requireSession(sessionId)
+    const matches = Object.values(session.state.runs)
+      .filter((run) => run.operationId === operationId && isCurrentV2Run(session, run))
     if (matches.length > 1) throw new Error('AI_RUN_OPERATION_CONFLICT')
     return matches[0] === undefined ? undefined : clone(matches[0])
   }

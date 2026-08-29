@@ -8,6 +8,7 @@ import type {
   AiVersionStamp,
   AIAssistantProjectData
 } from '@shared/ai-assistant-contract'
+import { AI_PUBLIC_VALIDATION_SUMMARIES } from '@shared/ai-public-validation'
 import type { ProjectData } from '@shared/types/project'
 
 const SESSION_ID = '123e4567-e89b-42d3-a456-426614174000'
@@ -81,12 +82,19 @@ describe('AI session repository v2 persistence', () => {
     }
     raw.state.runs.done = {
       runId: 'done', status: 'completed', startedAt: '2026-08-28T00:00:00.000Z',
-      completedAt: '2026-08-28T00:00:01.000Z', versionStamp: V1_STAMP
+      completedAt: '2026-08-28T00:00:01.000Z', versionStamp: V1_STAMP,
+      operationId: 'legacy-done-operation'
     }
     raw.state.runs.failed = {
       runId: 'failed', status: 'failed', startedAt: '2026-08-28T00:00:00.000Z',
       completedAt: '2026-08-28T00:00:01.000Z', errorCode: 'OLD_FAILURE', versionStamp: V1_STAMP
     }
+    raw.state.runs.active = {
+      runId: 'active', status: 'running', startedAt: '2026-08-28T00:00:02.000Z',
+      versionStamp: V1_STAMP, operationId: 'legacy-active-operation'
+    }
+    raw.state.status = 'running'
+    raw.state.activeRunId = 'active'
     raw.state.values = { rollingSummary: 'Keep me', activeArtifactId: 'old-artifact', versionMigrations: [] }
     raw.cache.values = { capability: true }
     raw.temp.runs.stale = { runId: 'stale', versionStamp: V1_STAMP, createdAt: 'x', values: {} }
@@ -103,6 +111,7 @@ describe('AI session repository v2 persistence', () => {
     expect(migrated.conversation.attachments.legacy).toBeDefined()
     expect(migrated.state.runs).toHaveProperty('done')
     expect(migrated.state.runs).toHaveProperty('failed')
+    expect(migrated.state.runs).toHaveProperty('active')
     expect(migrated.state.values.rollingSummary).toBe('Keep me')
     expect(migrated.state.values).not.toHaveProperty('activeArtifactId')
     expect(migrated.state.values.versionMigrations).toEqual([
@@ -113,6 +122,9 @@ describe('AI session repository v2 persistence', () => {
     expect(migrated.temp.runs).toEqual({})
     expect(migrated.state).toMatchObject({ status: 'idle' })
     expect(migrated.state.activeRunId).toBeUndefined()
+    expect(repo.findRunByOperationId(sessionId, 'legacy-done-operation')).toBeUndefined()
+    expect(() => repo.updateState(sessionId, { activeRunId: 'active' }))
+      .toThrow('AI_RUN_VERSION_NOT_CURRENT')
     expect(() => repo.migrateSessionVersion(sessionId, { ...getAiVersionStamp(), schemaVersion: 3 }))
       .toThrow()
   })
@@ -175,9 +187,9 @@ describe('AI session repository v2 persistence', () => {
     const { repository: repo, sessionId } = repository()
     seedRunning(repo, sessionId)
     expect(repo.updateRunProgress(sessionId, RUN_ID, {
-      stage: 'streaming', attempt: 2,
-      updatedAt: '2026-08-29T00:00:02.000Z', streamFallback: true
-    }).value.progress).toMatchObject({ stage: 'streaming', attempt: 2, streamFallback: true })
+      stage: 'connecting', attempt: 1,
+      updatedAt: '2026-08-29T00:00:02.000Z', streamFallback: false
+    }).value.progress).toMatchObject({ stage: 'connecting', attempt: 1, streamFallback: false })
     expect(repo.findRunByOperationId(sessionId, 'operation-1')).toMatchObject({ runId: RUN_ID })
     const replay = repo.findRunByOperationId(sessionId, 'operation-1')!
     replay.operationId = 'mutated'
@@ -187,7 +199,14 @@ describe('AI session repository v2 persistence', () => {
       kind: 'questionnaire', artifactId: 'artifact-1'
     })).toThrow('AI_ARTIFACT_NOT_FOUND')
     repo.upsertArtifact(sessionId, {
-      artifactId: 'artifact-1', operationId: 'operation-1', kind: 'questionnaire',
+      artifactId: 'artifact-wrong-kind', operationId: 'wrong-operation', kind: 'questionnaire',
+      status: 'completed', versionStamp: getAiVersionStamp(), value: { draft: true }
+    })
+    expect(() => repo.completeRunWithResult(sessionId, RUN_ID, {
+      kind: 'questionnaire', artifactId: 'artifact-wrong-kind'
+    })).toThrow('AI_ARTIFACT_NOT_APPLICABLE')
+    repo.upsertArtifact(sessionId, {
+      artifactId: 'artifact-1', operationId: 'operation-1', kind: 'questionnaire-draft',
       status: 'completed', versionStamp: getAiVersionStamp(), value: { draft: true }
     })
     expect(repo.completeRunWithResult(sessionId, RUN_ID, {
@@ -203,6 +222,7 @@ describe('AI session repository v2 persistence', () => {
 
     const failedRun = runningRun({ runId: 'run-2', requestId: 'request-2', operationId: 'operation-2' })
     repo.upsertRun(sessionId, failedRun)
+    repo.updateState(sessionId, { status: 'running', activeRunId: 'run-2' })
     expect(repo.failRun(sessionId, 'run-2', {
       errorCode: 'AI_VALIDATION_FAILED', details: { attempts: [] }
     }).value).toMatchObject({
@@ -215,6 +235,87 @@ describe('AI session repository v2 persistence', () => {
     }))).toThrow('AI_RUN_OPERATION_CONFLICT')
   })
 
+  it('requires the active run and monotonic progress transitions', () => {
+    const { repository: repo, sessionId } = repository()
+    seedRunning(repo, sessionId)
+    repo.updateRunProgress(sessionId, RUN_ID, {
+      stage: 'connecting', attempt: 1,
+      updatedAt: '2026-08-29T00:00:02.000Z', streamFallback: false
+    })
+    repo.updateRunProgress(sessionId, RUN_ID, {
+      stage: 'streaming', attempt: 1,
+      updatedAt: '2026-08-29T00:00:03.000Z', streamFallback: true
+    })
+    expect(() => repo.updateRunProgress(sessionId, RUN_ID, {
+      stage: 'connecting', attempt: 1,
+      updatedAt: '2026-08-29T00:00:04.000Z', streamFallback: true
+    })).toThrow('INVALID_AI_RUN_PROGRESS_TRANSITION')
+    expect(() => repo.updateRunProgress(sessionId, RUN_ID, {
+      stage: 'validating', attempt: 1,
+      updatedAt: '2026-08-29T00:00:02.000Z', streamFallback: true
+    })).toThrow('INVALID_AI_RUN_PROGRESS_TRANSITION')
+    expect(() => repo.updateRunProgress(sessionId, RUN_ID, {
+      stage: 'validating', attempt: 1,
+      updatedAt: '2026-08-29T00:00:04.000Z', streamFallback: false
+    })).toThrow('INVALID_AI_RUN_PROGRESS_TRANSITION')
+    repo.updateRunProgress(sessionId, RUN_ID, {
+      stage: 'validating', attempt: 1,
+      updatedAt: '2026-08-29T00:00:04.000Z', streamFallback: true
+    })
+    repo.updateRunProgress(sessionId, RUN_ID, {
+      stage: 'repairing', attempt: 1,
+      updatedAt: '2026-08-29T00:00:05.000Z', streamFallback: true
+    })
+    repo.updateRunProgress(sessionId, RUN_ID, {
+      stage: 'connecting', attempt: 2,
+      updatedAt: '2026-08-29T00:00:06.000Z', streamFallback: true
+    })
+    expect(() => repo.updateRunProgress(sessionId, RUN_ID, {
+      stage: 'connecting', attempt: 1,
+      updatedAt: '2026-08-29T00:00:07.000Z', streamFallback: true
+    })).toThrow('INVALID_AI_RUN_PROGRESS_TRANSITION')
+    repo.updateState(sessionId, { activeRunId: null })
+    expect(() => repo.updateRunProgress(sessionId, RUN_ID, {
+      stage: 'streaming', attempt: 2,
+      updatedAt: '2026-08-29T00:00:07.000Z', streamFallback: true
+    })).toThrow('AI_RUN_NOT_ACTIVE')
+  })
+
+  it('permits only current v2 runs to become active or receive terminal results', () => {
+    const { project: value, repository: repo, sessionId } = repository()
+    value.aiAssistant!.sessions[sessionId]!.state.runs.legacy = {
+      runId: 'legacy', status: 'running', startedAt: '2026-08-28T00:00:00.000Z',
+      versionStamp: V1_STAMP, operationId: 'legacy-operation'
+    }
+    expect(() => repo.updateState(sessionId, { activeRunId: 'legacy' }))
+      .toThrow('AI_RUN_VERSION_NOT_CURRENT')
+    expect(repo.findRunByOperationId(sessionId, 'legacy-operation')).toBeUndefined()
+
+    seedRunning(repo, sessionId)
+    value.aiAssistant!.sessions[sessionId]!.artifacts.byId['artifact-legacy-stamp'] = {
+      artifactId: 'artifact-legacy-stamp', operationId: 'operation-1', kind: 'questionnaire-draft',
+      status: 'completed', versionStamp: V1_STAMP,
+      createdAt: '2026-08-28T00:00:00.000Z', updatedAt: '2026-08-28T00:00:00.000Z',
+      value: { draft: true }
+    }
+    expect(() => repo.completeRunWithResult(sessionId, RUN_ID, {
+      kind: 'questionnaire', artifactId: 'artifact-legacy-stamp'
+    })).toThrow('AI_ARTIFACT_NOT_APPLICABLE')
+  })
+
+  it('normalizes persisted validation details through the shared public allowlist', () => {
+    const { repository: repo, sessionId } = repository()
+    seedRunning(repo, sessionId)
+    expect(() => repo.failRun(sessionId, RUN_ID, {
+      errorCode: 'AI_VALIDATION_FAILED',
+      details: { attempts: [{
+        attempt: 1,
+        issues: [{ code: 'INVALID_TYPE', field: '$.questions[0]', summary: 'wrong summary' }],
+        truncated: false
+      }] }
+    })).toThrow('INVALID_AI_RUN_FAILURE')
+  })
+
   it('rejects unknown run fields, duplicate request ids and malformed public failure details', () => {
     const { repository: repo, sessionId } = repository()
     repo.appendMessage(sessionId, {
@@ -224,6 +325,7 @@ describe('AI session repository v2 persistence', () => {
       ...runningRun(), secret: 'raw-provider-output'
     } as AIRun)).toThrow('INVALID_AI_RUN')
     repo.upsertRun(sessionId, runningRun())
+    repo.updateState(sessionId, { status: 'running', activeRunId: RUN_ID })
     expect(() => repo.upsertRun(sessionId, runningRun({
       runId: 'run-duplicate-request', operationId: 'operation-other'
     }))).toThrow('AI_RUN_REQUEST_CONFLICT')
@@ -236,6 +338,34 @@ describe('AI session repository v2 persistence', () => {
       errorCode: 'AI_VALIDATION_FAILED',
       details: { attempts: [{ attempt: 4, issues: [], truncated: false }] }
     })).toThrow('INVALID_AI_RUN_FAILURE')
+    expect(() => repo.failRun(sessionId, RUN_ID, {
+      errorCode: 'AI_VALIDATION_FAILED',
+      details: { attempts: [{
+        attempt: 1,
+        issues: [{ code: 'RAW_SECRET_CODE', field: '$', summary: 'raw secret' }],
+        truncated: false
+      }] }
+    })).toThrow('INVALID_AI_RUN_FAILURE')
+    expect(() => repo.failRun(sessionId, RUN_ID, {
+      errorCode: 'AI_VALIDATION_FAILED',
+      details: { attempts: [{
+        attempt: 1,
+        issues: [{ code: 'INVALID_TYPE', field: '$.questions[0]', summary: 'wrong summary' }],
+        truncated: false
+      }] }
+    })).toThrow('INVALID_AI_RUN_FAILURE')
+    expect(repo.failRun(sessionId, RUN_ID, {
+      errorCode: 'AI_VALIDATION_FAILED',
+      details: { attempts: [{
+        attempt: 1,
+        issues: [{
+          code: 'INVALID_TYPE',
+          field: '$.questions[0]',
+          summary: AI_PUBLIC_VALIDATION_SUMMARIES.INVALID_TYPE
+        }],
+        truncated: false
+      }] }
+    }).value.status).toBe('failed')
   })
 
   it('keeps legacy runs readable but rejects v2-only persistence on a schema-1 session', () => {

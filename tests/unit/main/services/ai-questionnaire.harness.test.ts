@@ -119,12 +119,37 @@ describe('questionnaire harness trust boundary', () => {
       .toMatchObject({ ok: false, establishedKind: 'clarification' })
     expect(runQuestionnaireHarness(clarification(), undefined, [], 'questionnaire')).toMatchObject({
       ok: false,
-      establishedKind: 'questionnaire',
+      establishedKind: 'clarification',
       errors: [{ code: 'AI_RESPONSE_BRANCH_SWITCH' }]
     })
     const malformed = runQuestionnaireHarness('{', undefined, [], undefined)
     expect(malformed).toMatchObject({ ok: false })
     expect(malformed).not.toHaveProperty('establishedKind')
+  })
+
+  it('preserves an established branch when a parseable response exceeds candidate limits', () => {
+    const oversized = JSON.stringify({
+      kind: 'clarification',
+      assistantMessage: 'x'.repeat(20_001),
+      rollingSummary: '',
+      options: [{ id: 'one', label: 'One' }],
+      questionnaire: null
+    })
+    expect(runQuestionnaireHarness(oversized)).toMatchObject({
+      ok: false,
+      establishedKind: 'clarification',
+      errors: [{ code: 'AI_CANDIDATE_LIMIT_EXCEEDED' }]
+    })
+  })
+
+  it('enforces branch locking through the supported registry harness entry', () => {
+    const entry = resolveAIRegistryEntry(getAiVersionStamp())
+    if (entry.compatibility !== 'supported') throw new Error('expected supported registry entry')
+    expect(entry.runHarness(clarification(), undefined, [], 'questionnaire')).toMatchObject({
+      ok: false,
+      establishedKind: 'clarification',
+      errors: [{ code: 'AI_RESPONSE_BRANCH_SWITCH' }]
+    })
   })
 
   it('selects the registered v2 provider schema with five required nullable-superset fields', async () => {
@@ -273,6 +298,7 @@ describe('questionnaire harness trust boundary', () => {
     }), base)
     expect(result.ok).toBe(true)
     if (!result.ok) return
+    if (result.kind !== 'questionnaire') throw new Error('expected questionnaire branch')
     expect(result.value.draft.questions[0]?.id).toBe('local-age')
     expect(result.value.draft.questions[1]?.id).toBe('local-consent')
     expect(result.value.draft.questions[2]?.id).not.toBe('model-sex')

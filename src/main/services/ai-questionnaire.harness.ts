@@ -101,7 +101,8 @@ export type AIRegistryEntry = AIRegistryEntryBase & ({
   runHarness(
     responseText: string,
     base?: QuestionnaireDef,
-    protectedDerivedVariableNames?: readonly string[]
+    protectedDerivedVariableNames?: readonly string[],
+    branchLock?: 'questionnaire' | 'clarification'
   ): QuestionnaireHarnessResult
 } | {
   compatibility: 'requires-migration'
@@ -363,12 +364,20 @@ function parseEnvelope(text: string): {
     addError(errors, 'INVALID_JSON', '$', 'Response must be strict JSON')
     return { errors }
   }
-  const limitErrors = validateCandidateLimits(parsed)
-  if (limitErrors.length > 0) return { errors: limitErrors }
-  if (!rejectUnknownFields(parsed, ENVELOPE_FIELDS, '$', errors)) return { errors }
-  const establishedKind = parsed.kind === 'questionnaire' || parsed.kind === 'clarification'
+  const establishedKind = isObject(parsed) &&
+    (parsed.kind === 'questionnaire' || parsed.kind === 'clarification')
     ? parsed.kind
     : undefined
+  const limitErrors = validateCandidateLimits(parsed)
+  if (limitErrors.length > 0) {
+    return {
+      errors: limitErrors,
+      ...(establishedKind === undefined ? {} : { establishedKind })
+    }
+  }
+  if (!rejectUnknownFields(parsed, ENVELOPE_FIELDS, '$', errors)) {
+    return { errors, ...(establishedKind === undefined ? {} : { establishedKind }) }
+  }
   if (establishedKind === undefined) {
     addError(errors, 'INVALID_RESPONSE_KIND', '$.kind', 'Kind must be clarification or questionnaire')
   }
@@ -1012,7 +1021,7 @@ export function runQuestionnaireHarness(
     parsed.establishedKind !== branchLock) {
     return {
       ok: false,
-      establishedKind: branchLock,
+      establishedKind: parsed.establishedKind,
       errors: [{
         code: 'AI_RESPONSE_BRANCH_SWITCH',
         path: '$.kind',
