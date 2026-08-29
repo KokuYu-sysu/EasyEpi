@@ -31,7 +31,7 @@ import {
   type QuestionnaireArtifactValue
 } from './ai-questionnaire.harness'
 import { AISessionRepository } from './ai-session.repository'
-import { toAIPublicAttemptFailure, toAIPublicFailureDetails } from './ai-public-validation'
+import { toAIPublicAttemptFailure } from './ai-public-validation'
 import { refreshQuestionnaireRevision } from './project.service'
 import { DerivedService } from './derived/derived.service'
 import {
@@ -557,6 +557,32 @@ export function createAIQuestionnaireOrchestrator(
           }
         })
       }
+      const persistCapabilityFallback = async (
+        capability: 'streaming' | 'response_format',
+        attempt: 1 | 2 | 3
+      ): Promise<void> => {
+        await mutateAndPersist(request.project, dependencies.persistProject, 'capability-updated', () => {
+          const key = capability === 'streaming'
+            ? streamingCapabilityKey
+            : responseFormatCapabilityKey
+          repository.writeVirtual(
+            `session://${request.sessionId}/cache/values/${key}`,
+            { supported: false },
+            request.sessionId
+          )
+          if (capability === 'streaming') {
+            const run = repository.findRunByOperationId(request.sessionId, operationId)
+            if (run?.status !== 'running' || run.progress === undefined || run.progress.attempt !== attempt) {
+              throw new Error('AI_RUN_NOT_ACTIVE')
+            }
+            repository.updateRunProgress(request.sessionId, runId, {
+              ...run.progress,
+              updatedAt: now(),
+              streamFallback: true
+            })
+          }
+        })
+      }
       for (attempts = 1; attempts <= 3 && errorCode === undefined; attempts += 1) {
         const attempt = attempts as 1 | 2 | 3
         try {
@@ -607,10 +633,9 @@ export function createAIQuestionnaireOrchestrator(
               },
               onCapabilityFallback: (capability) => {
                 if (capability === 'streaming') streamFallback = true
-                callbackPersistence = callbackPersistence.then(() => persistCapabilities(
-                  capability === 'streaming' ? false : undefined,
-                  capability === 'response_format' ? false : undefined
-                ))
+                callbackPersistence = callbackPersistence.then(
+                  () => persistCapabilityFallback(capability, attempt)
+                )
                 emit({ type: 'capability_fallback', attempt, capability, reason: 'unsupported' })
               },
               schemaVersion: registryEntry.schemaVersion
@@ -764,10 +789,7 @@ export function createAIQuestionnaireOrchestrator(
       }
 
       const finalCode = errorCode ?? 'AI_INTERNAL_ERROR'
-      const details = toAIPublicFailureDetails(publicFailures.map((failure) => ({
-        attempt: failure.attempt,
-        issues: failure.issues
-      })))
+      const details: AIPublicFailureDetails = { attempts: publicFailures }
       try {
         await mutateAndPersist(request.project, dependencies.persistProject, 'run-failed', () => {
           if (finalCode === 'AI_CANCELLED') {

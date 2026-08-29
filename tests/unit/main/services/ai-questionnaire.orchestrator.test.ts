@@ -80,15 +80,14 @@ describe('AI questionnaire orchestrator', () => {
   it('emits ordered attempt-scoped progress and persists before its single terminal event', async () => {
     const value = project()
     const events: AIProgressEvent[] = []
+    const complete = vi.fn(async (request) => {
+      request.onModelStreaming?.()
+      request.onContentDelta?.({ content: '正在创建', sequence: 1 })
+      return { content: validCompletion(), streamingSupported: true, responseFormatSupported: true }
+    })
     const result = await createAIQuestionnaireOrchestrator({
       persistProject: vi.fn(),
-      client: {
-        complete: vi.fn(async (request) => {
-          request.onModelStreaming?.()
-          request.onContentDelta?.({ content: '正在创建', sequence: 1 })
-          return { content: validCompletion(), streamingSupported: true, responseFormatSupported: true }
-        })
-      }
+      client: { complete }
     }).sendTurn(sendRequest(value, {
       onProgress: (event: AIProgressEvent) => {
         events.push(event)
@@ -108,6 +107,16 @@ describe('AI questionnaire orchestrator', () => {
     expect(events[3]).toMatchObject({ type: 'assistant_delta', attempt: 1, sequence: 1, delta: '正在创建' })
     expect(new AISessionRepository(value).get(sessionId)?.conversation.messages)
       .not.toEqual(expect.arrayContaining([expect.objectContaining({ content: '正在创建' })]))
+
+    const replayEvents: AIProgressEvent[] = []
+    const replay = await createAIQuestionnaireOrchestrator({
+      persistProject: vi.fn(), client: { complete }
+    }).sendTurn(sendRequest(value, {
+      runId: 'replay-run', onProgress: (event: AIProgressEvent) => replayEvents.push(event)
+    }))
+    expect(replay).toEqual(result)
+    expect(complete).toHaveBeenCalledOnce()
+    expect(replayEvents).toEqual([])
   })
 
   it('discards an invalid provisional attempt, locks repairs to its branch, and returns three sanitized attempts', async () => {
@@ -149,6 +158,50 @@ describe('AI questionnaire orchestrator', () => {
     expect(events.at(-1)).toMatchObject({ type: 'failed', errorCode: 'AI_HARNESS_VALIDATION_FAILED' })
   })
 
+  it('preserves truncated sanitized attempt details through persistence and failed replay', async () => {
+    const value = project()
+    const events: AIProgressEvent[] = []
+    const invalid = JSON.stringify({
+      kind: 'questionnaire', assistantMessage: 'invalid', rollingSummary: 'summary', options: [],
+      questionnaire: {
+        name: 'Study', conditionRules: [], keyQuestionIds: [],
+        questions: Array.from({ length: 12 }, (_, order) => ({
+          id: `q${order}`, content: '', variableName: '', type: 'free_text', options: [],
+          constraint: { type: 'none' }, isKey: false, allowSkip: false, order
+        }))
+      }
+    })
+    const complete = vi.fn().mockResolvedValue({
+      content: invalid, streamingSupported: true, responseFormatSupported: true
+    })
+    const orchestrator = createAIQuestionnaireOrchestrator({ persistProject: vi.fn(), client: { complete } })
+    const result = await orchestrator.sendTurn(sendRequest(value, {
+      onProgress: (event: AIProgressEvent) => events.push(event)
+    }))
+    const replayEvents: AIProgressEvent[] = []
+    const replay = await orchestrator.sendTurn(sendRequest(value, {
+      runId: 'replay-run', onProgress: (event: AIProgressEvent) => replayEvents.push(event)
+    }))
+
+    expect(events.filter((event) => event.type === 'validation_failed')).toEqual([
+      expect.objectContaining({ failure: expect.objectContaining({ truncated: true }) }),
+      expect.objectContaining({ failure: expect.objectContaining({ truncated: true }) }),
+      expect.objectContaining({ failure: expect.objectContaining({ truncated: true }) })
+    ])
+    expect(result).toMatchObject({
+      ok: false,
+      details: { attempts: [{ truncated: true }, { truncated: true }, { truncated: true }] }
+    })
+    expect(new AISessionRepository(value).findRunByOperationId(sessionId, 'operation-1'))
+      .toMatchObject({
+        status: 'failed',
+        failure: { details: { attempts: [{ truncated: true }, { truncated: true }, { truncated: true }] } }
+      })
+    expect(replay).toEqual(result)
+    expect(complete).toHaveBeenCalledTimes(3)
+    expect(replayEvents).toEqual([])
+  })
+
   it('persists independent capability outcomes and reports negotiation fallback without another generation attempt', async () => {
     const value = project()
     const events: AIProgressEvent[] = []
@@ -171,6 +224,40 @@ describe('AI questionnaire orchestrator', () => {
     expect(Object.keys(cache).filter((key) => key.startsWith('cap-streaming-'))).toHaveLength(1)
     expect(Object.keys(cache).filter((key) => key.startsWith('cap-response-format-'))).toHaveLength(1)
     expect(complete).toHaveBeenCalledOnce()
+  })
+
+  it('atomically exposes streaming fallback in persisted progress while the model remains pending', async () => {
+    const value = project()
+    let release!: () => void
+    const pending = new Promise<void>((resolve) => { release = resolve })
+    let fallbackPersisted!: () => void
+    const persisted = new Promise<void>((resolve) => { fallbackPersisted = resolve })
+    const persistProject = vi.fn((_project, reason) => {
+      if (reason === 'capability-updated') fallbackPersisted()
+    })
+    const send = createAIQuestionnaireOrchestrator({
+      persistProject,
+      client: {
+        complete: vi.fn(async (request) => {
+          request.onCapabilityFallback?.('streaming')
+          await pending
+          return { content: validCompletion(), streamingSupported: false, responseFormatSupported: true }
+        })
+      }
+    }).sendTurn(sendRequest(value))
+
+    await persisted
+    const duringFallback = new AISessionRepository(value).findRunByOperationId(sessionId, 'operation-1')!
+    expect(duringFallback).toMatchObject({
+      status: 'running',
+      progress: { stage: 'connecting', attempt: 1, streamFallback: true }
+    })
+    const cache = new AISessionRepository(value).get(sessionId)!.cache.values
+    expect(Object.entries(cache)).toEqual(expect.arrayContaining([
+      expect.arrayContaining([expect.stringMatching(/^cap-streaming-/), { supported: false }])
+    ]))
+    release()
+    await expect(send).resolves.toMatchObject({ ok: true, attempts: 1 })
   })
 
   it('persists and replays a clarification without creating or activating an artifact', async () => {
@@ -241,12 +328,49 @@ describe('AI questionnaire orchestrator', () => {
     const first = await orchestrator.sendTurn(sendRequest(value))
     expect(first).toMatchObject({ ok: true, outcome: 'clarification' })
     const callsBefore = complete.mock.calls.length
+    const invalidEvents: AIProgressEvent[] = []
+    const clarificationId = first.ok && first.outcome === 'clarification'
+      ? first.message.clarification!.clarificationId
+      : 'missing'
+    const mismatched = await orchestrator.sendTurn(sendRequest(value, {
+      requestId: 'request-mismatch', operationId: 'operation-mismatch', runId: 'run-mismatch', userText: '',
+      clarificationSelection: { clarificationId, optionId: 'missing-option' },
+      onProgress: (event: AIProgressEvent) => invalidEvents.push(event)
+    }))
+    expect(mismatched).toMatchObject({ ok: false, errorCode: 'AI_CLARIFICATION_OPTION_NOT_FOUND' })
     const stale = await orchestrator.sendTurn(sendRequest(value, {
       requestId: 'request-2', operationId: 'operation-2', runId: 'run-2', userText: '',
-      clarificationSelection: { clarificationId: 'stale-id', optionId: 'age-range' }
+      clarificationSelection: { clarificationId: 'stale-id', optionId: 'age-range' },
+      onProgress: (event: AIProgressEvent) => invalidEvents.push(event)
     }))
     expect(stale).toMatchObject({ ok: false, errorCode: 'AI_CLARIFICATION_NOT_LATEST' })
     expect(complete).toHaveBeenCalledTimes(callsBefore)
+    expect(invalidEvents).toEqual([])
+  })
+
+  it('rejects an already-resolved clarification selection before invoking the client', async () => {
+    const value = project()
+    const complete = vi.fn()
+      .mockResolvedValueOnce({ content: clarificationCompletion(), streamingSupported: true, responseFormatSupported: true })
+      .mockResolvedValueOnce({ content: validCompletion(), streamingSupported: true, responseFormatSupported: true })
+    const orchestrator = createAIQuestionnaireOrchestrator({ persistProject: vi.fn(), client: { complete } })
+    const first = await orchestrator.sendTurn(sendRequest(value))
+    if (!first.ok || first.outcome !== 'clarification') throw new Error('expected clarification')
+    const clarificationId = first.message.clarification!.clarificationId
+    await orchestrator.sendTurn(sendRequest(value, {
+      requestId: 'request-2', operationId: 'operation-2', runId: 'run-2', userText: '',
+      clarificationSelection: { clarificationId, optionId: 'age-range' }
+    }))
+    const callsBefore = complete.mock.calls.length
+    const events: AIProgressEvent[] = []
+    const resolved = await orchestrator.sendTurn(sendRequest(value, {
+      requestId: 'request-3', operationId: 'operation-3', runId: 'run-3', userText: '',
+      clarificationSelection: { clarificationId, optionId: 'age-range' },
+      onProgress: (event: AIProgressEvent) => events.push(event)
+    }))
+    expect(resolved).toMatchObject({ ok: false, errorCode: 'AI_CLARIFICATION_NOT_LATEST' })
+    expect(complete).toHaveBeenCalledTimes(callsBefore)
+    expect(events).toEqual([])
   })
 
   it('replays terminal failures and cancellation without changing the formal questionnaire', async () => {
