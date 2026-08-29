@@ -55,8 +55,16 @@ export function AIRunProgress({ run }: AIRunProgressProps) {
           {label}
         </Badge>
       </CardHeader>
-      <CardContent className="grid gap-[var(--space-3)]" aria-live="polite" aria-atomic="false">
-        <p className="m-0 text-[var(--color-text-secondary)]">{label} · 已用时 {elapsed} 秒</p>
+      <CardContent className="grid gap-[var(--space-3)]">
+        <p
+          className="m-0 text-[var(--color-text-secondary)]"
+          role="status"
+          aria-live="polite"
+          aria-atomic="true"
+        >
+          {label}
+        </p>
+        <p className="m-0 text-[var(--color-text-secondary)]">已用时 {elapsed} 秒</p>
         {run.streamFallback ? (
           <p className="m-0 rounded-[var(--radius-1)] bg-[var(--color-info-soft)] p-[var(--space-2)] text-[var(--color-text-secondary)]">
             当前服务不支持流式返回，已自动改用兼容模式；结果仍会在本地校验。

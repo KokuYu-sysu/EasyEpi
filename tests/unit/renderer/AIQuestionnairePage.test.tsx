@@ -132,7 +132,11 @@ function artifactDto(
 function installApi(accepted: boolean) {
   const api = {
     ai: {
-      onProgress: vi.fn((_scope: { requestId: string; sessionId: string }, _callback: (event: AIProgressEvent) => void) => vi.fn()),
+      onProgress: vi.fn((scope: { requestId: string; sessionId: string }, callback: (event: AIProgressEvent) => void) => {
+        void scope
+        void callback
+        return vi.fn()
+      }),
       config: {
         get: vi.fn().mockResolvedValue({
           ok: true,
@@ -331,7 +335,12 @@ describe('AIQuestionnairePage boundaries', () => {
     expect(await screen.findByText('这是一段无效回答')).toBeVisible()
     expect(screen.queryByText('不应出现')).not.toBeInTheDocument()
     expect(screen.queryByText(/重复片段/)).not.toBeInTheDocument()
-    expect(screen.getByText('正在接收模型回答')).toBeVisible()
+    const progressStatus = screen.getByRole('status')
+    expect(progressStatus).toHaveTextContent(/^正在接收模型回答$/)
+    expect(progressStatus).not.toHaveTextContent('已用时')
+    expect(progressStatus).not.toHaveTextContent('这是一段无效回答')
+    expect(screen.getByText('这是一段无效回答').closest('[aria-live]')).toBeNull()
+    expect(screen.getByText(/已用时/).closest('[aria-live]')).toBeNull()
 
     act(() => {
       progressCallbacks[0]!({
@@ -346,7 +355,7 @@ describe('AIQuestionnairePage boundaries', () => {
     expect(screen.getByText('第 1 次尝试未通过本地校验')).toBeVisible()
     expect(screen.getByText('发现 2 个问题')).toBeVisible()
     expect(screen.getByText('另有问题未显示')).toBeVisible()
-    expect(screen.getByText('正在进行第 1 次自动修复')).toBeVisible()
+    expect(progressStatus).toHaveTextContent(/^正在进行第 1 次自动修复$/)
     act(() => progressCallbacks[0]!({ ...baseEvent, type: 'assistant_delta', attempt: 2, sequence: 1, delta: '请选择筛查年龄范围。' }))
     expect(await screen.findByText('请选择筛查年龄范围。')).toBeVisible()
     act(() => progressCallbacks[0]!({ ...baseEvent, type: 'clarification', attempt: 2, outcome: 'clarification', messageId: assistantClarification.id, clarification }))
@@ -495,6 +504,88 @@ describe('AIQuestionnairePage boundaries', () => {
     expect(editor).toBeEnabled()
     await user.type(editor, '改为 6 个月随访')
     expect(screen.getByRole('button', { name: '发送消息' })).toBeEnabled()
+  })
+
+  it('keeps a current interrupted failure visible beside history without offering an empty retry', async () => {
+    const user = userEvent.setup()
+    const api = installApi(true)
+    let progressCallback!: (event: AIProgressEvent) => void
+    api.ai.onProgress.mockImplementation((_scope, callback) => {
+      progressCallback = callback
+      return vi.fn()
+    })
+    const historicalDetails: AIPublicFailureDetails = {
+      attempts: [{
+        attempt: 1,
+        issues: [{
+          code: 'EMPTY_QUESTION',
+          field: '$.questions[0].content',
+          summary: '题目内容不能为空。'
+        }],
+        truncated: false
+      }]
+    }
+    const historicalMessage = {
+      id: 'message-historical-failure',
+      role: 'user' as const,
+      content: '较早的失败请求',
+      createdAt: '2026-08-25T00:00:00.000Z',
+      clarification: null
+    }
+    const historicalPage: AISessionPage = {
+      ...page,
+      status: 'failed',
+      messages: [historicalMessage],
+      failures: [{
+        runId: 'run-historical',
+        userMessageId: historicalMessage.id,
+        completedAt: '2026-08-25T00:01:00.000Z',
+        errorCode: 'AI_HARNESS_VALIDATION_FAILED',
+        details: historicalDetails
+      }],
+      total: 1
+    }
+    api.ai.session.get.mockResolvedValue({ ok: true, session: historicalPage })
+    let resolveSend!: (value: {
+      ok: false
+      errorCode: string
+      message: string
+      details: AIPublicFailureDetails
+    }) => void
+    api.ai.send.mockReturnValue(new Promise((resolve) => { resolveSend = resolve }))
+
+    renderPage()
+    await screen.findByText('较早的失败请求')
+    const editor = screen.getByRole('textbox', { name: '给 AI 的消息' })
+    await user.type(editor, '恢复后继续生成')
+    await user.click(screen.getByRole('button', { name: '发送消息' }))
+    await waitFor(() => expect(api.ai.send).toHaveBeenCalledTimes(1))
+    const requestId = api.ai.send.mock.calls[0]![0].requestId
+    act(() => progressCallback({
+      requestId,
+      sessionId: session.sessionId,
+      runId: 'run-current-interrupted',
+      at: '2026-08-25T00:02:00.000Z',
+      type: 'failed',
+      attempt: 1,
+      errorCode: 'AI_RUN_INTERRUPTED',
+      details: { attempts: [] }
+    }))
+    await act(async () => resolveSend({
+      ok: false,
+      errorCode: 'AI_RUN_INTERRUPTED',
+      message: 'raw internal interruption',
+      details: { attempts: [] }
+    }))
+
+    expect(screen.getByRole('heading', { name: 'AI 请求未完成' })).toBeVisible()
+    expect(screen.getByText('AI 请求在恢复期间中断，请重新发送或修改要求。')).toBeVisible()
+    expect(screen.queryByText('raw internal interruption')).not.toBeInTheDocument()
+    expect(screen.getAllByRole('button', { name: '根据错误重新生成' })).toHaveLength(1)
+    const editButtons = screen.getAllByRole('button', { name: '修改要求' })
+    expect(editButtons).toHaveLength(2)
+    await user.click(editButtons[1]!)
+    expect(editor).toHaveFocus()
   })
 
   it('clears switched session state and ignores its late response', async () => {

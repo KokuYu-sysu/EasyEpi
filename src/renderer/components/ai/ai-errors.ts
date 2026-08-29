@@ -12,6 +12,7 @@ const ERROR_MESSAGES: Readonly<Record<string, string>> = {
   AI_SESSION_NOT_FOUND: '该对话不存在或已被删除。',
   AI_RUN_ALREADY_ACTIVE: '该对话已有请求正在处理，请等待或刷新状态。',
   AI_REQUEST_IN_PROGRESS: '请求正在处理中，请勿重复发送。',
+  AI_RUN_INTERRUPTED: 'AI 请求在恢复期间中断，请重新发送或修改要求。',
   AI_CANCELLED: 'AI 请求已取消。',
   AI_AUTH_ERROR: 'AI 服务认证失败，请检查 API Key。',
   AI_MODEL_NOT_FOUND: '找不到所配置的模型，请检查模型名称。',

@@ -78,6 +78,7 @@ interface PendingSendIntent {
   content: string
   includeCurrentQuestionnaire: boolean
   attachmentFingerprint: string | null
+  knownFailureRunIds: string[]
   clarificationSelection?: {
     clarificationId: string
     optionId: string
@@ -302,8 +303,9 @@ function updateLiveRun(previous: LiveRunState, event: AIProgressEvent): LiveRunS
   }
 }
 
-function buildValidationRetryPrompt(details: AIPublicFailureDetails): string {
+function buildValidationRetryPrompt(details: AIPublicFailureDetails): string | null {
   const summaries = [...new Set(details.attempts.flatMap(({ issues }) => issues.map(({ summary }) => summary)))]
+  if (summaries.length === 0) return null
   const prefix = '请根据以下本地校验结果重新生成问卷，并逐项修正：'
   const body = summaries.slice(0, 12).map((summary, index) => `${index + 1}. ${summary}`).join('\n')
   return `${prefix}\n${body}`.slice(0, 1000)
@@ -440,6 +442,7 @@ export function AIQuestionnairePage() {
   const [announcement, setAnnouncement] = useState('')
   const [liveRun, setLiveRun] = useState<LiveRunState | null>(null)
   const [liveFailure, setLiveFailure] = useState<{
+    runId: string | null
     errorCode: string
     details: AIPublicFailureDetails
   } | null>(null)
@@ -461,6 +464,7 @@ export function AIQuestionnairePage() {
   const privacyBusyRef = useRef(false)
   const clearingCacheRef = useRef(false)
   const activeRequestIdRef = useRef<string | null>(null)
+  const activeRunIdRef = useRef<string | null>(null)
   const progressSubscriptionRef = useRef<ProgressSubscription | null>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const toast = useToast()
@@ -549,6 +553,7 @@ export function AIQuestionnairePage() {
     setLiveFailure(null)
     setPendingClarificationId(null)
     activeRequestIdRef.current = null
+    activeRunIdRef.current = null
     pendingSendRef.current = null
     privacyBusyRef.current = false
     clearingCacheRef.current = false
@@ -738,8 +743,10 @@ export function AIQuestionnairePage() {
           void loadArtifact(sessionId, summary.artifactId, summary.operationId, generation)
         }
       }
+      return result
     } catch {
       if (sessionLoadIsCurrent()) setError('无法读取 AI 对话。')
+      return null
     } finally {
       if (sessionLoadIsCurrent()) setLoading(false)
     }
@@ -792,9 +799,10 @@ export function AIQuestionnairePage() {
       if (subscription?.requestId !== requestId || subscription.sessionId !== sessionId ||
         subscription.generation !== generation || event.requestId !== requestId ||
         event.sessionId !== sessionId || !isCurrent(generation, sessionId)) return
+      activeRunIdRef.current = event.runId
       setLiveRun((previous) => previous === null ? previous : updateLiveRun(previous, event))
       if (event.type === 'failed' && event.details !== undefined) {
-        setLiveFailure({ errorCode: event.errorCode, details: event.details })
+        setLiveFailure({ runId: event.runId, errorCode: event.errorCode, details: event.details })
       }
       if (event.type === 'clarification' || event.type === 'completed' ||
         event.type === 'failed' || event.type === 'cancelled') {
@@ -1054,6 +1062,7 @@ export function AIQuestionnairePage() {
     setPrivacyBusySynchronized(false)
     setError(null)
     setLiveFailure(null)
+    activeRunIdRef.current = null
     setAnnouncement('消息已发送，AI 正在处理。')
     try {
       subscribeProgress(
@@ -1078,11 +1087,24 @@ export function AIQuestionnairePage() {
       if (!result.ok) {
         if (result.details !== undefined) {
           setError(null)
-          setLiveFailure({ errorCode: result.errorCode, details: result.details })
-          await Promise.all([
+          setLiveFailure({
+            runId: activeRunIdRef.current,
+            errorCode: result.errorCode,
+            details: result.details
+          })
+          const [reloadedSession] = await Promise.all([
             loadLatestSession(intent.sessionId, intent.generation),
             loadSessions(intent.sessionId, intent.generation)
           ])
+          const persistedRunId = reloadedSession?.failures.find(({ runId }) =>
+            !intent.knownFailureRunIds.includes(runId))?.runId ?? null
+          if (activeRunIdRef.current === null && persistedRunId !== null) {
+            setLiveFailure({
+              runId: persistedRunId,
+              errorCode: result.errorCode,
+              details: result.details
+            })
+          }
         } else {
           handleFailure(result.errorCode, 'AI 生成失败，请重试。')
         }
@@ -1119,6 +1141,7 @@ export function AIQuestionnairePage() {
           setAttachmentNotice(null)
           setSending(false)
           setLiveRun(null)
+          activeRunIdRef.current = null
           focusTextarea(intent.generation, intent.sessionId)
         }
         releasePendingSend(intent)
@@ -1181,6 +1204,7 @@ export function AIQuestionnairePage() {
       attachmentFingerprint: clarificationSelection === undefined && includeCurrentQuestionnaire
         ? confirmedAttachmentFingerprint
         : null,
+      knownFailureRunIds: sessionPage?.failures.map(({ runId }) => runId) ?? [],
       ...(clarificationSelection === undefined ? {} : { clarificationSelection })
     }
     pendingSendRef.current = intent
@@ -1200,7 +1224,8 @@ export function AIQuestionnairePage() {
   }
 
   const retryValidationFailure = (details: AIPublicFailureDetails) => {
-    beginSend(buildValidationRetryPrompt(details))
+    const prompt = buildValidationRetryPrompt(details)
+    if (prompt !== null) beginSend(prompt)
   }
 
   const rejectPrivacy = () => {
@@ -1310,6 +1335,8 @@ export function AIQuestionnairePage() {
   const latestUnresolvedClarificationMessageId = latestActionableClarificationMessageId(messages)
   const quickRepliesEnabled = !sessionOperationsLocked && !sessionRunActive && !projectBlocked &&
     !configMissing && pendingClarificationId === null
+  const liveFailureIsPersisted = liveFailure?.runId !== null && liveFailure?.runId !== undefined &&
+    sessionPage?.failures.some(({ runId }) => runId === liveFailure.runId) === true
   const activeArtifactRequiresRegeneration = activeArtifact !== null &&
     artifactApplicability?.artifactId === activeArtifact.artifactId &&
     !artifactApplicability.applicable
@@ -1456,7 +1483,7 @@ export function AIQuestionnairePage() {
                       ))}
                     </ol>
                     {activeLiveRun !== null ? <AIRunProgress run={activeLiveRun} /> : null}
-                    {liveFailure !== null && (sessionPage?.failures.length ?? 0) === 0 ? (
+                    {liveFailure !== null && !liveFailureIsPersisted ? (
                       <AIValidationFailure
                         errorCode={liveFailure.errorCode}
                         details={liveFailure.details}
