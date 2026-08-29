@@ -570,6 +570,18 @@ export class AISessionRepository {
     return timestamp
   }
 
+  private terminalTimestamp(run: AIRun): string {
+    const completedAt = this.timestamp()
+    const earliestTerminalTime = Math.max(
+      timestampEpoch(run.startedAt),
+      run.progress === undefined ? Number.NEGATIVE_INFINITY : timestampEpoch(run.progress.updatedAt)
+    )
+    if (timestampEpoch(completedAt) < earliestTerminalTime) {
+      throw new Error('INVALID_AI_RUN_CHRONOLOGY')
+    }
+    return completedAt
+  }
+
   private requireActiveRun(session: AISessionData, runId: string): AIRun {
     validatePathSegment(runId)
     const run = session.state.runs[runId]
@@ -737,7 +749,8 @@ export class AISessionRepository {
   appendMessage(sessionId: string, input: unknown): AIMutationResult<AIMessage> {
     const session = this.requireSession(sessionId)
     const message = parseMessage(input)
-    if (message.runId !== undefined && !hasOwn(session.state.runs, message.runId)) {
+    if (message.runId !== undefined && !hasOwn(session.state.runs, message.runId) &&
+      message.role !== 'user') {
       throw new Error('AI_RUN_NOT_FOUND')
     }
     if (session.conversation.messages.some(({ id }) => id === message.id)) {
@@ -774,9 +787,17 @@ export class AISessionRepository {
     if (hasOwn(clarifications, clarification.clarificationId)) {
       throw new Error('AI_CLARIFICATION_ID_CONFLICT')
     }
+    if (Object.values(clarifications).some(
+      (candidate) => candidate.messageId === clarification.messageId
+    )) {
+      throw new Error('AI_CLARIFICATION_MESSAGE_CONFLICT')
+    }
     const message = session.conversation.messages.find(({ id }) => id === clarification.messageId)
     if (message === undefined || message.role !== 'assistant' || message.runId !== clarification.runId) {
       throw new Error('AI_CLARIFICATION_MESSAGE_MISMATCH')
+    }
+    if (timestampEpoch(clarification.createdAt) < timestampEpoch(message.createdAt)) {
+      throw new Error('AI_CLARIFICATION_CHRONOLOGY')
     }
     this.requireActiveRun(session, clarification.runId)
     clarifications[clarification.clarificationId] = clarification
@@ -883,8 +904,13 @@ export class AISessionRepository {
       validatePathSegment(input.operationId)
       validatePathSegment(input.userMessageId)
       if (input.progress === undefined) throw new Error('INVALID_AI_RUN_PROGRESS')
-      const userMessage = session.conversation.messages.find(({ id }) => id === input.userMessageId)
-      if (userMessage?.role !== 'user') throw new Error('AI_MESSAGE_NOT_FOUND')
+      const userMessageIndex = session.conversation.messages.findIndex(({ id }) => id === input.userMessageId)
+      const userMessage = session.conversation.messages[userMessageIndex]
+      if (userMessage?.role !== 'user' || userMessage.runId !== input.runId ||
+        timestampEpoch(userMessage.createdAt) > timestampEpoch(input.startedAt) ||
+        session.conversation.messages.slice(userMessageIndex + 1).some(({ role }) => role === 'user')) {
+        throw new Error('AI_RUN_USER_MESSAGE_MISMATCH')
+      }
     }
     if (input.requestId !== undefined) validatePathSegment(input.requestId)
     if (input.operationId !== undefined) validatePathSegment(input.operationId)
@@ -902,6 +928,9 @@ export class AISessionRepository {
     if (input.status === 'running' &&
       (progress === undefined || !RUNNING_PROGRESS_STAGES.has(progress.stage))) {
       throw new Error('INVALID_AI_RUN_PROGRESS')
+    }
+    if (progress !== undefined && timestampEpoch(progress.updatedAt) < timestampEpoch(input.startedAt)) {
+      throw new Error('INVALID_AI_RUN_CHRONOLOGY')
     }
     if (input.status === 'completed' && (input.completedAt === undefined ||
       session.manifest.versionStamp.schemaVersion === 2 && result === undefined)) {
@@ -955,6 +984,9 @@ export class AISessionRepository {
     if (!RUNNING_PROGRESS_STAGES.has(progress.stage)) {
       throw new Error('INVALID_AI_RUN_PROGRESS')
     }
+    if (timestampEpoch(progress.updatedAt) < timestampEpoch(run.startedAt)) {
+      throw new Error('INVALID_AI_RUN_CHRONOLOGY')
+    }
     if (run.progress === undefined) throw new Error('INVALID_AI_RUN_PROGRESS')
     assertProgressTransition(run.progress, progress)
     const updated = { ...run, progress }
@@ -985,7 +1017,7 @@ export class AISessionRepository {
         throw new Error('AI_CLARIFICATION_NOT_FOUND')
       }
     }
-    const completedAt = this.timestamp()
+    const completedAt = this.terminalTimestamp(run)
     const updated: AIRun = {
       ...run,
       status: 'completed',
@@ -1014,7 +1046,7 @@ export class AISessionRepository {
     const session = this.requireSession(sessionId)
     const run = this.requireActiveRun(session, runId)
     const failureInput = validateFailureInput(input)
-    const completedAt = this.timestamp()
+    const completedAt = this.terminalTimestamp(run)
     const failure: AIRunFailure = { ...failureInput, completedAt }
     const updated: AIRun = {
       ...run,

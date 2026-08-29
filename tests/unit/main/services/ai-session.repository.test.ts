@@ -63,7 +63,7 @@ function runningRun(overrides: Partial<AIRun> = {}): AIRun {
 function seedRunning(repo: AISessionRepository, sessionId: string): void {
   repo.appendMessage(sessionId, {
     id: USER_MESSAGE_ID, role: 'user', content: 'Create a questionnaire',
-    createdAt: '2026-08-29T00:00:01.000Z'
+    createdAt: '2026-08-29T00:00:01.000Z', runId: RUN_ID
   })
   repo.upsertRun(sessionId, runningRun())
   repo.updateState(sessionId, { status: 'running', activeRunId: RUN_ID })
@@ -229,7 +229,15 @@ describe('AI session repository v2 persistence', () => {
       errorCode: 'LATE_FAILURE', details: { attempts: [] }
     })).toThrow('AI_RUN_NOT_ACTIVE')
 
-    const failedRun = runningRun({ runId: 'run-2', requestId: 'request-2', operationId: 'operation-2' })
+    repo.appendMessage(sessionId, {
+      id: 'user-run-2', role: 'user', content: 'Retry', runId: 'run-2',
+      createdAt: '2026-08-29T00:00:03.000Z'
+    })
+    const failedRun = runningRun({
+      runId: 'run-2', requestId: 'request-2', operationId: 'operation-2', userMessageId: 'user-run-2',
+      startedAt: '2026-08-29T00:00:03.000Z',
+      progress: { stage: 'starting', attempt: 1, updatedAt: '2026-08-29T00:00:03.000Z', streamFallback: false }
+    })
     repo.upsertRun(sessionId, failedRun)
     repo.updateState(sessionId, { status: 'running', activeRunId: 'run-2' })
     expect(repo.failRun(sessionId, 'run-2', {
@@ -239,8 +247,14 @@ describe('AI session repository v2 persistence', () => {
       failure: { errorCode: 'AI_VALIDATION_FAILED', details: { attempts: [] } }
     })
     expect(repo.findRunByOperationId(sessionId, 'operation-2')).toMatchObject({ status: 'failed' })
+    repo.appendMessage(sessionId, {
+      id: 'user-run-3', role: 'user', content: 'Retry again', runId: 'run-3',
+      createdAt: '2026-08-29T00:00:04.000Z'
+    })
     expect(() => repo.upsertRun(sessionId, runningRun({
-      runId: 'run-3', requestId: 'request-3', operationId: 'operation-2'
+      runId: 'run-3', requestId: 'request-3', operationId: 'operation-2', userMessageId: 'user-run-3',
+      startedAt: '2026-08-29T00:00:04.000Z',
+      progress: { stage: 'starting', attempt: 1, updatedAt: '2026-08-29T00:00:04.000Z', streamFallback: false }
     }))).toThrow('AI_RUN_OPERATION_CONFLICT')
   })
 
@@ -290,6 +304,92 @@ describe('AI session repository v2 persistence', () => {
     })).toThrow('AI_RUN_NOT_ACTIVE')
   })
 
+  it('binds v2 runs to their initiating latest user message', () => {
+    const { repository: repo, sessionId } = repository()
+    repo.appendMessage(sessionId, {
+      id: USER_MESSAGE_ID, role: 'user', content: 'Create', runId: 'other-run',
+      createdAt: '2026-08-29T00:00:01.000Z'
+    })
+    expect(() => repo.upsertRun(sessionId, runningRun())).toThrow('AI_RUN_USER_MESSAGE_MISMATCH')
+
+    const later = repository()
+    later.repository.appendMessage(later.sessionId, {
+      id: USER_MESSAGE_ID, role: 'user', content: 'Create', runId: RUN_ID,
+      createdAt: '2026-08-29T00:00:01.000Z'
+    })
+    later.repository.appendMessage(later.sessionId, {
+      id: 'later-user', role: 'user', content: 'Actually revise', runId: 'other-run',
+      createdAt: '2026-08-29T00:00:02.000Z'
+    })
+    expect(() => later.repository.upsertRun(later.sessionId, runningRun()))
+      .toThrow('AI_RUN_USER_MESSAGE_MISMATCH')
+  })
+
+  it('rejects run progress and terminal timestamps before their prior lifecycle instant', () => {
+    const initial = repository()
+    initial.repository.appendMessage(initial.sessionId, {
+      id: USER_MESSAGE_ID, role: 'user', content: 'Create', runId: RUN_ID,
+      createdAt: '2026-08-29T00:00:01.000Z'
+    })
+    expect(() => initial.repository.upsertRun(initial.sessionId, runningRun({
+      progress: { stage: 'starting', attempt: 1, updatedAt: '2026-08-29T00:00:00.000Z', streamFallback: false }
+    }))).toThrow('INVALID_AI_RUN_CHRONOLOGY')
+
+    const current = repository()
+    seedRunning(current.repository, current.sessionId)
+    current.project.aiAssistant!.sessions[current.sessionId]!.state.runs[RUN_ID]!.progress!.updatedAt =
+      '2026-08-29T00:00:00.000Z'
+    expect(() => current.repository.updateRunProgress(current.sessionId, RUN_ID, {
+      stage: 'connecting', attempt: 1, updatedAt: '2026-08-29T00:00:00.500Z', streamFallback: false
+    })).toThrow('INVALID_AI_RUN_CHRONOLOGY')
+
+    const failed = repository()
+    seedRunning(failed.repository, failed.sessionId)
+    failed.repository.updateRunProgress(failed.sessionId, RUN_ID, {
+      stage: 'connecting', attempt: 1, updatedAt: '2026-08-29T00:00:10.000Z', streamFallback: false
+    })
+    expect(() => failed.repository.failRun(failed.sessionId, RUN_ID, {
+      errorCode: 'AI_VALIDATION_FAILED', details: { attempts: [] }
+    })).toThrow('INVALID_AI_RUN_CHRONOLOGY')
+
+    const completed = repository()
+    seedRunning(completed.repository, completed.sessionId)
+    completed.repository.updateRunProgress(completed.sessionId, RUN_ID, {
+      stage: 'connecting', attempt: 1, updatedAt: '2026-08-29T00:00:10.000Z', streamFallback: false
+    })
+    completed.repository.upsertArtifact(completed.sessionId, {
+      artifactId: 'chronology-artifact', operationId: 'operation-1', kind: 'questionnaire-draft',
+      status: 'completed', versionStamp: getAiVersionStamp(), value: { draft: true }
+    })
+    expect(() => completed.repository.completeRunWithResult(completed.sessionId, RUN_ID, {
+      kind: 'questionnaire', artifactId: 'chronology-artifact'
+    })).toThrow('INVALID_AI_RUN_CHRONOLOGY')
+  })
+
+  it('requires clarifications to follow their assistant message and remain one-to-one', () => {
+    const { repository: repo, sessionId } = repository()
+    seedRunning(repo, sessionId)
+    repo.appendMessage(sessionId, {
+      id: ASSISTANT_MESSAGE_ID, role: 'assistant', content: 'Choose one', runId: RUN_ID,
+      createdAt: '2026-08-29T00:00:02.000Z'
+    })
+    expect(() => repo.addClarification(sessionId, {
+      clarificationId: 'early-clarification', messageId: ASSISTANT_MESSAGE_ID, runId: RUN_ID,
+      options: [{ id: 'one', label: 'One' }], status: 'unresolved',
+      createdAt: '2026-08-29T00:00:01.000Z'
+    })).toThrow('AI_CLARIFICATION_CHRONOLOGY')
+    repo.addClarification(sessionId, {
+      clarificationId: 'first-clarification', messageId: ASSISTANT_MESSAGE_ID, runId: RUN_ID,
+      options: [{ id: 'one', label: 'One' }], status: 'unresolved',
+      createdAt: '2026-08-29T00:00:02.000Z'
+    })
+    expect(() => repo.addClarification(sessionId, {
+      clarificationId: 'second-clarification', messageId: ASSISTANT_MESSAGE_ID, runId: RUN_ID,
+      options: [{ id: 'two', label: 'Two' }], status: 'unresolved',
+      createdAt: '2026-08-29T00:00:03.000Z'
+    })).toThrow('AI_CLARIFICATION_MESSAGE_CONFLICT')
+  })
+
   it('refuses to reactivate a terminal current-v2 run', () => {
     const { repository: repo, sessionId } = repository()
     seedRunning(repo, sessionId)
@@ -304,10 +404,13 @@ describe('AI session repository v2 persistence', () => {
     const { repository: repo, sessionId } = repository()
     seedRunning(repo, sessionId)
     repo.appendMessage(sessionId, {
-      id: 'user-2', role: 'user', content: 'Continue', createdAt: '2026-08-29T00:00:02.000Z'
+      id: 'user-2', role: 'user', content: 'Continue', runId: 'run-2',
+      createdAt: '2026-08-29T00:00:02.000Z'
     })
     repo.upsertRun(sessionId, runningRun({
-      runId: 'run-2', requestId: 'request-2', operationId: 'operation-2', userMessageId: 'user-2'
+      runId: 'run-2', requestId: 'request-2', operationId: 'operation-2', userMessageId: 'user-2',
+      startedAt: '2026-08-29T00:00:02.000Z',
+      progress: { stage: 'starting', attempt: 1, updatedAt: '2026-08-29T00:00:02.000Z', streamFallback: false }
     }))
     expect(() => repo.updateState(sessionId, { activeRunId: 'run-2' }))
       .toThrow('AI_RUN_ALREADY_ACTIVE')
@@ -334,7 +437,8 @@ describe('AI session repository v2 persistence', () => {
   it('rejects clarification records for current but inactive runs', () => {
     const { repository: repo, sessionId } = repository()
     repo.appendMessage(sessionId, {
-      id: USER_MESSAGE_ID, role: 'user', content: 'Create', createdAt: '2026-08-29T00:00:01.000Z'
+      id: USER_MESSAGE_ID, role: 'user', content: 'Create', runId: RUN_ID,
+      createdAt: '2026-08-29T00:00:01.000Z'
     })
     repo.upsertRun(sessionId, runningRun())
     repo.appendMessage(sessionId, {
@@ -406,7 +510,8 @@ describe('AI session repository v2 persistence', () => {
   it('parses progress without coercion and only permits running stages for running runs', () => {
     const { repository: repo, sessionId } = repository()
     repo.appendMessage(sessionId, {
-      id: USER_MESSAGE_ID, role: 'user', content: 'Create', createdAt: '2026-08-29T00:00:01.000Z'
+      id: USER_MESSAGE_ID, role: 'user', content: 'Create', runId: RUN_ID,
+      createdAt: '2026-08-29T00:00:01.000Z'
     })
     expect(() => repo.upsertRun(sessionId, runningRun({
       progress: { stage: 'starting', attempt: '1' as unknown as 1, updatedAt: '2026-08-29T00:00:01.000Z', streamFallback: false }
@@ -425,13 +530,14 @@ describe('AI session repository v2 persistence', () => {
       id: USER_MESSAGE_ID, role: 'user', content: 'Create', createdAt: '2026-02-30T00:00:00.000Z'
     })).toThrow('INVALID_AI_TIMESTAMP')
     repo.appendMessage(sessionId, {
-      id: USER_MESSAGE_ID, role: 'user', content: 'Create', createdAt: '2026-08-29T00:00:01.000Z'
+      id: USER_MESSAGE_ID, role: 'user', content: 'Create', runId: RUN_ID,
+      createdAt: '2026-08-29T00:00:01.000Z'
     })
     expect(() => repo.upsertRun(sessionId, runningRun({ startedAt: 'not-a-timestamp' })))
       .toThrow('INVALID_AI_TIMESTAMP')
     repo.upsertRun(sessionId, runningRun({
       progress: {
-        stage: 'starting', attempt: 1, updatedAt: '2026-08-29T00:00:03.000+08:00', streamFallback: false
+        stage: 'starting', attempt: 1, updatedAt: '2026-08-29T08:00:03.000+08:00', streamFallback: false
       }
     }))
     repo.updateState(sessionId, { status: 'running', activeRunId: RUN_ID })
@@ -439,7 +545,7 @@ describe('AI session repository v2 persistence', () => {
       stage: 'clarification', attempt: 1, updatedAt: '2026-08-28T20:00:00.000Z', streamFallback: false
     })).toThrow('INVALID_AI_RUN_PROGRESS')
     expect(repo.updateRunProgress(sessionId, RUN_ID, {
-      stage: 'connecting', attempt: 1, updatedAt: '2026-08-28T20:00:00.000Z', streamFallback: false
+      stage: 'connecting', attempt: 1, updatedAt: '2026-08-29T00:00:04.000Z', streamFallback: false
     }).value.progress?.stage).toBe('connecting')
     expect(() => repo.setRunTemp(sessionId, {
       runId: RUN_ID, versionStamp: getAiVersionStamp(), createdAt: 'not-a-timestamp', values: {}
@@ -469,15 +575,22 @@ describe('AI session repository v2 persistence', () => {
   it('rejects unknown run fields, duplicate request ids and malformed public failure details', () => {
     const { repository: repo, sessionId } = repository()
     repo.appendMessage(sessionId, {
-      id: USER_MESSAGE_ID, role: 'user', content: 'Create', createdAt: '2026-08-29T00:00:01.000Z'
+      id: USER_MESSAGE_ID, role: 'user', content: 'Create', runId: RUN_ID,
+      createdAt: '2026-08-29T00:00:01.000Z'
     })
     expect(() => repo.upsertRun(sessionId, {
       ...runningRun(), secret: 'raw-provider-output'
     } as AIRun)).toThrow('INVALID_AI_RUN')
     repo.upsertRun(sessionId, runningRun())
     repo.updateState(sessionId, { status: 'running', activeRunId: RUN_ID })
+    repo.appendMessage(sessionId, {
+      id: 'duplicate-request-user', role: 'user', content: 'Duplicate', runId: 'run-duplicate-request',
+      createdAt: '2026-08-29T00:00:02.000Z'
+    })
     expect(() => repo.upsertRun(sessionId, runningRun({
-      runId: 'run-duplicate-request', operationId: 'operation-other'
+      runId: 'run-duplicate-request', operationId: 'operation-other', userMessageId: 'duplicate-request-user',
+      startedAt: '2026-08-29T00:00:02.000Z',
+      progress: { stage: 'starting', attempt: 1, updatedAt: '2026-08-29T00:00:02.000Z', streamFallback: false }
     }))).toThrow('AI_RUN_REQUEST_CONFLICT')
     expect(() => repo.upsertRun(sessionId, runningRun({
       runId: 'run-terminal-bypass', requestId: 'request-terminal', operationId: 'operation-terminal',
