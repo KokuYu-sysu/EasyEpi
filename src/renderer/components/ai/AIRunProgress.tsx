@@ -70,7 +70,15 @@ export function AIRunProgress({ run }: AIRunProgressProps) {
         {run.rejectedAttempts.length > 0 ? (
           <ul className="m-0 grid gap-[var(--space-1)] pl-[var(--space-5)] text-[var(--color-text-secondary)]">
             {run.rejectedAttempts.map((failure) => (
-              <li key={failure.attempt}>第 {failure.attempt} 次尝试未通过本地校验</li>
+              <li key={failure.attempt} className="grid gap-[var(--space-1)]">
+                <span>第 {failure.attempt} 次尝试未通过本地校验</span>
+                <span className="text-[length:var(--font-size-sm)]">
+                  发现 {failure.issues.length} 个问题
+                </span>
+                {failure.truncated ? (
+                  <span className="text-[length:var(--font-size-sm)]">另有问题未显示</span>
+                ) : null}
+              </li>
             ))}
           </ul>
         ) : null}

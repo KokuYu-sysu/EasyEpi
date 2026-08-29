@@ -344,6 +344,8 @@ describe('AIQuestionnairePage boundaries', () => {
     })
     expect(screen.queryByText('这是一段无效回答')).not.toBeInTheDocument()
     expect(screen.getByText('第 1 次尝试未通过本地校验')).toBeVisible()
+    expect(screen.getByText('发现 2 个问题')).toBeVisible()
+    expect(screen.getByText('另有问题未显示')).toBeVisible()
     expect(screen.getByText('正在进行第 1 次自动修复')).toBeVisible()
     act(() => progressCallbacks[0]!({ ...baseEvent, type: 'assistant_delta', attempt: 2, sequence: 1, delta: '请选择筛查年龄范围。' }))
     expect(await screen.findByText('请选择筛查年龄范围。')).toBeVisible()
@@ -419,6 +421,80 @@ describe('AIQuestionnairePage boundaries', () => {
     expect(screen.queryByText('其他对话的内容')).not.toBeInTheDocument()
     view.unmount()
     expect(unsubscribers[2]).toHaveBeenCalledTimes(1)
+  })
+
+  it('reconciles a recovered run that completed between the initial read and progress subscription', async () => {
+    const user = userEvent.setup()
+    const api = installApi(true)
+    const unsubscribe = vi.fn()
+    api.ai.onProgress.mockReturnValue(unsubscribe)
+    const recoveredRun = {
+      requestId: 'request-recovered',
+      runId: 'run-recovered',
+      stage: 'streaming' as const,
+      attempt: 1 as const,
+      startedAt: '2026-08-25T01:00:00.000Z',
+      updatedAt: '2026-08-25T01:00:01.000Z',
+      streamFallback: false
+    }
+    const userMessage = {
+      id: 'message-recovered-user',
+      role: 'user' as const,
+      content: '生成一份随访问卷',
+      createdAt: '2026-08-25T01:00:00.000Z',
+      clarification: null
+    }
+    const terminalDetails: AIPublicFailureDetails = {
+      attempts: [{
+        attempt: 1,
+        issues: [{
+          code: 'EMPTY_QUESTION',
+          field: '$.questions[0].content',
+          summary: '题目内容不能为空。'
+        }],
+        truncated: false
+      }]
+    }
+    const runningPage: AISessionPage = {
+      ...page,
+      status: 'running',
+      activeRun: recoveredRun
+    }
+    const terminalPage: AISessionPage = {
+      ...page,
+      status: 'failed',
+      messages: [userMessage],
+      failures: [{
+        runId: recoveredRun.runId,
+        userMessageId: userMessage.id,
+        completedAt: '2026-08-25T01:00:02.000Z',
+        errorCode: 'AI_HARNESS_VALIDATION_FAILED',
+        details: terminalDetails
+      }],
+      total: 1
+    }
+    api.ai.session.get
+      .mockResolvedValueOnce({ ok: true, session: runningPage })
+      .mockResolvedValue({ ok: true, session: terminalPage })
+
+    renderPage()
+
+    await waitFor(() => expect(api.ai.onProgress).toHaveBeenCalledWith({
+      requestId: recoveredRun.requestId,
+      sessionId: session.sessionId
+    }, expect.any(Function)))
+    await waitFor(() => expect(api.ai.session.get).toHaveBeenCalledTimes(3))
+    expect(api.ai.onProgress.mock.invocationCallOrder[0]).toBeLessThan(api.ai.session.get.mock.invocationCallOrder[1]!)
+    expect(unsubscribe).toHaveBeenCalledTimes(1)
+    expect(await screen.findByText('生成一份随访问卷')).toBeVisible()
+    expect(screen.getAllByText('题目内容不能为空。')[0]).toBeVisible()
+    expect(screen.queryByText('正在接收模型回答')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '取消生成' })).not.toBeInTheDocument()
+
+    const editor = screen.getByRole('textbox', { name: '给 AI 的消息' })
+    expect(editor).toBeEnabled()
+    await user.type(editor, '改为 6 个月随访')
+    expect(screen.getByRole('button', { name: '发送消息' })).toBeEnabled()
   })
 
   it('clears switched session state and ignores its late response', async () => {

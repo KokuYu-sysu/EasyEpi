@@ -96,6 +96,7 @@ interface ProgressSubscription {
   requestId: string
   sessionId: string
   generation: number
+  recovered: boolean
   unsubscribe: () => void
 }
 
@@ -717,6 +718,16 @@ export function AIQuestionnairePage() {
       setSessionPage(result)
       setMessages(result.messages)
       setMessageOffset(offset)
+      const recoveredSubscription = progressSubscriptionRef.current
+      if (recoveredSubscription?.recovered === true &&
+        recoveredSubscription.sessionId === sessionId &&
+        result.activeRun?.requestId !== recoveredSubscription.requestId &&
+        pendingSendRef.current === null &&
+        activeRequestIdRef.current === recoveredSubscription.requestId) {
+        cleanupProgressSubscription(recoveredSubscription.requestId)
+        activeRequestIdRef.current = null
+        setLiveRun(null)
+      }
       if (result.activeArtifactId === null) {
         invalidateArtifactPreview()
         commitActiveArtifact(null)
@@ -732,7 +743,7 @@ export function AIQuestionnairePage() {
     } finally {
       if (sessionLoadIsCurrent()) setLoading(false)
     }
-  }, [commitActiveArtifact, fetchSessionRange, handleFailure, invalidateArtifactPreview, isCurrent, loadArtifact])
+  }, [cleanupProgressSubscription, commitActiveArtifact, fetchSessionRange, handleFailure, invalidateArtifactPreview, isCurrent, loadArtifact])
 
   const loadSessions = useCallback(async (
     preferredSessionId?: string,
@@ -773,7 +784,7 @@ export function AIQuestionnairePage() {
   ) => {
     const current = progressSubscriptionRef.current
     if (current?.requestId === requestId && current.sessionId === sessionId &&
-      current.generation === generation) return
+      current.generation === generation && current.recovered === recovered) return false
     cleanupProgressSubscription()
     if (initialRun !== undefined) setLiveRun(initialRun)
     const unsubscribe = window.easyEpi.ai.onProgress({ requestId, sessionId }, (event) => {
@@ -799,7 +810,8 @@ export function AIQuestionnairePage() {
         }
       }
     })
-    progressSubscriptionRef.current = { requestId, sessionId, generation, unsubscribe }
+    progressSubscriptionRef.current = { requestId, sessionId, generation, recovered, unsubscribe }
+    return true
   }, [cleanupProgressSubscription, isCurrent, loadLatestSession, loadSessions])
 
   useEffect(() => {
@@ -829,10 +841,10 @@ export function AIQuestionnairePage() {
   useEffect(() => {
     const snapshot = sessionPage?.activeRun
     if (snapshot === null || snapshot === undefined || activeSessionId === null ||
-      snapshot.requestId === activeRequestIdRef.current) return
+      activeRequestIdRef.current !== null || pendingSendRef.current !== null || sending) return
     const generation = generationRef.current
     activeRequestIdRef.current = snapshot.requestId
-    subscribeProgress(
+    const subscribed = subscribeProgress(
       snapshot.requestId,
       activeSessionId,
       generation,
@@ -847,7 +859,8 @@ export function AIQuestionnairePage() {
         snapshot.streamFallback
       )
     )
-  }, [activeSessionId, sessionPage?.activeRun, subscribeProgress])
+    if (subscribed) void loadLatestSession(activeSessionId, generation)
+  }, [activeSessionId, loadLatestSession, sending, sessionPage?.activeRun, subscribeProgress])
 
   const createSession = async () => {
     if (sending || applying) return
