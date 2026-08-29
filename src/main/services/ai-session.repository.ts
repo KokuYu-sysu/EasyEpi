@@ -662,6 +662,10 @@ export class AISessionRepository {
           throw new Error('AI_RUN_NOT_FOUND')
         }
         if (!isCurrentV2Run(session, run)) throw new Error('AI_RUN_VERSION_NOT_CURRENT')
+        if (run.status !== 'running') throw new Error('AI_RUN_NOT_ACTIVE')
+        if (session.state.activeRunId !== undefined && session.state.activeRunId !== update.activeRunId) {
+          throw new Error('AI_RUN_ALREADY_ACTIVE')
+        }
         if (session.state.activeRunId !== update.activeRunId) {
           session.state.activeRunId = update.activeRunId
           mutated = true
@@ -723,9 +727,7 @@ export class AISessionRepository {
     if (message === undefined || message.role !== 'assistant' || message.runId !== clarification.runId) {
       throw new Error('AI_CLARIFICATION_MESSAGE_MISMATCH')
     }
-    const run = session.state.runs[clarification.runId]
-    if (run === undefined) throw new Error('AI_RUN_NOT_FOUND')
-    if (!isCurrentV2Run(session, run)) throw new Error('AI_RUN_VERSION_NOT_CURRENT')
+    this.requireActiveRun(session, clarification.runId)
     clarifications[clarification.clarificationId] = clarification
     this.touch(session)
     return { value: clone(clarification), mutated: true }

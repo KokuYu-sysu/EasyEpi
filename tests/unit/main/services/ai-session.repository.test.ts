@@ -281,6 +281,64 @@ describe('AI session repository v2 persistence', () => {
     })).toThrow('AI_RUN_NOT_ACTIVE')
   })
 
+  it('refuses to reactivate a terminal current-v2 run', () => {
+    const { repository: repo, sessionId } = repository()
+    seedRunning(repo, sessionId)
+    repo.failRun(sessionId, RUN_ID, {
+      errorCode: 'AI_VALIDATION_FAILED', details: { attempts: [] }
+    })
+    expect(() => repo.updateState(sessionId, { activeRunId: RUN_ID }))
+      .toThrow('AI_RUN_NOT_ACTIVE')
+  })
+
+  it('requires clearing before a different current-v2 run can become active', () => {
+    const { repository: repo, sessionId } = repository()
+    seedRunning(repo, sessionId)
+    repo.appendMessage(sessionId, {
+      id: 'user-2', role: 'user', content: 'Continue', createdAt: '2026-08-29T00:00:02.000Z'
+    })
+    repo.upsertRun(sessionId, runningRun({
+      runId: 'run-2', requestId: 'request-2', operationId: 'operation-2', userMessageId: 'user-2'
+    }))
+    expect(() => repo.updateState(sessionId, { activeRunId: 'run-2' }))
+      .toThrow('AI_RUN_ALREADY_ACTIVE')
+    expect(repo.get(sessionId)?.state.activeRunId).toBe(RUN_ID)
+  })
+
+  it('rejects clarification records for terminal runs', () => {
+    const { repository: repo, sessionId } = repository()
+    seedRunning(repo, sessionId)
+    repo.appendMessage(sessionId, {
+      id: ASSISTANT_MESSAGE_ID, role: 'assistant', content: 'Choose one', runId: RUN_ID,
+      createdAt: '2026-08-29T00:00:02.000Z'
+    })
+    repo.failRun(sessionId, RUN_ID, {
+      errorCode: 'AI_VALIDATION_FAILED', details: { attempts: [] }
+    })
+    expect(() => repo.addClarification(sessionId, {
+      clarificationId: 'terminal-clarification', messageId: ASSISTANT_MESSAGE_ID, runId: RUN_ID,
+      options: [{ id: 'one', label: 'One' }], status: 'unresolved',
+      createdAt: '2026-08-29T00:00:03.000Z'
+    })).toThrow('AI_RUN_NOT_ACTIVE')
+  })
+
+  it('rejects clarification records for current but inactive runs', () => {
+    const { repository: repo, sessionId } = repository()
+    repo.appendMessage(sessionId, {
+      id: USER_MESSAGE_ID, role: 'user', content: 'Create', createdAt: '2026-08-29T00:00:01.000Z'
+    })
+    repo.upsertRun(sessionId, runningRun())
+    repo.appendMessage(sessionId, {
+      id: ASSISTANT_MESSAGE_ID, role: 'assistant', content: 'Choose one', runId: RUN_ID,
+      createdAt: '2026-08-29T00:00:02.000Z'
+    })
+    expect(() => repo.addClarification(sessionId, {
+      clarificationId: 'inactive-clarification', messageId: ASSISTANT_MESSAGE_ID, runId: RUN_ID,
+      options: [{ id: 'one', label: 'One' }], status: 'unresolved',
+      createdAt: '2026-08-29T00:00:03.000Z'
+    })).toThrow('AI_RUN_NOT_ACTIVE')
+  })
+
   it('permits only current v2 runs to become active or receive terminal results', () => {
     const { project: value, repository: repo, sessionId } = repository()
     value.aiAssistant!.sessions[sessionId]!.state.runs.legacy = {
