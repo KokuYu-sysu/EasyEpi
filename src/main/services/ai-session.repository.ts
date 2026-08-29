@@ -1069,6 +1069,30 @@ export class AISessionRepository {
     return { value: clone(updated), mutated: true }
   }
 
+  cancelRun(sessionId: string, runId: string): AIMutationResult<AIRun> {
+    const session = this.requireSession(sessionId)
+    const run = this.requireActiveRun(session, runId)
+    const completedAt = this.terminalTimestamp(run)
+    const updated: AIRun = {
+      ...run,
+      status: 'cancelled',
+      completedAt,
+      errorCode: 'AI_CANCELLED',
+      progress: {
+        stage: 'cancelled',
+        attempt: run.progress?.attempt ?? 1,
+        updatedAt: completedAt,
+        streamFallback: run.progress?.streamFallback ?? false
+      }
+    }
+    session.state.runs[runId] = updated
+    delete session.temp.runs[runId]
+    if (session.state.activeRunId === runId) delete session.state.activeRunId
+    session.state.status = 'cancelled'
+    this.touch(session)
+    return { value: clone(updated), mutated: true }
+  }
+
   findRunByOperationId(sessionId: string, operationId: string): AIRun | undefined {
     validatePathSegment(operationId)
     const session = this.requireSession(sessionId)

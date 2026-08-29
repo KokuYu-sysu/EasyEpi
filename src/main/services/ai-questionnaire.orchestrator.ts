@@ -1,7 +1,17 @@
 import { randomUUID } from 'node:crypto'
 import path from 'node:path'
 
-import type { AIArtifact, AIJsonValue, AiVersionStamp, AISessionData } from '@shared/ai-assistant-contract'
+import type {
+  AIArtifact,
+  AIJsonValue,
+  AiVersionStamp,
+  AIPublicFailureDetails,
+  AIPublicMessage,
+  AIProgressEvent,
+  AIProgressStage,
+  AIQuickReplyOption,
+  AISessionData
+} from '@shared/ai-assistant-contract'
 import type { QuestionnaireDef } from '@shared/types/qnaire'
 import { isUUIDv4, type ProjectData } from '@shared/types/project'
 
@@ -21,6 +31,7 @@ import {
   type QuestionnaireArtifactValue
 } from './ai-questionnaire.harness'
 import { AISessionRepository } from './ai-session.repository'
+import { toAIPublicAttemptFailure, toAIPublicFailureDetails } from './ai-public-validation'
 import { refreshQuestionnaireRevision } from './project.service'
 import { DerivedService } from './derived/derived.service'
 import {
@@ -32,6 +43,8 @@ import {
 
 export type AIPersistReason =
   | 'run-started'
+  | 'run-progress'
+  | 'capability-updated'
   | 'repair-requested'
   | 'run-completed'
   | 'run-failed'
@@ -52,13 +65,35 @@ export interface AISendTurnRequest {
   config: AIMainConfig
   explicitAttachment?: QuestionnaireDef
   signal?: AbortSignal
+  requestId?: string
   operationId?: string
   runId?: string
+  clarificationSelection?: { clarificationId: string; optionId: string }
+  onProgress?: (event: AIProgressEvent) => void
 }
 
 export type AISendTurnResult =
-  | { ok: true; artifact: AIArtifact; attempts: number }
-  | { ok: false; errorCode: string; validationErrors?: AIValidationError[] }
+  | {
+      ok: true
+      requestId: string
+      outcome: 'questionnaire'
+      artifact: AIArtifact
+      attempts: number
+    }
+  | {
+      ok: true
+      requestId: string
+      outcome: 'clarification'
+      message: AIPublicMessage
+      attempts: number
+    }
+  | { ok: false; errorCode: string; details?: AIPublicFailureDetails }
+
+type AIProgressPayload = AIProgressEvent extends infer Event
+  ? Event extends AIProgressEvent
+    ? Omit<Event, 'requestId' | 'sessionId' | 'runId' | 'at'>
+    : never
+  : never
 
 const OPERATION_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/
 const MAX_CONTEXT_CHARACTERS = 60_000
@@ -150,8 +185,14 @@ function responseCapability(value: AIJsonValue | undefined): boolean | undefined
   return value.supported
 }
 
-function repairInstruction(errors: readonly AIValidationError[]): string {
-  const prefix = 'The candidate was rejected by the local harness. Return a corrected full JSON envelope. Validation errors:\n'
+function repairInstruction(
+  errors: readonly AIValidationError[],
+  branchLock?: 'questionnaire' | 'clarification'
+): string {
+  const lock = branchLock === undefined
+    ? ''
+    : ` The response kind is locked to the ${branchLock} branch and must not change.`
+  const prefix = `The candidate was rejected by the local harness.${lock} Return a corrected full JSON envelope. Validation errors:\n`
   const selected: Array<{ code: string; path: string; message: string }> = []
   const encoder = new TextEncoder()
   for (const error of errors) {
@@ -160,6 +201,16 @@ function repairInstruction(errors: readonly AIValidationError[]): string {
     selected.push(next.at(-1)!)
   }
   return `${prefix}${JSON.stringify(selected)}`
+}
+
+function publicClarification(
+  clarificationId: string,
+  options: AIQuickReplyOption[],
+  status: 'unresolved' | 'resolved' = 'unresolved',
+  selectedOptionId: string | null = null,
+  resolvedByMessageId: string | null = null
+): NonNullable<AIPublicMessage['clarification']> {
+  return { clarificationId, options, status, selectedOptionId, resolvedByMessageId }
 }
 
 function sameVersionStamp(left: AiVersionStamp, right: AiVersionStamp): boolean {
@@ -203,26 +254,76 @@ export function createAIQuestionnaireOrchestrator(
 
   return {
     async sendTurn(request: AISendTurnRequest): Promise<AISendTurnResult> {
-      const repository = new AISessionRepository(request.project)
+      const repository = new AISessionRepository(request.project, createId, now)
       const session = repository.get(request.sessionId)
       if (session === undefined) return { ok: false, errorCode: 'AI_SESSION_NOT_FOUND' }
-      const operationId = request.operationId ?? createId()
-      if (!OPERATION_ID_PATTERN.test(operationId)) {
-        return { ok: false, errorCode: 'INVALID_AI_OPERATION_ID' }
-      }
-      const existingArtifact = Object.values(session.artifacts.byId)
-        .find((artifact) => artifact.operationId === operationId)
-      if (existingArtifact?.status === 'completed') {
-        try {
-          parseArtifactValue(request.project, session, existingArtifact, false)
-          return { ok: true, artifact: existingArtifact, attempts: 0 }
-        } catch (error) {
-          return { ok: false, errorCode: safeErrorCode(error) }
+      const requestId = request.requestId ?? createId()
+      const operationId = request.operationId ?? requestId
+      if (!OPERATION_ID_PATTERN.test(requestId)) return { ok: false, errorCode: 'INVALID_AI_REQUEST_ID' }
+      if (!OPERATION_ID_PATTERN.test(operationId)) return { ok: false, errorCode: 'INVALID_AI_OPERATION_ID' }
+
+      try {
+        const replay = repository.findRunByOperationId(request.sessionId, operationId)
+        if (replay !== undefined) {
+          if (replay.status === 'running') return { ok: false, errorCode: 'AI_REQUEST_IN_PROGRESS' }
+          if (replay.status === 'failed' || replay.status === 'cancelled') {
+            return {
+              ok: false,
+              errorCode: replay.errorCode ?? (replay.status === 'cancelled' ? 'AI_CANCELLED' : 'AI_INTERNAL_ERROR'),
+              ...(replay.failure?.details === undefined ? {} : { details: replay.failure.details })
+            }
+          }
+          if (replay.result?.kind === 'questionnaire') {
+            const artifact = session.artifacts.byId[replay.result.artifactId]
+            parseArtifactValue(request.project, session, artifact, false)
+            return {
+              ok: true,
+              requestId: replay.requestId!,
+              outcome: 'questionnaire',
+              artifact: artifact!,
+              attempts: replay.progress?.attempt ?? 1
+            }
+          }
+          if (replay.result?.kind === 'clarification') {
+            const replayResult = replay.result
+            const message = session.conversation.messages.find(({ id }) => id === replayResult.messageId)
+            const clarification = session.conversation.clarifications?.[replayResult.clarificationId]
+            if (message?.role !== 'assistant' || clarification === undefined) {
+              throw new Error('AI_CLARIFICATION_NOT_FOUND')
+            }
+            return {
+              ok: true,
+              requestId: replay.requestId!,
+              outcome: 'clarification',
+              message: {
+                id: message.id,
+                role: 'assistant',
+                content: message.content,
+                createdAt: message.createdAt,
+                clarification: publicClarification(
+                  clarification.clarificationId,
+                  clarification.options,
+                  clarification.status,
+                  clarification.selectedOptionId ?? null,
+                  clarification.resolvedByMessageId ?? null
+                )
+              },
+              attempts: replay.progress?.attempt ?? 1
+            }
+          }
+          throw new Error('INVALID_AI_RUN_RESULT')
         }
+      } catch (error) {
+        return { ok: false, errorCode: safeErrorCode(error) }
       }
+
       let userText: string
       try {
-        userText = validateUserText(request.userText)
+        userText = request.clarificationSelection === undefined
+          ? validateUserText(request.userText)
+          : request.userText === ''
+            ? ''
+            : (() => { throw new Error('INVALID_AI_USER_TEXT') })()
       } catch (error) {
         return { ok: false, errorCode: safeErrorCode(error) }
       }
@@ -236,7 +337,8 @@ export function createAIQuestionnaireOrchestrator(
       let explicitAttachment: QuestionnaireDef | undefined
       let activeDraft: QuestionnaireDef | undefined
       let activeArtifactId: string | undefined
-      let capabilityKey: string
+      let streamingCapabilityKey: string
+      let responseFormatCapabilityKey: string
       const protectedDerivedNames = (request.explicitAttachment?.derivedVariables ?? [])
         .map((item) => item.variableName)
       try {
@@ -280,14 +382,16 @@ export function createAIQuestionnaireOrchestrator(
           }
           activeDraft = activeValue.draft
         }
-        capabilityKey = `cap-${buildAIContentCacheKey({
+        const capabilityKey = buildAIContentCacheKey({
           projectId: request.project.meta.projectId ?? '',
           sessionId: request.sessionId,
           promptHash: versionStamp.promptHash,
           schemaVersion: versionStamp.schemaVersion,
           baseUrl: request.config.baseUrl,
           model: request.config.model
-        })}`
+        })
+        streamingCapabilityKey = `cap-streaming-${capabilityKey}`
+        responseFormatCapabilityKey = `cap-response-format-${capabilityKey}`
       } catch (error) {
         return { ok: false, errorCode: safeErrorCode(error) }
       }
@@ -298,6 +402,19 @@ export function createAIQuestionnaireOrchestrator(
       const messageId = createId()
       const artifactId = createId()
       const startedAt = now()
+      const emit = (event: AIProgressPayload): void => {
+        try {
+          request.onProgress?.({
+            ...event,
+            requestId,
+            sessionId: request.sessionId,
+            runId,
+            at: now()
+          } as AIProgressEvent)
+        } catch {
+          // A progress observer is best-effort and cannot change the authoritative run result.
+        }
+      }
       const basisUnchanged = (lockedSession: AISessionData): boolean => {
         const lockedActiveArtifactId = typeof lockedSession.state.values.activeArtifactId === 'string'
           ? lockedSession.state.values.activeArtifactId
@@ -327,13 +444,47 @@ export function createAIQuestionnaireOrchestrator(
           if (!basisUnchanged(lockedSession)) {
             throw new Error('AI_ARTIFACT_STALE')
           }
-          repository.upsertRun(request.sessionId, { runId, status: 'running', startedAt, versionStamp })
+          if (repository.findRunByOperationId(request.sessionId, operationId) !== undefined) {
+            throw new Error('AI_REQUEST_IN_PROGRESS')
+          }
+          if (request.clarificationSelection !== undefined) {
+            const latest = repository.getLatestUnresolvedClarification(request.sessionId)
+            if (latest === undefined || latest.clarificationId !== request.clarificationSelection.clarificationId) {
+              throw new Error('AI_CLARIFICATION_NOT_LATEST')
+            }
+            const selected = latest.options.find(({ id }) => id === request.clarificationSelection!.optionId)
+            if (selected === undefined) throw new Error('AI_CLARIFICATION_OPTION_NOT_FOUND')
+            userText = `我选择：${selected.label}`
+          }
           repository.appendMessage(request.sessionId, {
             id: messageId,
             role: 'user',
             content: userText,
             createdAt: startedAt,
             runId
+          })
+          const latest = repository.getLatestUnresolvedClarification(request.sessionId)
+          if (request.clarificationSelection !== undefined) {
+            repository.resolveLatestClarification(request.sessionId, {
+              clarificationId: request.clarificationSelection.clarificationId,
+              resolvedByMessageId: messageId,
+              selectedOptionId: request.clarificationSelection.optionId
+            })
+          } else if (latest !== undefined) {
+            repository.resolveLatestClarification(request.sessionId, {
+              clarificationId: latest.clarificationId,
+              resolvedByMessageId: messageId
+            })
+          }
+          repository.upsertRun(request.sessionId, {
+            runId,
+            status: 'running',
+            startedAt,
+            versionStamp,
+            requestId,
+            operationId,
+            userMessageId: messageId,
+            progress: { stage: 'starting', attempt: 1, updatedAt: startedAt, streamFallback: false }
           })
           if (request.explicitAttachment !== undefined) {
             repository.upsertAttachment(request.sessionId, {
@@ -356,16 +507,61 @@ export function createAIQuestionnaireOrchestrator(
         return { ok: false, errorCode: safeErrorCode(error) }
       }
 
+      emit({ type: 'started' })
+
       const runningSession = repository.get(request.sessionId)!
       let errorCode: string | undefined
       const base = activeDraft ?? baseQuestionnaire
-      let capability = responseCapability(runningSession.cache.values[capabilityKey])
-      let lastErrors: AIValidationError[] | undefined
+      let streamingCapability = responseCapability(runningSession.cache.values[streamingCapabilityKey])
+      let responseFormatCapability = responseCapability(runningSession.cache.values[responseFormatCapabilityKey])
+      const publicFailures: Array<ReturnType<typeof toAIPublicAttemptFailure>> = []
       let repair: string | undefined
+      let branchLock: 'questionnaire' | 'clarification' | undefined
       let attempts = 0
       let resultValue: QuestionnaireArtifactValue | undefined
+      let clarificationValue: {
+        assistantMessage: string
+        rollingSummary: string
+        options: AIQuickReplyOption[]
+      } | undefined
+      let streamFallback = streamingCapability === false
+      const persistProgress = async (stage: AIProgressStage, attempt: 1 | 2 | 3): Promise<void> => {
+        await mutateAndPersist(request.project, dependencies.persistProject, 'run-progress', () => {
+          repository.updateRunProgress(request.sessionId, runId, {
+            stage,
+            attempt,
+            updatedAt: now(),
+            streamFallback
+          })
+        })
+      }
+      const persistCapabilities = async (
+        streaming: boolean | undefined,
+        responseFormat: boolean | undefined
+      ): Promise<void> => {
+        if (streaming === undefined && responseFormat === undefined) return
+        await mutateAndPersist(request.project, dependencies.persistProject, 'capability-updated', () => {
+          if (streaming !== undefined) {
+            repository.writeVirtual(
+              `session://${request.sessionId}/cache/values/${streamingCapabilityKey}`,
+              { supported: streaming },
+              request.sessionId
+            )
+          }
+          if (responseFormat !== undefined) {
+            repository.writeVirtual(
+              `session://${request.sessionId}/cache/values/${responseFormatCapabilityKey}`,
+              { supported: responseFormat },
+              request.sessionId
+            )
+          }
+        })
+      }
       for (attempts = 1; attempts <= 3 && errorCode === undefined; attempts += 1) {
+        const attempt = attempts as 1 | 2 | 3
         try {
+          await persistProgress('connecting', attempt)
+          emit({ type: 'attempt_started', attempt })
           const messages = buildQuestionnaireContext(
             runningSession,
             activeDraft,
@@ -374,39 +570,92 @@ export function createAIQuestionnaireOrchestrator(
             registryEntry
           )
           if (repair !== undefined) messages.push({ role: 'system', content: repair })
-          const completion = await client.complete({
-            ...request.config,
-            messages,
-            signal: request.signal,
-            responseFormatSupported: capability,
-            schemaVersion: registryEntry.schemaVersion
-          })
+          let callbackPersistence = Promise.resolve()
+          let modelStreaming = false
+          let sequence = 0
+          let completion: AIChatCompletionResult
+          try {
+            completion = await client.complete({
+              ...request.config,
+              messages,
+              signal: request.signal,
+              streamingSupported: streamingCapability,
+              responseFormatSupported: responseFormatCapability,
+              onModelStreaming: () => {
+                if (modelStreaming) return
+                modelStreaming = true
+                callbackPersistence = callbackPersistence.then(() => persistProgress('streaming', attempt))
+                emit({ type: 'model_streaming', attempt })
+              },
+              onContentDelta: ({ content }) => {
+                if (content.length === 0) return
+                for (let offset = 0; offset < content.length;) {
+                  let end = Math.min(offset + 4_096, content.length)
+                  if (end < content.length &&
+                    content.charCodeAt(end - 1) >= 0xd800 && content.charCodeAt(end - 1) <= 0xdbff &&
+                    content.charCodeAt(end) >= 0xdc00 && content.charCodeAt(end) <= 0xdfff) {
+                    end -= 1
+                  }
+                  emit({
+                    type: 'assistant_delta',
+                    attempt,
+                    sequence: ++sequence,
+                    delta: content.slice(offset, end)
+                  })
+                  offset = end
+                }
+              },
+              onCapabilityFallback: (capability) => {
+                if (capability === 'streaming') streamFallback = true
+                callbackPersistence = callbackPersistence.then(() => persistCapabilities(
+                  capability === 'streaming' ? false : undefined,
+                  capability === 'response_format' ? false : undefined
+                ))
+                emit({ type: 'capability_fallback', attempt, capability, reason: 'unsupported' })
+              },
+              schemaVersion: registryEntry.schemaVersion
+            })
+          } catch (error) {
+            await callbackPersistence
+            throw error
+          }
+          await callbackPersistence
           if (signalAborted(request.signal)) throw new AIClientError('AI_CANCELLED')
-          capability = completion.responseFormatSupported
-          await runWithProjectAIQueue(request.project, () => {
-            repository.writeVirtual(
-              `session://${request.sessionId}/cache/values/${capabilityKey}`,
-              { supported: completion.responseFormatSupported },
-              request.sessionId
-            )
-          })
-          const harness = registryEntry.runHarness(completion.content, base, protectedDerivedNames)
+          streamingCapability = completion.streamingSupported
+          responseFormatCapability = completion.responseFormatSupported
+          streamFallback ||= !completion.streamingSupported
+          await persistCapabilities(streamingCapability, responseFormatCapability)
+          await persistProgress('validating', attempt)
+          emit({ type: 'validating', attempt })
+          const harness = registryEntry.runHarness(
+            completion.content,
+            base,
+            protectedDerivedNames,
+            branchLock
+          )
           if (harness.ok) {
-            resultValue = {
-              ...harness.value,
-              diff: diffQuestionnaires(baseQuestionnaire, harness.value.draft),
-              baseQuestionnaireRevision,
-              baseQuestionnaireHash,
-              baseQuestionnaire
+            if (harness.kind === 'questionnaire') {
+              resultValue = {
+                ...harness.value,
+                diff: diffQuestionnaires(baseQuestionnaire, harness.value.draft),
+                baseQuestionnaireRevision,
+                baseQuestionnaireHash,
+                baseQuestionnaire
+              }
+            } else {
+              clarificationValue = harness.value
             }
             break
           }
-          lastErrors = harness.errors
+          branchLock ??= harness.establishedKind
+          const publicFailure = toAIPublicAttemptFailure(attempt, harness.errors)
+          publicFailures.push(publicFailure)
+          emit({ type: 'validation_failed', attempt, failure: publicFailure })
           if (attempts === 3) {
             errorCode = 'AI_HARNESS_VALIDATION_FAILED'
             break
           }
-          repair = repairInstruction(harness.errors)
+          repair = repairInstruction(harness.errors, branchLock)
           await mutateAndPersist(request.project, dependencies.persistProject, 'repair-requested', () => {
             repository.setRunTemp(request.sessionId, {
               runId,
@@ -414,92 +663,137 @@ export function createAIQuestionnaireOrchestrator(
               createdAt: startedAt,
               values: { operationId, attempt: attempts + 1, validationErrors: harness.errors as unknown as AIJsonValue }
             })
+            repository.updateRunProgress(request.sessionId, runId, {
+              stage: 'repairing',
+              attempt,
+              updatedAt: now(),
+              streamFallback
+            })
           })
+          emit({ type: 'repairing', attempt: attempt as 1 | 2, nextAttempt: (attempt + 1) as 2 | 3 })
         } catch (error) {
           errorCode = safeErrorCode(error)
           break
         }
       }
 
-      if (resultValue !== undefined && signalAborted(request.signal)) {
+      if ((resultValue !== undefined || clarificationValue !== undefined) && signalAborted(request.signal)) {
         resultValue = undefined
+        clarificationValue = undefined
         errorCode = 'AI_CANCELLED'
       }
-      if (resultValue !== undefined) {
+      if (resultValue !== undefined || clarificationValue !== undefined) {
         try {
           let artifact: AIArtifact | undefined
+          let message: AIPublicMessage | undefined
           const completedAt = now()
           await mutateAndPersist(request.project, dependencies.persistProject, 'run-completed', () => {
             const lockedSession = repository.get(request.sessionId)
             if (lockedSession === undefined || !basisUnchanged(lockedSession)) {
               throw new Error('AI_ARTIFACT_STALE')
             }
+            const assistantMessageId = createId()
+            const assistantContent = resultValue?.assistantMessage ?? clarificationValue!.assistantMessage
             repository.appendMessage(request.sessionId, {
-              id: createId(),
+              id: assistantMessageId,
               role: 'assistant',
-              content: resultValue!.assistantMessage,
+              content: assistantContent,
               createdAt: completedAt,
               runId
             })
-            artifact = repository.upsertArtifact(request.sessionId, {
-              artifactId,
-              operationId,
-              kind: 'questionnaire-draft',
-              status: 'completed',
-              versionStamp,
-              value: artifactValueAsJson(resultValue!)
-            }).value
             const currentValues = repository.get(request.sessionId)!.state.values
-            repository.updateState(request.sessionId, {
-              status: 'completed',
-              activeRunId: null,
-              values: {
-                ...currentValues,
-                activeArtifactId: artifactId,
-                rollingSummary: resultValue!.rollingSummary
+            if (resultValue !== undefined) {
+              artifact = repository.upsertArtifact(request.sessionId, {
+                artifactId,
+                operationId,
+                kind: 'questionnaire-draft',
+                status: 'completed',
+                versionStamp,
+                value: artifactValueAsJson(resultValue)
+              }).value
+              repository.updateState(request.sessionId, {
+                values: {
+                  ...currentValues,
+                  activeArtifactId: artifactId,
+                  rollingSummary: resultValue.rollingSummary
+                }
+              })
+              repository.completeRunWithResult(request.sessionId, runId, {
+                kind: 'questionnaire', artifactId
+              })
+            } else {
+              const clarificationId = createId()
+              repository.addClarification(request.sessionId, {
+                clarificationId,
+                messageId: assistantMessageId,
+                runId,
+                options: clarificationValue!.options,
+                status: 'unresolved',
+                createdAt: completedAt
+              })
+              repository.updateState(request.sessionId, {
+                values: { ...currentValues, rollingSummary: clarificationValue!.rollingSummary }
+              })
+              repository.completeRunWithResult(request.sessionId, runId, {
+                kind: 'clarification', messageId: assistantMessageId, clarificationId
+              })
+              message = {
+                id: assistantMessageId,
+                role: 'assistant',
+                content: assistantContent,
+                createdAt: completedAt,
+                clarification: publicClarification(clarificationId, clarificationValue!.options)
               }
-            })
-            repository.upsertRun(request.sessionId, {
-              runId,
-              status: 'completed',
-              startedAt,
-              completedAt,
-              versionStamp
-            })
-            repository.cleanupRunTemp(request.sessionId, runId)
+            }
           })
-          return { ok: true, artifact: artifact!, attempts }
+          if (artifact !== undefined) {
+            emit({ type: 'completed', attempt: attempts as 1 | 2 | 3, outcome: 'questionnaire', artifactId })
+            return { ok: true, requestId, outcome: 'questionnaire', artifact, attempts }
+          }
+          emit({
+            type: 'clarification',
+            attempt: attempts as 1 | 2 | 3,
+            outcome: 'clarification',
+            messageId: message!.id,
+            clarification: message!.clarification!
+          })
+          return { ok: true, requestId, outcome: 'clarification', message: message!, attempts }
         } catch (error) {
           errorCode = safeErrorCode(error)
         }
       }
 
       const finalCode = errorCode ?? 'AI_INTERNAL_ERROR'
+      const details = toAIPublicFailureDetails(publicFailures.map((failure) => ({
+        attempt: failure.attempt,
+        issues: failure.issues
+      })))
       try {
-        const completedAt = now()
         await mutateAndPersist(request.project, dependencies.persistProject, 'run-failed', () => {
-          repository.upsertRun(request.sessionId, {
-            runId,
-            status: finalCode === 'AI_CANCELLED' ? 'cancelled' : 'failed',
-            startedAt,
-            completedAt,
-            versionStamp,
-            errorCode: finalCode
-          })
-          repository.updateState(request.sessionId, {
-            status: finalCode === 'AI_CANCELLED' ? 'cancelled' : 'failed',
-            activeRunId: null
-          })
-          repository.cleanupRunTemp(request.sessionId, runId)
+          if (finalCode === 'AI_CANCELLED') {
+            repository.cancelRun(request.sessionId, runId)
+          } else {
+            repository.failRun(request.sessionId, runId, { errorCode: finalCode, details })
+          }
         })
       } catch (error) {
         await runWithProjectAIQueue(request.project, () => repository.recoverInterruptedRuns())
         if (error instanceof Error && error.message === 'PROJECT_CHANGED') {
           return { ok: false, errorCode: 'PROJECT_CHANGED' }
         }
-        return { ok: false, errorCode: 'AI_PERSIST_FAILED', ...(lastErrors === undefined ? {} : { validationErrors: lastErrors }) }
+        return { ok: false, errorCode: 'AI_PERSIST_FAILED', ...(details.attempts.length === 0 ? {} : { details }) }
       }
-      return { ok: false, errorCode: finalCode, ...(lastErrors === undefined ? {} : { validationErrors: lastErrors }) }
+      if (finalCode === 'AI_CANCELLED') {
+        emit({ type: 'cancelled', attempt: Math.min(Math.max(attempts, 1), 3) as 1 | 2 | 3, errorCode: 'AI_CANCELLED' })
+        return { ok: false, errorCode: 'AI_CANCELLED' }
+      }
+      emit({
+        type: 'failed',
+        attempt: Math.min(Math.max(attempts, 1), 3) as 1 | 2 | 3,
+        errorCode: finalCode,
+        ...(details.attempts.length === 0 ? {} : { details })
+      })
+      return { ok: false, errorCode: finalCode, ...(details.attempts.length === 0 ? {} : { details }) }
     }
   }
 }
