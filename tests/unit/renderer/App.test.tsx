@@ -30,6 +30,7 @@ function createApi(): DesktopApi {
       },
       send: vi.fn(),
       cancel: vi.fn(),
+      onProgress: vi.fn(() => () => undefined),
       artifact: { preview: vi.fn(), apply: vi.fn() }
     },
     dialog: {

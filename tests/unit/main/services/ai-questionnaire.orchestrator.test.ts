@@ -76,6 +76,19 @@ function sendRequest(value: ProjectData, overrides: Record<string, unknown> = {}
   }
 }
 
+type SendTurnResult = Awaited<ReturnType<ReturnType<
+  typeof createAIQuestionnaireOrchestrator
+>['sendTurn']>>
+
+function expectQuestionnaireResult(
+  result: SendTurnResult
+): asserts result is Extract<SendTurnResult, { ok: true; outcome: 'questionnaire' }> {
+  expect(result).toMatchObject({ ok: true, outcome: 'questionnaire' })
+  if (!result.ok || result.outcome !== 'questionnaire') {
+    throw new Error('Expected questionnaire result')
+  }
+}
+
 describe('AI questionnaire orchestrator', () => {
   it('emits ordered attempt-scoped progress and persists before its single terminal event', async () => {
     const value = project()
@@ -351,7 +364,7 @@ describe('AI questionnaire orchestrator', () => {
     }))
     session = new AISessionRepository(value).get(sessionId)!
     expect(session.conversation.clarifications![latest.clarificationId]).toMatchObject({ status: 'resolved' })
-    expect(session.conversation.clarifications![latest.clarificationId].selectedOptionId).toBeUndefined()
+    expect(session.conversation.clarifications![latest.clarificationId]!.selectedOptionId).toBeUndefined()
   })
 
   it('rejects stale clarification selections before invoking the client', async () => {
@@ -542,8 +555,7 @@ describe('AI questionnaire orchestrator', () => {
       userText: 'Create',
       config: { baseUrl: 'https://example.test/v1', model: 'model' }
     })
-    expect(first.ok).toBe(true)
-    if (!first.ok) return
+    expectQuestionnaireResult(first)
     expect((first.artifact.value as { baseQuestionnaire: { name: string } })
       .baseQuestionnaire.name).toBe('未命名问卷')
 
@@ -553,13 +565,11 @@ describe('AI questionnaire orchestrator', () => {
       userText: 'Refine',
       config: { baseUrl: 'https://example.test/v1', model: 'model' }
     })
-    expect(refined.ok).toBe(true)
-    if (refined.ok) {
-      expect((refined.artifact.value as { baseQuestionnaire: { name: string } })
-        .baseQuestionnaire.name).toBe('Study')
-      expect((refined.artifact.value as { baseQuestionnaireRevision: string })
-        .baseQuestionnaireRevision).toBe('cccccccc-cccc-4ccc-8ccc-cccccccccccc')
-    }
+    expectQuestionnaireResult(refined)
+    expect((refined.artifact.value as { baseQuestionnaire: { name: string } })
+      .baseQuestionnaire.name).toBe('Study')
+    expect((refined.artifact.value as { baseQuestionnaireRevision: string })
+      .baseQuestionnaireRevision).toBe('cccccccc-cccc-4ccc-8ccc-cccccccccccc')
     expect(readFormalQuestionnaire).not.toHaveBeenCalled()
     Object.defineProperty(value, 'questionnaire', { value: formalQuestionnaire, writable: true })
     expect(previewQuestionnaireArtifact(value, sessionId, first.artifact.artifactId))
@@ -657,8 +667,7 @@ describe('AI questionnaire orchestrator', () => {
       explicitAttachment: structuredClone(value.questionnaire),
       config: { baseUrl: 'https://example.test/v1', model: 'model' }
     })
-    expect(generated.ok).toBe(true)
-    if (!generated.ok) return
+    expectQuestionnaireResult(generated)
     const calls: string[] = []
     let releaseBackup!: () => void
     let backupStarted!: () => void
@@ -703,8 +712,7 @@ describe('AI questionnaire orchestrator', () => {
       explicitAttachment: structuredClone(value.questionnaire),
       config: { baseUrl: 'https://example.test/v1', model: 'model' }
     })
-    expect(generated.ok).toBe(true)
-    if (!generated.ok) return
+    expectQuestionnaireResult(generated)
 
     let rejectPersist!: (error: Error) => void
     let persistStarted!: () => void
@@ -746,8 +754,7 @@ describe('AI questionnaire orchestrator', () => {
       explicitAttachment: structuredClone(value.questionnaire),
       config: { baseUrl: 'https://example.test/v1', model: 'model' }
     })
-    expect(generated.ok).toBe(true)
-    if (!generated.ok) return
+    expectQuestionnaireResult(generated)
     value.questionnaire.name = 'Changed concurrently'
     refreshQuestionnaireRevision(value)
     expect(() => previewQuestionnaireArtifact(value, sessionId, generated.artifact.artifactId)).toThrow('AI_ARTIFACT_STALE')
@@ -785,8 +792,7 @@ describe('AI questionnaire orchestrator', () => {
       explicitAttachment: structuredClone(value.questionnaire),
       config: { baseUrl: 'https://example.test/v1', model: 'model' }
     })
-    expect(generated.ok).toBe(true)
-    if (!generated.ok) return
+    expectQuestionnaireResult(generated)
     await applyArtifact({
       project: value, sessionId, artifactId: generated.artifact.artifactId,
       currentProjectPath: 'D:\\study.easyepi', backup: vi.fn(), saveAtomic: vi.fn()
@@ -833,8 +839,7 @@ describe('AI questionnaire orchestrator', () => {
       explicitAttachment: structuredClone(value.questionnaire),
       config: { baseUrl: 'https://example.test/v1', model: 'model' }
     })
-    expect(generated.ok).toBe(true)
-    if (!generated.ok) return
+    expectQuestionnaireResult(generated)
     const stored = value.aiAssistant!.sessions[sessionId]!.artifacts.byId[generated.artifact.artifactId]!
     const original = structuredClone(stored.value) as Record<string, unknown>
     const valueRecord = stored.value as Record<string, unknown>

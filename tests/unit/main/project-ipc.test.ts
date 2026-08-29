@@ -24,6 +24,7 @@ import {
 } from '../../../src/main/ipc/project.ipc'
 import type { IpcInvokeEventLike, IpcMainLike } from '../../../src/main/ipc/types'
 import { createBackup, getBackups } from '../../../src/main/services/backup.service'
+import { getAiVersionStamp } from '../../../src/main/services/ai-questionnaire.harness'
 import { AISessionRepository } from '../../../src/main/services/ai-session.repository'
 import { isUUIDv4 } from '../../../src/shared/types/project'
 import {
@@ -213,13 +214,7 @@ describe('Project IPC recovery safety', () => {
       project,
       () => '123e4567-e89b-42d3-a456-426614174000'
     )
-    const session = repository.create({
-      promptId: 'assistant',
-      promptVersion: '1',
-      promptHash: 'hash',
-      harnessVersion: '1',
-      schemaVersion: 1
-    }).value
+    const session = repository.create(getAiVersionStamp()).value
     project.aiAssistant!.sessions[session.manifest.sessionId]!.temp.runs['run-1'] = {
       runId: 'run-1',
       versionStamp: session.manifest.versionStamp,
