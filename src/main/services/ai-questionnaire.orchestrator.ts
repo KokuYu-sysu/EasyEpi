@@ -267,10 +267,13 @@ export function createAIQuestionnaireOrchestrator(
         if (replay !== undefined) {
           if (replay.status === 'running') return { ok: false, errorCode: 'AI_REQUEST_IN_PROGRESS' }
           if (replay.status === 'failed' || replay.status === 'cancelled') {
+            const replayDetails = replay.failure?.details
             return {
               ok: false,
               errorCode: replay.errorCode ?? (replay.status === 'cancelled' ? 'AI_CANCELLED' : 'AI_INTERNAL_ERROR'),
-              ...(replay.failure?.details === undefined ? {} : { details: replay.failure.details })
+              ...(replayDetails === undefined || replayDetails.attempts.length === 0
+                ? {}
+                : { details: replayDetails })
             }
           }
           if (replay.result?.kind === 'questionnaire') {
@@ -404,13 +407,13 @@ export function createAIQuestionnaireOrchestrator(
       const startedAt = now()
       const emit = (event: AIProgressPayload): void => {
         try {
-          request.onProgress?.({
+          request.onProgress?.(structuredClone({
             ...event,
             requestId,
             sessionId: request.sessionId,
             runId,
             at: now()
-          } as AIProgressEvent)
+          }) as AIProgressEvent)
         } catch {
           // A progress observer is best-effort and cannot change the authoritative run result.
         }
@@ -437,15 +440,15 @@ export function createAIQuestionnaireOrchestrator(
         await mutateAndPersist(request.project, dependencies.persistProject, 'run-started', () => {
           const lockedSession = repository.get(request.sessionId)
           if (lockedSession === undefined) throw new Error('AI_SESSION_NOT_FOUND')
+          if (repository.findRunByOperationId(request.sessionId, operationId) !== undefined) {
+            throw new Error('AI_REQUEST_IN_PROGRESS')
+          }
           if (lockedSession.state.activeRunId !== undefined || lockedSession.state.status === 'running') {
             throw new Error('AI_RUN_ALREADY_ACTIVE')
           }
           if (lockedSession.state.runs[runId] !== undefined) throw new Error('AI_RUN_ID_CONFLICT')
           if (!basisUnchanged(lockedSession)) {
             throw new Error('AI_ARTIFACT_STALE')
-          }
-          if (repository.findRunByOperationId(request.sessionId, operationId) !== undefined) {
-            throw new Error('AI_REQUEST_IN_PROGRESS')
           }
           if (request.clarificationSelection !== undefined) {
             const latest = repository.getLatestUnresolvedClarification(request.sessionId)
@@ -484,7 +487,14 @@ export function createAIQuestionnaireOrchestrator(
             requestId,
             operationId,
             userMessageId: messageId,
-            progress: { stage: 'starting', attempt: 1, updatedAt: startedAt, streamFallback: false }
+            progress: {
+              stage: 'starting',
+              attempt: 1,
+              updatedAt: startedAt,
+              streamFallback: responseCapability(
+                lockedSession.cache.values[streamingCapabilityKey]
+              ) === false
+            }
           })
           if (request.explicitAttachment !== undefined) {
             repository.upsertAttachment(request.sessionId, {

@@ -260,6 +260,41 @@ describe('AI questionnaire orchestrator', () => {
     await expect(send).resolves.toMatchObject({ ok: true, attempts: 1 })
   })
 
+  it('starts a new run with stream fallback already true when cached streaming is unsupported', async () => {
+    const value = project()
+    let release!: () => void
+    const pending = new Promise<void>((resolve) => { release = resolve })
+    let observedRunStart!: () => void
+    const observed = new Promise<void>((resolve) => { observedRunStart = resolve })
+    let runStarts = 0
+    let runStartedFallback: boolean | undefined
+    const persistProject = vi.fn((_project, reason) => {
+      if (reason !== 'run-started') return
+      runStarts += 1
+      if (runStarts === 2) {
+        runStartedFallback = new AISessionRepository(value)
+          .findRunByOperationId(sessionId, 'operation-2')?.progress?.streamFallback
+        observedRunStart()
+      }
+    })
+    const complete = vi.fn()
+      .mockResolvedValueOnce({ content: validCompletion(), streamingSupported: false, responseFormatSupported: true })
+      .mockImplementationOnce(async () => {
+        await pending
+        return { content: validCompletion(), streamingSupported: false, responseFormatSupported: true }
+      })
+    const orchestrator = createAIQuestionnaireOrchestrator({ persistProject, client: { complete } })
+    await orchestrator.sendTurn(sendRequest(value))
+    const second = orchestrator.sendTurn(sendRequest(value, {
+      requestId: 'request-2', operationId: 'operation-2', runId: 'run-2', userText: 'Refine'
+    }))
+
+    await observed
+    expect(runStartedFallback).toBe(true)
+    release()
+    await expect(second).resolves.toMatchObject({ ok: true, attempts: 1 })
+  })
+
   it('persists and replays a clarification without creating or activating an artifact', async () => {
     const value = project()
     const complete = vi.fn().mockResolvedValue({
@@ -391,6 +426,95 @@ describe('AI questionnaire orchestrator', () => {
     expect(new AISessionRepository(value).findRunByOperationId(sessionId, 'operation-1'))
       .toMatchObject({ status: 'cancelled' })
     expect(value.questionnaire).toEqual(formal)
+  })
+
+  it('replays an ordinary terminal failure with an identical result and no live work', async () => {
+    const value = project()
+    const complete = vi.fn().mockRejectedValue(new AIClientError('AI_NETWORK_ERROR'))
+    const orchestrator = createAIQuestionnaireOrchestrator({ persistProject: vi.fn(), client: { complete } })
+    const initialEvents: AIProgressEvent[] = []
+    const initial = await orchestrator.sendTurn(sendRequest(value, {
+      onProgress: (event: AIProgressEvent) => initialEvents.push(event)
+    }))
+    const replayEvents: AIProgressEvent[] = []
+    const replay = await orchestrator.sendTurn(sendRequest(value, {
+      runId: 'replay-run', onProgress: (event: AIProgressEvent) => replayEvents.push(event)
+    }))
+
+    expect(initial).toEqual({ ok: false, errorCode: 'AI_NETWORK_ERROR' })
+    expect(replay).toEqual(initial)
+    expect(complete).toHaveBeenCalledOnce()
+    expect(initialEvents.at(-1)).toMatchObject({ type: 'failed', errorCode: 'AI_NETWORK_ERROR' })
+    expect(replayEvents).toEqual([])
+  })
+
+  it('distinguishes concurrent duplicate operations from a distinct active operation', async () => {
+    const value = project()
+    let release!: () => void
+    const pending = new Promise<void>((resolve) => { release = resolve })
+    const complete = vi.fn(async () => {
+      await pending
+      return { content: validCompletion(), streamingSupported: true, responseFormatSupported: true }
+    })
+    const orchestrator = createAIQuestionnaireOrchestrator({ persistProject: vi.fn(), client: { complete } })
+    const first = orchestrator.sendTurn(sendRequest(value))
+    const duplicateEvents: AIProgressEvent[] = []
+    const duplicate = orchestrator.sendTurn(sendRequest(value, {
+      requestId: 'duplicate-request', runId: 'duplicate-run',
+      onProgress: (event: AIProgressEvent) => duplicateEvents.push(event)
+    }))
+    const distinctEvents: AIProgressEvent[] = []
+    const distinct = orchestrator.sendTurn(sendRequest(value, {
+      requestId: 'distinct-request', operationId: 'distinct-operation', runId: 'distinct-run',
+      onProgress: (event: AIProgressEvent) => distinctEvents.push(event)
+    }))
+
+    await expect(duplicate).resolves.toEqual({ ok: false, errorCode: 'AI_REQUEST_IN_PROGRESS' })
+    await expect(distinct).resolves.toEqual({ ok: false, errorCode: 'AI_RUN_ALREADY_ACTIVE' })
+    expect(duplicateEvents).toEqual([])
+    expect(distinctEvents).toEqual([])
+    expect(complete).toHaveBeenCalledOnce()
+    release()
+    await expect(first).resolves.toMatchObject({ ok: true, outcome: 'questionnaire' })
+  })
+
+  it('deeply isolates validation progress observers from authoritative failure data', async () => {
+    const value = project()
+    const invalid = JSON.stringify({
+      kind: 'questionnaire', assistantMessage: 'invalid', rollingSummary: 'summary', options: [],
+      questionnaire: { name: '', questions: [], conditionRules: [], keyQuestionIds: [] }
+    })
+    const result = await createAIQuestionnaireOrchestrator({
+      persistProject: vi.fn(),
+      client: { complete: vi.fn().mockResolvedValue({
+        content: invalid, streamingSupported: true, responseFormatSupported: true
+      }) }
+    }).sendTurn(sendRequest(value, {
+      onProgress: (event: AIProgressEvent) => {
+        if (event.type === 'validation_failed') {
+          event.failure.issues.length = 0
+          event.failure.truncated = true
+        }
+        if (event.type === 'failed' && event.details !== undefined) {
+          event.details.attempts.length = 0
+        }
+      }
+    }))
+
+    expect(result).toMatchObject({
+      ok: false,
+      details: { attempts: [
+        { issues: [expect.any(Object)], truncated: false },
+        { issues: [expect.any(Object)], truncated: false },
+        { issues: [expect.any(Object)], truncated: false }
+      ] }
+    })
+    expect(new AISessionRepository(value).findRunByOperationId(sessionId, 'operation-1'))
+      .toMatchObject({ failure: { details: { attempts: [
+        { issues: [expect.any(Object)], truncated: false },
+        { issues: [expect.any(Object)], truncated: false },
+        { issues: [expect.any(Object)], truncated: false }
+      ] } } })
   })
   it('never reads the formal questionnaire when no attachment is allowed', async () => {
     const value = project()
