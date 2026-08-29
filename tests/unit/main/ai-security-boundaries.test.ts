@@ -45,6 +45,7 @@ import { registerAIIpcHandlers } from '@main/ipc/ai.ipc'
 import { createProjectIpcState } from '@main/ipc/project.ipc'
 import type { IpcInvokeEventLike, IpcMainLike } from '@main/ipc/types'
 import type { AIConfigService } from '@main/services/ai-config.service'
+import type { AIChatCompletionRequest } from '@main/services/openai-compatible.client'
 
 const sessionId = '123e4567-e89b-42d3-a456-426614174000'
 const versionStamp: AiVersionStamp = getAiVersionStamp()
@@ -723,6 +724,10 @@ describe('AI IPC privacy boundary', () => {
     let secondOwnerDestroyed = false
     let failRun = false
     let providerCalls = 0
+    const burstChunks = Array.from(
+      { length: 24 },
+      (_, index) => `${index.toString().padStart(2, '0')}:` + '进'.repeat(300)
+    )
     const event = {
       senderFrame: { url: 'file:///app/index.html' },
       sender: {
@@ -751,8 +756,14 @@ describe('AI IPC privacy boundary', () => {
           providerCalls += 1
           if (destroySecondOwner) secondOwnerDestroyed = true
           request.onModelStreaming?.()
-          request.onContentDelta?.({ content: '问卷', sequence: 1 })
-          request.onContentDelta?.({ content: '已生成', sequence: 2 })
+          if (providerCalls === 1) {
+            for (const [index, content] of burstChunks.entries()) {
+              request.onContentDelta?.({ content, sequence: index + 1 })
+            }
+          } else {
+            request.onContentDelta?.({ content: '问卷', sequence: 1 })
+            request.onContentDelta?.({ content: '已生成', sequence: 2 })
+          }
           if (providerCalls === 1) {
             await Promise.resolve()
             expect(sent.some((value) => (value as { type: string }).type === 'assistant_delta'))
@@ -781,14 +792,21 @@ describe('AI IPC privacy boundary', () => {
     expect(result).toMatchObject({
       ok: true, requestId: 'request-1', outcome: 'questionnaire', attempts: 1
     })
-    expect(sent.map((value) => (value as { type: string }).type)).toEqual([
-      'started', 'attempt_started', 'model_streaming', 'assistant_delta', 'assistant_delta',
-      'validating', 'completed'
-    ])
+    expect(sent.slice(0, 3).map((value) => (value as { type: string }).type))
+      .toEqual(['started', 'attempt_started', 'model_streaming'])
+    expect(sent.at(-2)).toMatchObject({ type: 'validating' })
+    expect(sent.at(-1)).toMatchObject({ type: 'completed' })
     expect(sent.filter((value) => ['completed', 'clarification', 'failed', 'cancelled']
       .includes((value as { type: string }).type))).toHaveLength(1)
-    expect(sent.filter((value) => (value as { type: string }).type === 'assistant_delta'))
-      .toMatchObject([{ sequence: 1, delta: '问卷' }, { sequence: 2, delta: '已生成' }])
+    const deliveredDeltas = sent.filter(
+      (value) => (value as { type: string }).type === 'assistant_delta'
+    ) as Array<{ sequence: number; delta: string }>
+    expect(deliveredDeltas.length).toBeLessThan(burstChunks.length)
+    expect(deliveredDeltas.map(({ delta }) => delta).join('')).toBe(burstChunks.join(''))
+    expect(deliveredDeltas.every(({ delta }) => delta.length <= 4_096)).toBe(true)
+    expect(deliveredDeltas.every(
+      ({ sequence }, index) => index === 0 || sequence > deliveredDeltas[index - 1]!.sequence
+    )).toBe(true)
     expect(order.at(-2)).toBe('completed')
     expect(order.at(-1)).toBe('resolved')
 
@@ -908,6 +926,71 @@ describe('AI IPC privacy boundary', () => {
       type: 'cancelled', requestId: 'navigation-request', errorCode: 'AI_CANCELLED'
     })
     registration.dispose()
+  })
+
+  it('delivers the persisted cancelled terminal while cancelAllAndSettle closes intake', async () => {
+    const handlers = new Map<string, (event: IpcInvokeEventLike, ...args: unknown[]) => Promise<unknown>>()
+    const ipcMain: IpcMainLike = {
+      handle: (channel, handler) => handlers.set(channel, handler),
+      removeHandler: (channel) => { handlers.delete(channel) }
+    }
+    const state = createProjectIpcState()
+    state.currentProject = createProjectData()
+    state.currentFilePath = 'D:\\settle.easyepi'
+    state.currentSaltHex = 'a'.repeat(64)
+    state.currentHashHex = 'b'.repeat(64)
+    state.auth.encryptionKey = Buffer.alloc(32, 1)
+    new AISessionRepository(state.currentProject, () => sessionId).create(versionStamp, 'Settle')
+    let releaseProvider!: () => void
+    let providerRequest: AIChatCompletionRequest | undefined
+    const providerPending = new Promise<void>((resolve) => { releaseProvider = resolve })
+    const configService = {
+      get: async () => ({ ok: true, config: { baseUrl: '', model: '', hasApiKey: false, maskedApiKey: null } } as const),
+      update: async () => ({ ok: false, code: 'INVALID_AI_CONFIG' } as const),
+      clear: async () => ({ ok: false, code: 'AI_CONFIG_SAVE_FAILED' } as const),
+      getPlaintextForMain: async () => ({ baseUrl: 'https://example.test/v1', model: 'model' }),
+      getPrivacyStatus: async () => ({ accepted: true, acceptedAt: at }),
+      acceptPrivacy: async () => ({ accepted: true, acceptedAt: at } as const)
+    } satisfies AIConfigService
+    const sent: unknown[] = []
+    const registration = registerAIIpcHandlers(ipcMain, state, {
+      configService,
+      saveProject: vi.fn(),
+      client: {
+        complete: vi.fn(async (request) => {
+          providerRequest = request
+          await providerPending
+          return {
+            content: validQuestionnaireCompletion(),
+            streamingSupported: true,
+            responseFormatSupported: true
+          }
+        })
+      }
+    }, 'file:///app/index.html')
+    const event = {
+      senderFrame: { url: 'file:///app/index.html' },
+      sender: { id: 7, isDestroyed: () => false, send: (_channel: string, value: unknown) => sent.push(value) }
+    }
+    const send = handlers.get(AI_SEND_CHANNEL)!(event, {
+      requestId: 'settle-request', sessionId, content: 'Create', includeCurrentQuestionnaire: false
+    })
+    await vi.waitFor(() => expect(providerRequest).toBeDefined())
+
+    const settling = registration.cancelAllAndSettle()
+    releaseProvider()
+    await settling
+    await expect(send).resolves.toMatchObject({ ok: false, errorCode: 'AI_CANCELLED' })
+    expect(sent.at(-1)).toMatchObject({
+      type: 'cancelled', requestId: 'settle-request', errorCode: 'AI_CANCELLED'
+    })
+
+    const settledEventCount = sent.length
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(sent).toHaveLength(settledEventCount)
+    registration.dispose()
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(sent).toHaveLength(settledEventCount)
   })
 
   it('rejects renderer attempts to smuggle sensitive fields into send', () => {

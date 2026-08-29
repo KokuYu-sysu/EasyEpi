@@ -660,9 +660,9 @@ export function registerAIIpcHandlers(
     let terminalDelivered = false
     let deliveryStopped = false
     let deltaFlushTimer: ReturnType<typeof setTimeout> | undefined
-    const queuedDeltas: AIProgressEvent[] = []
+    const queuedDeltas: Array<Extract<AIProgressEvent, { type: 'assistant_delta' }>> = []
     const canDeliver = (): boolean => {
-      if (deliveryStopped || !acceptingRequests || inFlight.get(key) !== entry ||
+      if (deliveryStopped || inFlight.get(key) !== entry ||
         !isCurrentProject(state, captured) || entry.sender.isDestroyed?.() === true) {
         deliveryStopped = true
         if (deltaFlushTimer !== undefined) clearTimeout(deltaFlushTimer)
@@ -688,8 +688,20 @@ export function registerAIIpcHandlers(
       deltaFlushTimer = undefined
       if (!canDeliver()) return
       while (queuedDeltas.length > 0) {
-        const delta = queuedDeltas.shift()!
-        if (!sendProgress(delta)) return
+        const first = queuedDeltas.shift()!
+        const combined = { ...first }
+        while (queuedDeltas.length > 0) {
+          const next = queuedDeltas[0]!
+          const sameScope = next.requestId === combined.requestId &&
+            next.sessionId === combined.sessionId && next.runId === combined.runId &&
+            next.attempt === combined.attempt
+          if (!sameScope || combined.delta.length + next.delta.length > 4_096) break
+          queuedDeltas.shift()
+          combined.delta += next.delta
+          combined.sequence = next.sequence
+          combined.at = next.at
+        }
+        if (!sendProgress(combined)) return
       }
     }
     const deliverProgress = (rawProgress: AIProgressEvent): void => {
