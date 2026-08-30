@@ -34,6 +34,7 @@ import {
 import type { ProjectData } from '@shared/types/project'
 import {
   AI_CANCEL_CHANNEL,
+  AI_CONFIG_TEST_CONNECTION_CHANNEL,
   AI_PROGRESS_CHANNEL,
   AI_SEND_CHANNEL,
   AI_SESSION_PAGE_MAX_UTF8_BYTES,
@@ -592,6 +593,37 @@ describe('AI streaming and clarification public contract', () => {
 })
 
 describe('AI IPC privacy boundary', () => {
+  it('tests connectivity with one generic non-streaming completion', async () => {
+    const handlers = new Map<string, (event: IpcInvokeEventLike, ...args: unknown[]) => Promise<unknown>>()
+    const complete = vi.fn().mockResolvedValue({
+      content: 'OK', streamingSupported: false, responseFormatSupported: false
+    })
+    const configService = {
+      get: async () => ({ ok: true, config: { baseUrl: '', model: '', hasApiKey: false, maskedApiKey: null } } as const),
+      update: async () => ({ ok: false, code: 'INVALID_AI_CONFIG' } as const),
+      clear: async () => ({ ok: false, code: 'AI_CONFIG_SAVE_FAILED' } as const),
+      getPlaintextForMain: async () => ({ baseUrl: 'https://example.test/v1', model: 'model', apiKey: 'secret' }),
+      getPrivacyStatus: async () => ({ accepted: true, acceptedAt: at }),
+      acceptPrivacy: async () => ({ accepted: true, acceptedAt: at } as const)
+    } satisfies AIConfigService
+    const registration = registerAIIpcHandlers({
+      handle: (channel, handler) => handlers.set(channel, handler),
+      removeHandler: (channel) => { handlers.delete(channel) }
+    }, createProjectIpcState(), { configService, client: { complete } }, 'file:///app/index.html')
+    const event = {
+      senderFrame: { url: 'file:///app/index.html' },
+      sender: { id: 1, send: vi.fn() }
+    }
+
+    await expect(handlers.get(AI_CONFIG_TEST_CONNECTION_CHANNEL)!(event)).resolves.toEqual({ ok: true })
+    expect(complete).toHaveBeenCalledWith(expect.objectContaining({
+      streamingSupported: false,
+      responseFormatSupported: false
+    }))
+    expect(complete.mock.calls[0]?.[0]).not.toHaveProperty('schemaVersion')
+    registration.dispose()
+  })
+
   it('projects only page-scoped clarifications and failures with the current active run under budget', async () => {
     const handlers = new Map<string, (event: IpcInvokeEventLike, ...args: unknown[]) => Promise<unknown>>()
     const ipcMain: IpcMainLike = {

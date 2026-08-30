@@ -474,6 +474,8 @@ export function AIQuestionnairePage() {
   const progressSubscriptionRef = useRef<ProgressSubscription | null>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const toast = useToast()
+  const sessionRequiresMigration = sessionPage !== null &&
+    sessionPage.manifest.versionStamp.schemaVersion !== 2
 
   const refreshAIConfig = useCallback(async () => {
     const request = ++configRequestRef.current
@@ -754,7 +756,13 @@ export function AIQuestionnairePage() {
       } else {
         const summary = result.artifacts.find(({ artifactId }) => artifactId === result.activeArtifactId)
         if (summary !== undefined && summary.status === 'completed' && sessionLoadIsCurrent()) {
-          void loadArtifact(sessionId, summary.artifactId, summary.operationId, generation)
+          void loadArtifact(
+            sessionId,
+            summary.artifactId,
+            summary.operationId,
+            generation,
+            result.manifest.versionStamp.schemaVersion !== 2
+          )
         }
       }
       return result
@@ -1132,6 +1140,10 @@ export function AIQuestionnairePage() {
         activeRequestIdRef.current !== intent.requestId ||
         pendingSendRef.current?.requestId !== intent.requestId) return
       if (!result.ok) {
+        const [reloadedSession] = await Promise.all([
+          loadLatestSession(intent.sessionId, intent.generation),
+          loadSessions(intent.sessionId, intent.generation)
+        ])
         if (result.details !== undefined) {
           setError(null)
           setLiveFailure({
@@ -1139,10 +1151,6 @@ export function AIQuestionnairePage() {
             errorCode: result.errorCode,
             details: result.details
           })
-          const [reloadedSession] = await Promise.all([
-            loadLatestSession(intent.sessionId, intent.generation),
-            loadSessions(intent.sessionId, intent.generation)
-          ])
           const persistedRunId = reloadedSession?.failures.find(({ runId }) =>
             !intent.knownFailureRunIds.includes(runId))?.runId ?? null
           if (activeRunIdRef.current === null && persistedRunId !== null) {
@@ -1236,7 +1244,7 @@ export function AIQuestionnairePage() {
     const generation = generationRef.current
     if (sessionId === null || (clarificationSelection === undefined && content.trim().length === 0) ||
       (clarificationSelection !== undefined && content !== '') || sending || applying || configMissing ||
-      sessionPage?.status === 'running') return
+      sessionRequiresMigration || sessionPage?.status === 'running') return
     if (clarificationSelection === undefined && includeCurrentQuestionnaire &&
       confirmedAttachmentFingerprint === null) {
       setError('请先确认当前问卷的发送预览。')
@@ -1330,7 +1338,7 @@ export function AIQuestionnairePage() {
     const generation = generationRef.current
     if (sessionId === null || activeArtifact === null ||
       activeArtifact.sessionId !== sessionId || applying || sending || clearingCacheRef.current ||
-      migratingRef.current || activeArtifact.historical ||
+      migratingRef.current || sessionRequiresMigration || activeArtifact.historical ||
       (artifactApplicability?.artifactId === activeArtifact.artifactId &&
         !artifactApplicability.applicable)) return
     const artifact = activeArtifact
@@ -1382,14 +1390,14 @@ export function AIQuestionnairePage() {
   const sessionRunActive = sessionPage?.status === 'running' || activeLiveRun !== null
   const latestUnresolvedClarificationMessageId = latestActionableClarificationMessageId(messages)
   const quickRepliesEnabled = !sessionOperationsLocked && !sessionRunActive && !projectBlocked &&
-    !configMissing && pendingClarificationId === null
+    !configMissing && !sessionRequiresMigration && pendingClarificationId === null
   const liveFailureIsPersisted = liveFailure?.runId !== null && liveFailure?.runId !== undefined &&
     sessionPage?.failures.some(({ runId }) => runId === liveFailure.runId) === true
   const activeArtifactRequiresRegeneration = activeArtifact?.historical === true ||
     (activeArtifact !== null && artifactApplicability?.artifactId === activeArtifact.artifactId &&
       !artifactApplicability.applicable)
   const canSend = activeSessionId !== null && draft.trim().length > 0 && !sessionOperationsLocked &&
-    !projectBlocked && !configMissing && !sessionRunActive
+    !projectBlocked && !configMissing && !sessionRequiresMigration && !sessionRunActive
 
   return (
     <MilestonePage
@@ -1494,6 +1502,11 @@ export function AIQuestionnairePage() {
                     <Button size="sm" variant="secondary" onClick={() => void loadLatestSession(activeSessionId)} disabled={loading} aria-label="刷新当前对话"><RefreshCw aria-hidden="true" size={16} />刷新</Button>
                   </CardHeader>
                   <CardContent className="grid gap-[var(--space-3)]">
+                    {sessionRequiresMigration ? (
+                      <div role="alert" className="rounded-[var(--radius-1)] border border-[var(--color-warning)] bg-[var(--color-warning-soft)] p-[var(--space-3)] text-[var(--color-text-secondary)]">
+                        <strong>此对话使用旧版 AI 协议。</strong> 请先点击「迁移当前对话」；迁移前不能发送消息或应用草稿，旧草稿仅作历史只读记录。
+                      </div>
+                    ) : null}
                     {sessionPage?.status === 'running' && activeLiveRun === null ? (
                       <p className="m-0 rounded-[var(--radius-1)] bg-[var(--color-warning-soft)] p-[var(--space-3)] text-[var(--color-text-secondary)]">
                         此对话仍在处理中。正在恢复可用的进度信息，期间不能重复发送。
@@ -1553,7 +1566,7 @@ export function AIQuestionnairePage() {
                   <ArtifactPreviewCard
                     artifact={activeArtifact}
                     applying={applying}
-                    blocked={sessionOperationsLocked || sessionRunActive}
+                    blocked={sessionOperationsLocked || sessionRunActive || sessionRequiresMigration}
                     requiresRegeneration={activeArtifactRequiresRegeneration}
                     onApply={() => void applyArtifact()}
                   />
@@ -1565,7 +1578,8 @@ export function AIQuestionnairePage() {
                     <CardContent>
                       <ul aria-label="问卷草稿记录" className="m-0 grid list-none gap-[var(--space-2)] p-0">
                         {sessionPage.artifacts.filter(({ status }) => status === 'completed').map((artifact) => {
-                          const current = artifact.artifactId === sessionPage.activeArtifactId
+                          const current = !sessionRequiresMigration &&
+                            artifact.artifactId === sessionPage.activeArtifactId
                           const selected = artifact.artifactId === activeArtifact?.artifactId
                           return (
                             <li key={artifact.artifactId}>
@@ -1579,7 +1593,7 @@ export function AIQuestionnairePage() {
                                   artifact.artifactId,
                                   artifact.operationId,
                                   generationRef.current,
-                                  !current
+                                  sessionRequiresMigration || !current
                                 )}
                               >
                                 <span>{current ? '当前草稿' : '历史草稿（只读）'}</span>
@@ -1611,7 +1625,7 @@ export function AIQuestionnairePage() {
                       ref={textareaRef}
                       label="给 AI 的消息"
                       value={draft}
-                      disabled={sessionOperationsLocked || sessionPage?.status === 'running'}
+                      disabled={sessionOperationsLocked || sessionRequiresMigration || sessionPage?.status === 'running'}
                       placeholder="例如：为社区高血压筛查设计一份简洁问卷……"
                       hint="Enter 发送，Shift+Enter 换行。只有对话内容和你明确加入的当前问卷会发送。"
                       onChange={(event) => setDraft(event.target.value)}

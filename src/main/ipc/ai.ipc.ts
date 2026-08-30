@@ -481,7 +481,7 @@ export function registerAIIpcHandlers(
         ...config,
         messages: [{ role: 'user', content: 'Reply with OK.' }],
         responseFormatSupported: false,
-        schemaVersion: 1
+        streamingSupported: false
       })
       return { ok: true } satisfies AIConnectionTestResult
     } catch (error) {

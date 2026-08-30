@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { vi } from 'vitest'
 
@@ -19,10 +19,10 @@ const session = {
   title: '调查问卷讨论',
   versionStamp: {
     promptId: 'questionnaire',
-    promptVersion: '1',
+    promptVersion: '2',
     promptHash: 'hash',
-    harnessVersion: '1',
-    schemaVersion: 1
+    harnessVersion: '2',
+    schemaVersion: 2
   },
   createdAt: '2026-08-25T01:00:00.000Z',
   updatedAt: '2026-08-25T01:00:00.000Z'
@@ -45,6 +45,16 @@ const page: AISessionPage = {
   artifacts: [],
   total: 0,
   nextOffset: null
+}
+
+const legacySession = {
+  ...session,
+  versionStamp: {
+    ...session.versionStamp,
+    promptVersion: '1',
+    harnessVersion: '1',
+    schemaVersion: 1
+  }
 }
 
 const questionnaire: QuestionnaireDef = {
@@ -196,11 +206,26 @@ describe('AIQuestionnairePage boundaries', () => {
   it('migrates the current session, reports both outcomes, and refreshes session data', async () => {
     const user = userEvent.setup()
     const api = installApi(true)
+    const legacyArtifactPage: AISessionPage = {
+      ...artifactPage('artifact-legacy', 'operation-legacy'),
+      manifest: legacySession
+    }
+    let loadedPage = legacyArtifactPage
+    api.ai.session.list.mockResolvedValue({ ok: true, sessions: [legacySession] })
+    api.ai.session.get.mockImplementation(() => Promise.resolve({ ok: true, session: loadedPage }))
+    api.ai.artifact.preview.mockResolvedValue({ ok: true, preview: artifactPreview('旧协议') })
     api.ai.session.migrate
-      .mockResolvedValueOnce({ ok: true, migrated: true, session })
+      .mockImplementationOnce(async () => {
+        loadedPage = { ...page, manifest: session }
+        return { ok: true, migrated: true, session }
+      })
       .mockResolvedValueOnce({ ok: true, migrated: false, session })
     renderPage()
     await screen.findByRole('heading', { name: '调查问卷讨论', level: 3 })
+    await waitFor(() => expect(screen.getByRole('textbox', { name: '给 AI 的消息' })).toBeDisabled())
+    expect(screen.getByRole('alert')).toHaveTextContent('此对话使用旧版 AI 协议。')
+    expect(await screen.findByRole('heading', { name: '历史问卷草稿' })).toBeVisible()
+    expect(screen.getByRole('button', { name: '应用到正式问卷' })).toBeDisabled()
     const initialGetCalls = api.ai.session.get.mock.calls.length
     const initialListCalls = api.ai.session.list.mock.calls.length
 
@@ -216,6 +241,38 @@ describe('AIQuestionnairePage boundaries', () => {
 
     await user.click(screen.getByRole('button', { name: '迁移当前对话' }))
     expect((await screen.findAllByText(/已是最新 AI 协议，无需迁移/)).length).toBeGreaterThan(0)
+  })
+
+  it('reloads the authoritative Session after a provider failure without validation details', async () => {
+    const user = userEvent.setup()
+    const api = installApi(true)
+    const persistedMessage = {
+      id: 'message-provider-failure',
+      role: 'user' as const,
+      content: '生成肺癌筛查问卷',
+      createdAt: '2026-08-25T01:05:00.000Z',
+      clarification: null
+    }
+    let loadedPage: AISessionPage = page
+    let resolveSend!: (value: { ok: false; errorCode: string; message: string }) => void
+    api.ai.session.get.mockImplementation(() => Promise.resolve({ ok: true, session: loadedPage }))
+    api.ai.send.mockReturnValue(new Promise((resolve) => { resolveSend = resolve }))
+    renderPage()
+    await screen.findByRole('heading', { name: '调查问卷讨论', level: 3 })
+    const initialGetCalls = api.ai.session.get.mock.calls.length
+
+    await user.type(screen.getByRole('textbox', { name: '给 AI 的消息' }), persistedMessage.content)
+    await user.click(screen.getByRole('button', { name: '发送消息' }))
+    loadedPage = { ...page, status: 'failed', messages: [persistedMessage], total: 1 }
+    await act(async () => resolveSend({
+      ok: false,
+      errorCode: 'AI_NETWORK_ERROR',
+      message: 'raw provider detail'
+    }))
+
+    await waitFor(() => expect(api.ai.session.get.mock.calls.length).toBeGreaterThan(initialGetCalls))
+    expect(within(screen.getByRole('list', { name: '对话消息' })).getByText(persistedMessage.content)).toBeVisible()
+    expect(screen.getByText('无法连接 AI 服务，请检查服务地址和网络。')).toBeVisible()
   })
 
   it('previews completed historical artifacts but never enables their apply action', async () => {

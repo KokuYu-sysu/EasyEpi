@@ -347,6 +347,10 @@ function has(value: Record<string, unknown>, key: string): boolean {
   return Object.prototype.hasOwnProperty.call(value, key)
 }
 
+function hasPayload(value: Record<string, unknown>, key: string): boolean {
+  return has(value, key) && value[key] !== null && value[key] !== undefined
+}
+
 function strictCompletionContent(evidence: CompleteChoiceEvidence): string {
   if (
     evidence.choiceCount !== 1 || evidence.index !== 0 || evidence.finishReason !== 'stop' ||
@@ -381,8 +385,8 @@ function completeJsonEvidence(parsed: unknown): CompleteChoiceEvidence {
     finishReason: choice.finish_reason,
     content: message.content,
     role: message.role,
-    refusalPresent: has(message, 'refusal'),
-    toolCallPresent: has(message, 'tool_calls') || has(message, 'function_call')
+    refusalPresent: hasPayload(message, 'refusal'),
+    toolCallPresent: hasPayload(message, 'tool_calls') || hasPayload(message, 'function_call')
   }
 }
 
@@ -589,7 +593,6 @@ export function createOpenAICompatibleClient(
       } catch {
         throw new Error('INVALID_AI_CONFIG')
       }
-      providerSchema(request.schemaVersion)
       const safeRequest: AIChatCompletionRequest = {
         ...request,
         baseUrl: validated.baseUrl,
@@ -597,11 +600,16 @@ export function createOpenAICompatibleClient(
         apiKey: typeof validated.apiKey === 'string' ? validated.apiKey : undefined
       }
       const preferSchema = safeRequest.responseFormatSupported !== false
+      if (preferSchema) providerSchema(request.schemaVersion)
       let useResponseFormat = preferSchema
       let useStreaming = safeRequest.streamingSupported !== false
       for (let negotiation = 0; negotiation < 3; negotiation += 1) {
         const result = await requestOnce(safeRequest, useStreaming, useResponseFormat)
         if (result.kind === 'complete') {
+          if (useStreaming && !result.usedSse) {
+            useStreaming = false
+            safeRequest.onCapabilityFallback?.('streaming')
+          }
           return {
             content: result.content,
             streamingSupported: useStreaming && result.usedSse,

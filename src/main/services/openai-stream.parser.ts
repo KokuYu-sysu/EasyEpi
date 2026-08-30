@@ -55,6 +55,10 @@ function has(value: Record<string, unknown>, key: string): boolean {
   return Object.prototype.hasOwnProperty.call(value, key)
 }
 
+function hasPayload(value: Record<string, unknown>, key: string): boolean {
+  return has(value, key) && value[key] !== null && value[key] !== undefined
+}
+
 export function createSseChatCompletionParser(limits: StreamLimits): SseChatCompletionParser {
   const decoder = new TextDecoder('utf-8', { fatal: true })
   let currentLine = ''
@@ -117,8 +121,8 @@ export function createSseChatCompletionParser(limits: StreamLimits): SseChatComp
     if (choice.index !== 0) invalid()
     if (!has(choice, 'delta')) invalid()
     const delta = record(choice.delta)
-    if (has(delta, 'tool_calls') || has(delta, 'function_call')) toolCallPresent = true
-    if (has(delta, 'refusal')) refusalPresent = true
+    if (hasPayload(delta, 'tool_calls') || hasPayload(delta, 'function_call')) toolCallPresent = true
+    if (hasPayload(delta, 'refusal')) refusalPresent = true
     if (has(delta, 'role')) role = delta.role
 
     const finishReason = has(choice, 'finish_reason') ? choice.finish_reason : null

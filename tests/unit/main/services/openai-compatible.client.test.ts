@@ -16,6 +16,7 @@ function request(overrides: Partial<AIChatCompletionRequest> = {}): AIChatComple
     baseUrl: 'https://example.test/v1',
     model: 'model',
     messages: [{ role: 'user', content: 'build it' }],
+    schemaVersion: 2,
     ...overrides
   }
 }
@@ -209,15 +210,62 @@ describe('OpenAI-compatible bounded streaming transport', () => {
   })
 
   it('parses a complete JSON response to stream:true without a second generation', async () => {
+    const fallback = vi.fn()
     const fetcher = vi.fn().mockResolvedValue(jsonResponse())
     const client = createOpenAICompatibleClient({ fetch: fetcher })
-    await expect(client.complete(request())).resolves.toEqual({
+    await expect(client.complete(request({ onCapabilityFallback: fallback }))).resolves.toEqual({
       content: envelope, streamingSupported: false, responseFormatSupported: true
     })
     expect(fetcher).toHaveBeenCalledOnce()
+    expect(fallback).toHaveBeenCalledOnce()
+    expect(fallback).toHaveBeenCalledWith('streaming')
     const init = fetcher.mock.calls[0]?.[1]
     expect(init).toBeDefined()
     expect(JSON.parse(String(init?.body))).toMatchObject({ stream: true, response_format: { type: 'json_schema' } })
+  })
+
+  it('supports an explicit generic non-streaming completion without a questionnaire schema', async () => {
+    const fetcher = vi.fn().mockResolvedValue(jsonResponse('OK'))
+    const client = createOpenAICompatibleClient({ fetch: fetcher })
+
+    await expect(client.complete(request({
+      schemaVersion: 1,
+      streamingSupported: false,
+      responseFormatSupported: false
+    }))).resolves.toEqual({
+      content: 'OK', streamingSupported: false, responseFormatSupported: false
+    })
+    const body = JSON.parse(String(fetcher.mock.calls[0]?.[1]?.body))
+    expect(body).not.toHaveProperty('stream')
+    expect(body).not.toHaveProperty('response_format')
+  })
+
+  it('treats null refusal and tool payloads as unused in JSON and SSE responses', async () => {
+    const json = new Response(JSON.stringify({
+      choices: [{
+        index: 0,
+        finish_reason: 'stop',
+        message: { role: 'assistant', content: envelope, refusal: null, tool_calls: null }
+      }]
+    }), { status: 200, headers: { 'content-type': 'application/json' } })
+    const stream = streamingResponse([sse(
+      JSON.stringify({
+        choices: [{
+          index: 0,
+          delta: { role: 'assistant', refusal: null, tool_calls: null },
+          finish_reason: null
+        }]
+      }),
+      chunk(envelope),
+      chunk(undefined, 'stop'),
+      '[DONE]'
+    )])
+    const client = createOpenAICompatibleClient({
+      fetch: vi.fn().mockResolvedValueOnce(json).mockResolvedValueOnce(stream)
+    })
+
+    await expect(client.complete(request({ streamingSupported: false }))).resolves.toMatchObject({ content: envelope })
+    await expect(client.complete(request())).resolves.toMatchObject({ content: envelope })
   })
 
   it('falls back independently for explicit response_format then stream rejections', async () => {
