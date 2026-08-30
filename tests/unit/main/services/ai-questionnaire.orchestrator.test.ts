@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest'
 import {
   applyArtifact,
   createAIQuestionnaireOrchestrator,
+  migrateSessionVersion,
   previewQuestionnaireArtifact
 } from '@main/services/ai-questionnaire.orchestrator'
 import {
@@ -16,6 +17,13 @@ import type { AIProgressEvent } from '@shared/ai-assistant-contract'
 import type { ProjectData } from '@shared/types/project'
 
 const sessionId = '123e4567-e89b-42d3-a456-426614174000'
+const v1VersionStamp = {
+  promptId: 'easyepi-questionnaire-assistant',
+  promptVersion: '1.1.0',
+  promptHash: 'sha256:d407a445883fa9a015c8772201af387fdbca41df3f33545a58017ba79d47c832',
+  harnessVersion: '1.1.0',
+  schemaVersion: 1
+} as const
 
 function project(versionStamp = getAiVersionStamp()): ProjectData {
   const meta = {
@@ -90,6 +98,19 @@ function expectQuestionnaireResult(
 }
 
 describe('AI questionnaire orchestrator', () => {
+  it('treats migration to the current v2 version as a no-op', async () => {
+    const value = project()
+    const persistProject = vi.fn()
+
+    await expect(migrateSessionVersion({
+      project: value,
+      sessionId,
+      targetVersionStamp: getAiVersionStamp(),
+      persistProject
+    })).resolves.toEqual({ migrated: false })
+    expect(persistProject).not.toHaveBeenCalled()
+  })
+
   it('emits ordered attempt-scoped progress and persists before its single terminal event', async () => {
     const value = project()
     const events: AIProgressEvent[] = []
@@ -700,6 +721,70 @@ describe('AI questionnaire orchestrator', () => {
       expect.objectContaining({ variableName: 'bmi' })
     ])
     expect(value.questionnaireRevision).not.toBe(revisionBeforeApply)
+  })
+
+  it('rejects the first apply of an active schema-1 artifact', async () => {
+    const value = project()
+    const generated = await createAIQuestionnaireOrchestrator({
+      persistProject: vi.fn(),
+      client: { complete: vi.fn().mockResolvedValue({ content: validCompletion(), responseFormatSupported: true }) }
+    }).sendTurn({
+      project: value,
+      sessionId,
+      userText: 'Create a questionnaire',
+      explicitAttachment: structuredClone(value.questionnaire),
+      config: { baseUrl: 'https://example.test/v1', model: 'model' }
+    })
+    expectQuestionnaireResult(generated)
+    const storedSession = value.aiAssistant!.sessions[sessionId]!
+    storedSession.manifest.versionStamp = structuredClone(v1VersionStamp)
+    storedSession.artifacts.byId[generated.artifact.artifactId]!.versionStamp = structuredClone(v1VersionStamp)
+    const backup = vi.fn()
+
+    await expect(applyArtifact({
+      project: value,
+      sessionId,
+      artifactId: generated.artifact.artifactId,
+      currentProjectPath: 'D:\\study.easyepi',
+      backup,
+      saveAtomic: vi.fn()
+    })).rejects.toThrow('AI_VERSION_MIGRATION_REQUIRED')
+    expect(backup).not.toHaveBeenCalled()
+  })
+
+  it('replays a successful apply after the artifact is no longer active', async () => {
+    const value = project()
+    const generated = await createAIQuestionnaireOrchestrator({
+      persistProject: vi.fn(),
+      client: { complete: vi.fn().mockResolvedValue({ content: validCompletion(), responseFormatSupported: true }) }
+    }).sendTurn({
+      project: value,
+      sessionId,
+      userText: 'Create a questionnaire',
+      explicitAttachment: structuredClone(value.questionnaire),
+      config: { baseUrl: 'https://example.test/v1', model: 'model' }
+    })
+    expectQuestionnaireResult(generated)
+    const operationId = 'apply-operation-1'
+    const backup = vi.fn()
+    const saveAtomic = vi.fn()
+    const request = {
+      project: value,
+      sessionId,
+      artifactId: generated.artifact.artifactId,
+      operationId,
+      currentProjectPath: 'D:\\study.easyepi',
+      backup,
+      saveAtomic
+    }
+
+    await expect(applyArtifact(request)).resolves.toMatchObject({ applied: true })
+    value.aiAssistant!.sessions[sessionId]!.state.values.activeArtifactId = null
+    await expect(applyArtifact(request)).resolves.toMatchObject({ applied: false })
+    await expect(applyArtifact({ ...request, artifactId: 'different-artifact' }))
+      .rejects.toThrow('AI_APPLY_OPERATION_CONFLICT')
+    expect(backup).toHaveBeenCalledOnce()
+    expect(saveAtomic).toHaveBeenCalledOnce()
   })
 
   it('serializes failed run persistence with a later artifact apply', async () => {

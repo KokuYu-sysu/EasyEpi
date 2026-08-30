@@ -21,6 +21,7 @@ import {
   buildAIContentCacheKey,
   buildQuestionnaireContext,
   diffQuestionnaires,
+  getAiVersionStamp,
   hashAIQuestionnaire,
   migrateAISessionVersion,
   resolveAIRegistryEntry,
@@ -235,10 +236,10 @@ export async function migrateSessionVersion(
   resolveAIRegistryEntry(session.manifest.versionStamp)
   const target = resolveAIRegistryEntry(request.targetVersionStamp)
   if (target.compatibility !== 'supported') throw new Error('AI_VERSION_MIGRATION_REQUIRED')
-  migrateAISessionVersion(session.manifest.versionStamp, request.targetVersionStamp)
   if (sameVersionStamp(session.manifest.versionStamp, request.targetVersionStamp)) {
     return { migrated: false }
   }
+  migrateAISessionVersion(session.manifest.versionStamp, request.targetVersionStamp)
   await mutateAndPersist(request.project, request.persistProject, 'session-migrated', () => {
     repository.migrateSessionVersion(request.sessionId, request.targetVersionStamp)
   })
@@ -879,9 +880,6 @@ export async function applyArtifact(
     const repository = new AISessionRepository(request.project)
     const session = repository.get(request.sessionId)
     if (session === undefined) throw new Error('AI_SESSION_NOT_FOUND')
-    if (session.state.values.activeArtifactId !== request.artifactId) {
-      throw new Error('AI_ARTIFACT_NOT_APPLICABLE')
-    }
     const operationId = request.operationId ?? request.artifactId
     if (!OPERATION_ID_PATTERN.test(operationId)) {
       throw new Error('INVALID_AI_APPLY_OPERATION')
@@ -892,11 +890,23 @@ export async function applyArtifact(
     const appliedOperations = jsonObject(session.state.values.appliedOperations)
       ? session.state.values.appliedOperations
       : {}
-    if (appliedArtifacts[request.artifactId] !== undefined) {
-      return { applied: false, questionnaire: structuredClone(request.project.questionnaire) }
-    }
     if (appliedOperations[operationId] !== undefined && appliedOperations[operationId] !== request.artifactId) {
       throw new Error('AI_APPLY_OPERATION_CONFLICT')
+    }
+    if (appliedOperations[operationId] === request.artifactId ||
+      appliedArtifacts[request.artifactId] !== undefined) {
+      return { applied: false, questionnaire: structuredClone(request.project.questionnaire) }
+    }
+    const currentVersionStamp = getAiVersionStamp()
+    if (!sameVersionStamp(session.manifest.versionStamp, currentVersionStamp)) {
+      throw new Error('AI_VERSION_MIGRATION_REQUIRED')
+    }
+    const artifact = session.artifacts.byId[request.artifactId]
+    if (artifact === undefined || !sameVersionStamp(artifact.versionStamp, currentVersionStamp)) {
+      throw new Error('AI_ARTIFACT_NOT_APPLICABLE')
+    }
+    if (session.state.values.activeArtifactId !== request.artifactId) {
+      throw new Error('AI_ARTIFACT_NOT_APPLICABLE')
     }
     const value = previewQuestionnaireArtifact(request.project, request.sessionId, request.artifactId)
     if (value === undefined) throw new Error('AI_ARTIFACT_NOT_APPLICABLE')
