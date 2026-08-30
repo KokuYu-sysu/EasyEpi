@@ -572,10 +572,10 @@ describe('AI questionnaire orchestrator', () => {
       .baseQuestionnaireRevision).toBe('cccccccc-cccc-4ccc-8ccc-cccccccccccc')
     expect(readFormalQuestionnaire).not.toHaveBeenCalled()
     Object.defineProperty(value, 'questionnaire', { value: formalQuestionnaire, writable: true })
-    expect(previewQuestionnaireArtifact(value, sessionId, first.artifact.artifactId))
+    expect(previewQuestionnaireArtifact(value, sessionId, first.artifact.artifactId, false, true))
       .toMatchObject({ baseQuestionnaireRevision: value.questionnaireRevision })
     await expect(applyArtifact({
-      project: value, sessionId, artifactId: first.artifact.artifactId,
+      project: value, sessionId, artifactId: refined.artifact.artifactId,
       currentProjectPath: 'D:\\study.easyepi', backup: vi.fn(), saveAtomic: vi.fn()
     })).resolves.toMatchObject({ applied: true })
   })
@@ -758,6 +758,14 @@ describe('AI questionnaire orchestrator', () => {
     value.questionnaire.name = 'Changed concurrently'
     refreshQuestionnaireRevision(value)
     expect(() => previewQuestionnaireArtifact(value, sessionId, generated.artifact.artifactId)).toThrow('AI_ARTIFACT_STALE')
+    value.aiAssistant!.sessions[sessionId]!.state.values.activeArtifactId = null
+    expect(previewQuestionnaireArtifact(
+      value,
+      sessionId,
+      generated.artifact.artifactId,
+      false,
+      true
+    )?.assistantMessage).toBe('Done')
     const backup = vi.fn()
     await expect(applyArtifact({
       project: value,
@@ -766,8 +774,9 @@ describe('AI questionnaire orchestrator', () => {
       currentProjectPath: 'D:\\study.easyepi',
       backup,
       saveAtomic: vi.fn()
-    })).rejects.toThrow('AI_ARTIFACT_STALE')
+    })).rejects.toThrow('AI_ARTIFACT_NOT_APPLICABLE')
     expect(backup).not.toHaveBeenCalled()
+    value.aiAssistant!.sessions[sessionId]!.state.values.activeArtifactId = generated.artifact.artifactId
 
     value.questionnaire.name = 'Existing'
     const artifactValue = generated.artifact.value as Record<string, unknown>

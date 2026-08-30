@@ -63,6 +63,7 @@ interface ActiveArtifact {
   sessionId: string
   artifactId: string
   operationId: string
+  historical: boolean
   preview: AIArtifactPreview
 }
 
@@ -340,13 +341,13 @@ function ArtifactPreviewCard({
     <Card>
       <CardHeader className="flex-row flex-wrap items-start justify-between">
         <div>
-          <CardTitle>AI 问卷草稿</CardTitle>
+          <CardTitle>{artifact.historical ? '历史问卷草稿' : 'AI 问卷草稿'}</CardTitle>
           <p className="mb-0 mt-[var(--space-1)] text-[var(--color-text-secondary)]">
             {preview.rollingSummary}
           </p>
         </div>
         <Badge variant={requiresRegeneration ? 'warning' : 'success'}>
-          {requiresRegeneration ? '需重新生成' : '本地校验通过'}
+          {artifact.historical ? '历史记录 · 需重新生成' : requiresRegeneration ? '需重新生成' : '本地校验通过'}
         </Badge>
       </CardHeader>
       <CardContent className="grid gap-[var(--space-4)]">
@@ -391,7 +392,9 @@ function ArtifactPreviewCard({
         </section>
         {requiresRegeneration ? (
           <p role="status" className="m-0 rounded-[var(--radius-1)] bg-[var(--color-warning-soft)] p-[var(--space-3)]">
-            正式问卷或草稿状态已变化，需重新生成后才能应用。
+            {artifact.historical
+              ? '这是历史记录，仅供查看；需重新生成当前版本草稿后才能应用。'
+              : '正式问卷或草稿状态已变化，需重新生成后才能应用。'}
           </p>
         ) : null}
         <div className="flex justify-end">
@@ -419,6 +422,7 @@ export function AIQuestionnairePage() {
   const [loadingEarlier, setLoadingEarlier] = useState(false)
   const [sending, setSending] = useState(false)
   const [applying, setApplying] = useState(false)
+  const [migrating, setMigrating] = useState(false)
   const [clearingCache, setClearingCache] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [projectBlocked, setProjectBlocked] = useState(false)
@@ -456,6 +460,7 @@ export function AIQuestionnairePage() {
     sessionId: string
     artifactId: string
     operationId: string
+    historical: boolean
   } | null>(null)
   const activeSessionIdRef = useRef<string | null>(null)
   const activeArtifactRef = useRef<ActiveArtifact | null>(null)
@@ -463,6 +468,7 @@ export function AIQuestionnairePage() {
   const pendingSendRef = useRef<PendingSendIntent | null>(null)
   const privacyBusyRef = useRef(false)
   const clearingCacheRef = useRef(false)
+  const migratingRef = useRef(false)
   const activeRequestIdRef = useRef<string | null>(null)
   const activeRunIdRef = useRef<string | null>(null)
   const progressSubscriptionRef = useRef<ProgressSubscription | null>(null)
@@ -515,6 +521,11 @@ export function AIQuestionnairePage() {
     setClearingCache(busy)
   }, [])
 
+  const setMigratingSynchronized = useCallback((busy: boolean) => {
+    migratingRef.current = busy
+    setMigrating(busy)
+  }, [])
+
   const cleanupProgressSubscription = useCallback((requestId?: string) => {
     const subscription = progressSubscriptionRef.current
     if (subscription === null || (requestId !== undefined && subscription.requestId !== requestId)) return
@@ -557,10 +568,12 @@ export function AIQuestionnairePage() {
     pendingSendRef.current = null
     privacyBusyRef.current = false
     clearingCacheRef.current = false
+    migratingRef.current = false
     setSending(false)
     setPendingSend(false)
     setPrivacyBusy(false)
     setApplying(false)
+    setMigrating(false)
     setClearingCache(false)
     setLoadingEarlier(false)
     setPrivacyOpen(false)
@@ -657,26 +670,27 @@ export function AIQuestionnairePage() {
     sessionId: string,
     artifactId: string,
     operationId: string,
-    generation = generationRef.current
+    generation = generationRef.current,
+    historical = false
   ) => {
     const token = ++artifactPreviewRequestRef.current
-    const target = { token, sessionId, artifactId, operationId }
+    const target = { token, sessionId, artifactId, operationId, historical }
     artifactPreviewTargetRef.current = target
     if (activeArtifactRef.current?.artifactId !== artifactId) {
-      setArtifactApplicability({ artifactId, applicable: true })
+      setArtifactApplicability({ artifactId, applicable: !historical })
     }
     const targetIsCurrent = () => {
       const current = artifactPreviewTargetRef.current
       return isCurrent(generation, sessionId) && current?.token === token &&
         current.sessionId === sessionId && current.artifactId === artifactId &&
-        current.operationId === operationId
+        current.operationId === operationId && current.historical === historical
     }
     try {
       const result = await window.easyEpi.ai.artifact.preview({ sessionId, artifactId })
       if (!targetIsCurrent()) return
       if (result.ok) {
-        commitActiveArtifact({ sessionId, artifactId, operationId, preview: result.preview })
-        setArtifactApplicability({ artifactId, applicable: true })
+        commitActiveArtifact({ sessionId, artifactId, operationId, historical, preview: result.preview })
+        setArtifactApplicability({ artifactId, applicable: !historical })
       } else {
         const current = activeArtifactRef.current
         if (isTerminalArtifactError(result.errorCode) && current?.sessionId === sessionId &&
@@ -871,7 +885,7 @@ export function AIQuestionnairePage() {
   }, [activeSessionId, loadLatestSession, sending, sessionPage?.activeRun, subscribeProgress])
 
   const createSession = async () => {
-    if (sending || applying) return
+    if (sending || applying || migratingRef.current) return
     const generation = generationRef.current
     setError(null)
     try {
@@ -888,7 +902,7 @@ export function AIQuestionnairePage() {
   const saveRename = async () => {
     const sessionId = activeSessionIdRef.current
     const generation = generationRef.current
-    if (sending || applying) return
+    if (sending || applying || migratingRef.current) return
     if (sessionId === null || renameTitle.trim().length === 0) {
       setError('请输入对话名称。')
       return
@@ -911,7 +925,7 @@ export function AIQuestionnairePage() {
   const deleteSession = async () => {
     const sessionId = activeSessionIdRef.current
     const generation = generationRef.current
-    if (sessionId === null || sending || applying) return
+    if (sessionId === null || sending || applying || migratingRef.current) return
     try {
       const result = await window.easyEpi.ai.session.delete({ sessionId })
       if (!isCurrent(generation, sessionId)) return
@@ -928,7 +942,7 @@ export function AIQuestionnairePage() {
     const sessionId = activeSessionIdRef.current
     const generation = generationRef.current
     if (sessionId === null || sending || activeRequestIdRef.current !== null || applying ||
-      clearingCacheRef.current || pendingSendRef.current !== null || privacyBusyRef.current) return
+      clearingCacheRef.current || migratingRef.current || pendingSendRef.current !== null || privacyBusyRef.current) return
     setClearingCacheSynchronized(true)
     setError(null)
     try {
@@ -944,6 +958,38 @@ export function AIQuestionnairePage() {
       if (isCurrent(generation, sessionId)) setError('无法清除当前对话缓存。')
     } finally {
       if (isCurrent(generation, sessionId)) setClearingCacheSynchronized(false)
+    }
+  }
+
+  const migrateSession = async () => {
+    const sessionId = activeSessionIdRef.current
+    const generation = generationRef.current
+    if (sessionId === null || migratingRef.current || sending || applying ||
+      clearingCacheRef.current || pendingSendRef.current !== null || privacyBusyRef.current ||
+      activeRequestIdRef.current !== null || sessionPage?.status === 'running') return
+    setMigratingSynchronized(true)
+    setError(null)
+    try {
+      const result = await window.easyEpi.ai.session.migrate({ sessionId })
+      if (!isCurrent(generation, sessionId)) return
+      if (!result.ok) return handleFailure(result.errorCode, '无法迁移当前对话。')
+      const message = result.migrated
+        ? '当前对话已迁移到最新 AI 协议；历史草稿仅供查看，请重新生成后应用。'
+        : '当前对话已是最新 AI 协议，无需迁移。'
+      setAnnouncement(message)
+      toast.push({
+        title: result.migrated ? '对话迁移完成' : '无需迁移',
+        description: message,
+        tone: 'success'
+      })
+      await Promise.all([
+        loadLatestSession(sessionId, generation),
+        loadSessions(sessionId, generation)
+      ])
+    } catch {
+      if (isCurrent(generation, sessionId)) setError('无法迁移当前对话。')
+    } finally {
+      if (isCurrent(generation, sessionId)) setMigratingSynchronized(false)
     }
   }
 
@@ -982,7 +1028,7 @@ export function AIQuestionnairePage() {
     const sessionId = activeSessionIdRef.current
     const generation = generationRef.current
     if (sessionId === null || sending || applying || clearingCacheRef.current ||
-      pendingSendRef.current !== null || privacyBusyRef.current) return
+      migratingRef.current || pendingSendRef.current !== null || privacyBusyRef.current) return
     setAttachmentLoading(true)
     setError(null)
     try {
@@ -1016,6 +1062,7 @@ export function AIQuestionnairePage() {
       sessionId,
       artifactId: artifact.artifactId,
       operationId: artifact.operationId,
+      historical: false,
       preview: artifact.value
     })
     setArtifactApplicability({ artifactId: artifact.artifactId, applicable: true })
@@ -1056,7 +1103,7 @@ export function AIQuestionnairePage() {
   const performSend = async (intent: PendingSendIntent) => {
     if (!isCurrent(intent.generation, intent.sessionId) ||
       pendingSendRef.current?.requestId !== intent.requestId ||
-      activeRequestIdRef.current !== null || clearingCacheRef.current) return
+      activeRequestIdRef.current !== null || clearingCacheRef.current || migratingRef.current) return
     activeRequestIdRef.current = intent.requestId
     setSending(true)
     setPrivacyBusySynchronized(false)
@@ -1184,7 +1231,7 @@ export function AIQuestionnairePage() {
     content: string,
     clarificationSelection?: PendingSendIntent['clarificationSelection']
   ) => {
-    if (pendingSendRef.current !== null || clearingCacheRef.current) return
+    if (pendingSendRef.current !== null || clearingCacheRef.current || migratingRef.current) return
     const sessionId = activeSessionIdRef.current
     const generation = generationRef.current
     if (sessionId === null || (clarificationSelection === undefined && content.trim().length === 0) ||
@@ -1283,6 +1330,7 @@ export function AIQuestionnairePage() {
     const generation = generationRef.current
     if (sessionId === null || activeArtifact === null ||
       activeArtifact.sessionId !== sessionId || applying || sending || clearingCacheRef.current ||
+      migratingRef.current || activeArtifact.historical ||
       (artifactApplicability?.artifactId === activeArtifact.artifactId &&
         !artifactApplicability.applicable)) return
     const artifact = activeArtifact
@@ -1329,7 +1377,7 @@ export function AIQuestionnairePage() {
   }
 
   const activeSession = sessions.find(({ sessionId }) => sessionId === activeSessionId)
-  const sessionOperationsLocked = sending || applying || clearingCache || pendingSend || privacyBusy
+  const sessionOperationsLocked = sending || applying || migrating || clearingCache || pendingSend || privacyBusy
   const activeLiveRun = liveRun?.sessionId === activeSessionId ? liveRun : null
   const sessionRunActive = sessionPage?.status === 'running' || activeLiveRun !== null
   const latestUnresolvedClarificationMessageId = latestActionableClarificationMessageId(messages)
@@ -1337,11 +1385,10 @@ export function AIQuestionnairePage() {
     !configMissing && pendingClarificationId === null
   const liveFailureIsPersisted = liveFailure?.runId !== null && liveFailure?.runId !== undefined &&
     sessionPage?.failures.some(({ runId }) => runId === liveFailure.runId) === true
-  const activeArtifactRequiresRegeneration = activeArtifact !== null &&
-    artifactApplicability?.artifactId === activeArtifact.artifactId &&
-    !artifactApplicability.applicable
-  const canSend = activeSessionId !== null && draft.trim().length > 0 && !sending && !applying &&
-    !clearingCache && !pendingSend && !privacyBusy &&
+  const activeArtifactRequiresRegeneration = activeArtifact?.historical === true ||
+    (activeArtifact !== null && artifactApplicability?.artifactId === activeArtifact.artifactId &&
+      !artifactApplicability.applicable)
+  const canSend = activeSessionId !== null && draft.trim().length > 0 && !sessionOperationsLocked &&
     !projectBlocked && !configMissing && !sessionRunActive
 
   return (
@@ -1414,6 +1461,13 @@ export function AIQuestionnairePage() {
                     confirmLabel="确认清除缓存"
                     onConfirm={() => void clearSessionCache()}
                   />
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    loading={migrating}
+                    disabled={sessionOperationsLocked || sessionRunActive}
+                    onClick={() => void migrateSession()}
+                  >迁移当前对话</Button>
                   <ConfirmDialog
                     trigger={<Button size="sm" variant="danger" disabled={sessionOperationsLocked}><Trash2 aria-hidden="true" size={16} />删除</Button>}
                     title="删除 AI 对话"
@@ -1499,10 +1553,44 @@ export function AIQuestionnairePage() {
                   <ArtifactPreviewCard
                     artifact={activeArtifact}
                     applying={applying}
-                    blocked={clearingCache}
+                    blocked={sessionOperationsLocked || sessionRunActive}
                     requiresRegeneration={activeArtifactRequiresRegeneration}
                     onApply={() => void applyArtifact()}
                   />
+                ) : null}
+
+                {sessionPage?.artifacts.some(({ status }) => status === 'completed') ? (
+                  <Card>
+                    <CardHeader><CardTitle>生成记录</CardTitle></CardHeader>
+                    <CardContent>
+                      <ul aria-label="问卷草稿记录" className="m-0 grid list-none gap-[var(--space-2)] p-0">
+                        {sessionPage.artifacts.filter(({ status }) => status === 'completed').map((artifact) => {
+                          const current = artifact.artifactId === sessionPage.activeArtifactId
+                          const selected = artifact.artifactId === activeArtifact?.artifactId
+                          return (
+                            <li key={artifact.artifactId}>
+                              <Button
+                                className="w-full justify-between text-left"
+                                variant={selected ? 'secondary' : 'ghost'}
+                                aria-pressed={selected}
+                                disabled={sessionOperationsLocked}
+                                onClick={() => void loadArtifact(
+                                  activeSessionId,
+                                  artifact.artifactId,
+                                  artifact.operationId,
+                                  generationRef.current,
+                                  !current
+                                )}
+                              >
+                                <span>{current ? '当前草稿' : '历史草稿（只读）'}</span>
+                                <time dateTime={artifact.updatedAt}>{localTime(artifact.updatedAt)}</time>
+                              </Button>
+                            </li>
+                          )
+                        })}
+                      </ul>
+                    </CardContent>
+                  </Card>
                 ) : null}
 
                 <Card>
@@ -1523,7 +1611,7 @@ export function AIQuestionnairePage() {
                       ref={textareaRef}
                       label="给 AI 的消息"
                       value={draft}
-                      disabled={sending || applying || clearingCache || privacyBusy || sessionPage?.status === 'running'}
+                      disabled={sessionOperationsLocked || sessionPage?.status === 'running'}
                       placeholder="例如：为社区高血压筛查设计一份简洁问卷……"
                       hint="Enter 发送，Shift+Enter 换行。只有对话内容和你明确加入的当前问卷会发送。"
                       onChange={(event) => setDraft(event.target.value)}

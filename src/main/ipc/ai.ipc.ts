@@ -842,10 +842,15 @@ export function registerAIIpcHandlers(
     trusted(event)
     try {
       const request = parseAIArtifactRequest(rawRequest)
+      const project = captureProject(state).project
+      const session = new AISessionRepository(project).get(request.sessionId)
+      const historical = session?.state.values.activeArtifactId !== request.artifactId
       const preview = previewQuestionnaireArtifact(
-        captureProject(state).project,
+        project,
         request.sessionId,
-        request.artifactId
+        request.artifactId,
+        !historical,
+        historical
       )
       if (preview === undefined) throw new Error('AI_ARTIFACT_NOT_APPLICABLE')
       return { ok: true, preview: preview as AIArtifactPreview } satisfies AIArtifactPreviewResult

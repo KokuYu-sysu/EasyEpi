@@ -847,12 +847,16 @@ export function previewQuestionnaireArtifact(
   project: ProjectData,
   sessionId: string,
   artifactId: string,
-  checkStale = true
+  checkStale = true,
+  historical = false
 ): QuestionnaireArtifactValue | undefined {
   const session = new AISessionRepository(project).get(sessionId)
   if (session === undefined) return undefined
   const artifact = session.artifacts.byId[artifactId]
-  return artifact === undefined ? undefined : parseArtifactValue(project, session, artifact, checkStale)
+  if (artifact === undefined) return undefined
+  return historical
+    ? validateQuestionnaireArtifact(artifact, artifact.versionStamp)
+    : parseArtifactValue(project, session, artifact, checkStale)
 }
 
 export interface ApplyQuestionnaireArtifactRequest {
@@ -875,6 +879,9 @@ export async function applyArtifact(
     const repository = new AISessionRepository(request.project)
     const session = repository.get(request.sessionId)
     if (session === undefined) throw new Error('AI_SESSION_NOT_FOUND')
+    if (session.state.values.activeArtifactId !== request.artifactId) {
+      throw new Error('AI_ARTIFACT_NOT_APPLICABLE')
+    }
     const operationId = request.operationId ?? request.artifactId
     if (!OPERATION_ID_PATTERN.test(operationId)) {
       throw new Error('INVALID_AI_APPLY_OPERATION')

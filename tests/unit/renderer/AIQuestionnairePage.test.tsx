@@ -168,7 +168,8 @@ function installApi(accepted: boolean) {
         create: vi.fn(),
         update: vi.fn(),
         delete: vi.fn(),
-        clearCache: vi.fn()
+        clearCache: vi.fn(),
+        migrate: vi.fn()
       },
       send: vi.fn().mockResolvedValue({ ok: false, errorCode: 'AI_PROVIDER_ERROR', message: 'AI 服务返回错误。' }),
       cancel: vi.fn(),
@@ -192,6 +193,73 @@ function renderPage() {
 }
 
 describe('AIQuestionnairePage boundaries', () => {
+  it('migrates the current session, reports both outcomes, and refreshes session data', async () => {
+    const user = userEvent.setup()
+    const api = installApi(true)
+    api.ai.session.migrate
+      .mockResolvedValueOnce({ ok: true, migrated: true, session })
+      .mockResolvedValueOnce({ ok: true, migrated: false, session })
+    renderPage()
+    await screen.findByRole('heading', { name: '调查问卷讨论', level: 3 })
+    const initialGetCalls = api.ai.session.get.mock.calls.length
+    const initialListCalls = api.ai.session.list.mock.calls.length
+
+    await user.click(screen.getByRole('button', { name: '迁移当前对话' }))
+    await waitFor(() => expect(api.ai.session.migrate).toHaveBeenCalledWith({
+      sessionId: session.sessionId
+    }))
+    await waitFor(() => {
+      expect(api.ai.session.get.mock.calls.length).toBeGreaterThan(initialGetCalls)
+      expect(api.ai.session.list.mock.calls.length).toBeGreaterThan(initialListCalls)
+    })
+    expect(screen.getAllByText(/历史草稿仅供查看，请重新生成后应用/).length).toBeGreaterThan(0)
+
+    await user.click(screen.getByRole('button', { name: '迁移当前对话' }))
+    expect((await screen.findAllByText(/已是最新 AI 协议，无需迁移/)).length).toBeGreaterThan(0)
+  })
+
+  it('previews completed historical artifacts but never enables their apply action', async () => {
+    const user = userEvent.setup()
+    const api = installApi(true)
+    const currentPreview = artifactPreview('当前版本')
+    const historicalPreview = artifactPreview('历史版本')
+    api.ai.session.get.mockResolvedValue({
+      ok: true,
+      session: {
+        ...page,
+        activeArtifactId: 'artifact-current',
+        artifacts: [
+          {
+            artifactId: 'artifact-current', operationId: 'operation-current',
+            kind: 'questionnaire-draft', status: 'completed',
+            createdAt: '2026-08-25T02:00:00.000Z', updatedAt: '2026-08-25T02:00:00.000Z'
+          },
+          {
+            artifactId: 'artifact-history', operationId: 'operation-history',
+            kind: 'questionnaire-draft', status: 'completed',
+            createdAt: '2026-08-25T01:00:00.000Z', updatedAt: '2026-08-25T01:00:00.000Z'
+          }
+        ]
+      }
+    })
+    api.ai.artifact.preview.mockImplementation(({ artifactId }: { artifactId: string }) =>
+      Promise.resolve({
+        ok: true,
+        preview: artifactId === 'artifact-history' ? historicalPreview : currentPreview
+      }))
+    renderPage()
+
+    expect(await screen.findByText('草稿 当前版本')).toBeVisible()
+    await user.click(screen.getByRole('button', { name: /历史草稿（只读）/ }))
+    expect(await screen.findByRole('heading', { name: '历史问卷草稿' })).toBeVisible()
+    expect(screen.getByText('草稿 历史版本')).toBeVisible()
+    expect(screen.getByText(/这是历史记录，仅供查看/)).toBeVisible()
+    const applyButton = screen.getByRole('button', { name: '应用到正式问卷' })
+    expect(applyButton).toBeDisabled()
+    await user.click(applyButton)
+    expect(api.ai.artifact.apply).not.toHaveBeenCalled()
+  })
+
   it('streams attempts, resolves clarification, and exposes grouped repair actions without accepting stale progress', async () => {
     const user = userEvent.setup()
     const api = installApi(true)
