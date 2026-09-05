@@ -1,9 +1,9 @@
-import { render, screen, waitFor, within } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { createMemoryRouter, RouterProvider } from 'react-router-dom'
 import { vi } from 'vitest'
 
-import { AppShell } from '@renderer/app/AppShell'
+import { AppShell, NAVIGATION_ITEMS } from '@renderer/app/AppShell'
 import { ToastProvider } from '@renderer/components/ui'
 import {
   createPreferencesStore,
@@ -214,11 +214,37 @@ describe('AppShell', () => {
     renderShell()
     const trigger = screen.getByRole('button', { name: '打开导航菜单' })
 
-    trigger.focus()
+    fireEvent.focus(trigger)
 
     expect(await screen.findByRole('tooltip')).toHaveTextContent(
-      '打开导航菜单，显示全部九个页面入口'
+      '打开导航菜单，显示全部9个页面入口'
     )
+  })
+
+  it('keeps compact-navigation help synchronized with the visible links', async () => {
+    const user = userEvent.setup()
+    NAVIGATION_ITEMS.push({
+      path: '/navigation-count-fixture',
+      title: '导航数量测试',
+      description: '验证动态数量',
+      icon: null
+    })
+
+    try {
+      renderShell()
+      const trigger = screen.getByRole('button', { name: '打开导航菜单' })
+      await user.hover(trigger)
+      expect(await screen.findByRole('tooltip')).toHaveTextContent(
+        '打开导航菜单，显示全部10个页面入口'
+      )
+
+      await user.click(trigger)
+      expect(
+        screen.getByRole('navigation', { name: '紧凑导航' }).querySelectorAll('a')
+      ).toHaveLength(10)
+    } finally {
+      NAVIGATION_ITEMS.pop()
+    }
   })
 
   it('uses one complementary breakpoint for desktop and compact navigation', () => {

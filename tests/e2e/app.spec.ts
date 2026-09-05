@@ -217,7 +217,7 @@ test.describe('built Electron application', () => {
         await page.locator('body').focus()
         await pressTabUntil(page, '打开导航菜单')
         await expect(compactMenuTrigger).toBeFocused()
-        await expect(page.getByRole('tooltip')).toHaveText('打开导航菜单，显示全部九个页面入口')
+        await expect(page.getByRole('tooltip')).toHaveText('打开导航菜单，显示全部9个页面入口')
         await page.keyboard.press('Enter')
         await expect(
           page.getByRole('navigation', { name: '紧凑导航' }).getByRole('link')

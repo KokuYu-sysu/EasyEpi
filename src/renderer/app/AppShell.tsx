@@ -49,20 +49,17 @@ export const NAVIGATION_ITEMS: NavigationItem[] = [
 ]
 
 function NavigationLinks({
+  items,
   collapsed = false,
   onNavigate
 }: {
+  items: readonly NavigationItem[]
   collapsed?: boolean
   onNavigate?: () => void
 }) {
-  const authenticated = useAdminSession((state) => state.authenticated)
-  const navigationItems = authenticated
-    ? NAVIGATION_ITEMS
-    : NAVIGATION_ITEMS.filter((item) => !item.requiresAdmin)
-
   return (
     <ul className="m-0 grid list-none gap-[var(--space-1)] p-0">
-      {navigationItems.map((item) => (
+      {items.map((item) => (
         <li key={item.path}>
           <NavLink
             aria-label={item.title}
@@ -97,6 +94,9 @@ export function AppShell({ children }: PropsWithChildren) {
   const [compactOpen, setCompactOpen] = useState(false)
   const authenticated = useAdminSession((state) => state.authenticated)
   const expiresAt = useAdminSession((state) => state.expiresAt)
+  const visibleNavigationItems = authenticated
+    ? NAVIGATION_ITEMS
+    : NAVIGATION_ITEMS.filter((item) => !item.requiresAdmin)
   const wasAuthenticated = useRef(authenticated)
   const mainContentRef = useRef<HTMLElement>(null)
   const currentTitle = routeHandle?.title ?? 'EasyEpi'
@@ -171,7 +171,10 @@ export function AppShell({ children }: PropsWithChildren) {
             <strong className={preferences.sidebarCollapsed ? 'sr-only' : undefined}>EasyEpi</strong>
           </Link>
           <nav aria-label="主要导航" data-collapsed={preferences.sidebarCollapsed}>
-            <NavigationLinks collapsed={preferences.sidebarCollapsed} />
+            <NavigationLinks
+              items={visibleNavigationItems}
+              collapsed={preferences.sidebarCollapsed}
+            />
           </nav>
           <Tooltip content={preferences.sidebarCollapsed ? '展开侧栏' : '收起侧栏'}>
             <Button
@@ -192,7 +195,7 @@ export function AppShell({ children }: PropsWithChildren) {
           <header className="flex min-h-16 flex-wrap items-center gap-[var(--space-2)] border-b border-[var(--color-border-default)] bg-[var(--color-surface-base)] px-[var(--space-4)] py-[var(--space-2)]">
             <div className="relative min-[1050px]:hidden">
               <Tooltip
-                content={`打开导航菜单，显示全部${authenticated ? '九' : '六'}个页面入口`}
+                content={`打开导航菜单，显示全部${visibleNavigationItems.length}个页面入口`}
               >
                 <Button
                   variant="ghost"
@@ -208,7 +211,10 @@ export function AppShell({ children }: PropsWithChildren) {
                   aria-label="紧凑导航"
                   className="absolute left-0 top-full z-[var(--z-3)] mt-[var(--space-2)] max-h-[70vh] w-72 overflow-auto rounded-[var(--radius-2)] border border-[var(--color-border-default)] bg-[var(--color-surface-raised)] p-[var(--space-2)] shadow-[var(--shadow-z3)]"
                 >
-                  <NavigationLinks onNavigate={() => setCompactOpen(false)} />
+                  <NavigationLinks
+                    items={visibleNavigationItems}
+                    onNavigate={() => setCompactOpen(false)}
+                  />
                 </nav>
               ) : null}
             </div>

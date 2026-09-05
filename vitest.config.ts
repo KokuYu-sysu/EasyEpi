@@ -42,7 +42,6 @@ export default defineConfig({
         'src/renderer/components/entry/**',
         'src/renderer/pages/DesignerPage.tsx',
         'src/renderer/pages/EntryPage.tsx',
-        'src/renderer/pages/WorkSessionPage.tsx',
         'src/renderer/pages/WelcomePage.tsx',
         'src/renderer/stores/designer-demo-store.ts',
         'src/renderer/stores/qnaire.store.ts'
