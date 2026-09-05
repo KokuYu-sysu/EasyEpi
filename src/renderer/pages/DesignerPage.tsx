@@ -260,7 +260,7 @@ export function DesignerPage({ store: injectedStore }: DesignerPageProps) {
   return (
     <MilestonePage
       title={handle.title}
-      description={handle.description ?? '组织题目、规则与问卷结构。'}
+      description={handle.description ?? '生成和编辑题目，确定问卷逻辑和结构。'}
       demoMessage={mode === 'idle' ? '未打开项目，请先创建或打开项目。' : undefined}
       actions={
         <div className="flex flex-wrap gap-[var(--space-2)]">

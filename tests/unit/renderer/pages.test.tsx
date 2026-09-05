@@ -23,7 +23,7 @@ function renderRoute(routes: RouteObject[], initialEntry = '/') {
 describe('welcome page', () => {
   const welcomeHandle = {
     title: '欢迎页',
-    description: '选择项目并开始现场调查。'
+    description: '选择右方新建项目或者打开已有项目进行'
   }
 
   beforeEach(() => {
@@ -56,12 +56,17 @@ describe('welcome page', () => {
     Reflect.deleteProperty(window, 'easyEpi')
   })
 
-  it('describes the offline product and exposes truthful project actions', () => {
+  it('describes the product and exposes truthful project actions', () => {
     renderRoute([{ path: '/', handle: welcomeHandle, element: <WelcomePage /> }])
 
     expect(screen.getByRole('heading', { level: 1, name: '欢迎页' })).toBeVisible()
-    expect(screen.getAllByText(/离线/).length).toBeGreaterThan(0)
-    expect(screen.getByText(/现场调查和问卷信息收集/)).toBeVisible()
+    expect(screen.getByText('选择右方新建项目或者打开已有项目进行')).toBeVisible()
+    expect(screen.getByRole('heading', {
+      level: 2,
+      name: 'EasyEpi 为一款集合问卷设计、问卷调查、结果统计的桌面端应用'
+    })).toBeVisible()
+    expect(screen.getByText('面向高校、企业或科研机构，于人群中进行社会调查或者流行病学研究。')).toBeVisible()
+    expect(screen.queryByText('本地离线工作')).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: '新建项目' })).toBeVisible()
     expect(screen.getByRole('button', { name: '打开项目' })).toBeVisible()
     expect(screen.getByText(/暂无最近项目/)).toBeVisible()
@@ -141,7 +146,6 @@ describe('standard milestone pages', () => {
       '/designer',
       '/import',
       '/entry',
-      '/work-session',
       '/admin/login',
       '/admin/data',
       '/admin/baseline',

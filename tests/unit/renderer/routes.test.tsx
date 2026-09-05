@@ -3,6 +3,7 @@ import { createMemoryRouter, MemoryRouter, RouterProvider } from 'react-router-d
 import { vi } from 'vitest'
 
 import { PRODUCTION_ROUTES, createAppRouter, createAppRoutes } from '@renderer/app/routes'
+import { NAVIGATION_ITEMS } from '@renderer/app/AppShell'
 import { NotFoundPage } from '@renderer/pages/NotFoundPage'
 import { RouteErrorPage } from '@renderer/pages/RouteErrorPage'
 import { ToastProvider } from '@renderer/components/ui'
@@ -56,13 +57,12 @@ function flattenPaths(routes: ReturnType<typeof createAppRoutes>): string[] {
 }
 
 describe('application routes', () => {
-  it('registers exactly the eleven production destinations', () => {
+  it('registers exactly the ten production destinations', () => {
     expect(PRODUCTION_ROUTES.map(({ path }) => path)).toEqual([
       '/',
       '/designer',
       '/import',
       '/entry',
-      '/work-session',
       '/ai-assistant',
       '/admin/login',
       '/admin/data',
@@ -78,6 +78,47 @@ describe('application routes', () => {
     expect(PRODUCTION_ROUTES.every(({ handle }) => !Object.hasOwn(handle, 'placeholder'))).toBe(
       true
     )
+    expect(PRODUCTION_ROUTES).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          path: '/',
+          handle: expect.objectContaining({ description: '选择右方新建项目或者打开已有项目进行' })
+        }),
+        expect.objectContaining({
+          path: '/designer',
+          handle: expect.objectContaining({ description: '生成和编辑题目，确定问卷逻辑和结构。' })
+        }),
+        expect.objectContaining({
+          path: '/import',
+          handle: expect.objectContaining({
+            description: '支持 EpiData 软件的 .qes 格式文件导入。'
+          })
+        }),
+        expect.objectContaining({
+          path: '/entry',
+          handle: expect.objectContaining({
+            title: '问卷录入',
+            description: '通过一页一屏题目完成问卷录入。'
+          })
+        })
+      ])
+    )
+  })
+
+  it('omits work-session from navigation and renders its former route as not found', async () => {
+    expect(NAVIGATION_ITEMS.map(({ path }) => path)).not.toContain('/work-session')
+    expect(NAVIGATION_ITEMS).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ path: '/entry', title: '问卷录入', description: '逐题完成问卷' })
+      ])
+    )
+
+    const router = createAppRouter({ isDevelopment: false })
+    await router.navigate('/work-session')
+    renderDataRouter(router)
+
+    expect(screen.getByRole('heading', { level: 1, name: '页面未找到' })).toBeVisible()
+    router.dispose()
   })
 
   it('gates the component gallery behind the development flag', () => {

@@ -3,7 +3,7 @@ import { Link, useNavigate } from 'react-router-dom'
 
 import { useCurrentRouteHandle } from '@renderer/app/route-metadata'
 import { MilestonePage } from '@renderer/components/common/MilestonePage'
-import { Badge, Button, Input, Modal, useToast } from '@renderer/components/ui'
+import { Button, Input, Modal, useToast } from '@renderer/components/ui'
 import { clearAdminSession, syncAdminSession } from '@renderer/stores/admin-session.store'
 
 const primaryLinkClasses =
@@ -276,7 +276,7 @@ export function WelcomePage() {
   return (
     <MilestonePage
       title={handle.title}
-      description={handle.description ?? '离线开展问卷设计、现场录入和调查数据管理。'}
+      description={handle.description ?? '选择右方新建项目或者打开已有项目进行'}
       actions={
         <>
           <NewProjectDialog />
@@ -286,10 +286,9 @@ export function WelcomePage() {
     >
       <section className="grid gap-[var(--space-5)] rounded-[var(--radius-3)] bg-[var(--color-surface-raised)] p-[var(--space-5)] shadow-[var(--shadow-z1)]">
         <div className="grid gap-[var(--space-3)]">
-          <Badge className="w-fit" variant="info">本地离线工作</Badge>
-          <h2 className="m-0 text-[length:var(--font-size-xl)]">为现场调查和问卷信息收集而设计</h2>
+          <h2 className="m-0 text-[length:var(--font-size-xl)]">EasyEpi 为一款集合问卷设计、问卷调查、结果统计的桌面端应用</h2>
           <p className="m-0 max-w-[70ch] text-[var(--color-text-secondary)]">
-            EasyEpi 面向流行病学研究团队，在 Windows 电脑上离线组织问卷、开展单题录入并管理调查数据。
+            面向高校、企业或科研机构，于人群中进行社会调查或者流行病学研究。
           </p>
         </div>
         <nav aria-label="欢迎页主要操作" className="flex flex-wrap gap-[var(--space-3)]">

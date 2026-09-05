@@ -15,7 +15,6 @@ import { ImportPage } from '@renderer/pages/ImportPage'
 import { NotFoundPage } from '@renderer/pages/NotFoundPage'
 import { RouteErrorPage } from '@renderer/pages/RouteErrorPage'
 import { WelcomePage } from '@renderer/pages/WelcomePage'
-import { WorkSessionPage } from '@renderer/pages/WorkSessionPage'
 import { AIQuestionnairePage } from '@renderer/pages/AIQuestionnairePage'
 
 export interface ProductionRouteDefinition {
@@ -24,14 +23,13 @@ export interface ProductionRouteDefinition {
 }
 
 export const PRODUCTION_ROUTES: ProductionRouteDefinition[] = [
-  { path: '/', handle: { title: '欢迎页', description: '选择项目并开始现场调查。' } },
-  { path: '/designer', handle: { title: '问卷设计', description: '组织题目、规则与问卷结构。' } },
+  { path: '/', handle: { title: '欢迎页', description: '选择右方新建项目或者打开已有项目进行' } },
+  { path: '/designer', handle: { title: '问卷设计', description: '生成和编辑题目，确定问卷逻辑和结构。' } },
   {
     path: '/import',
-    handle: { title: 'EpiData 导入', description: '导入并核对 EpiData 问卷结构。' }
+    handle: { title: 'EpiData 导入', description: '支持 EpiData 软件的 .qes 格式文件导入。' }
   },
-  { path: '/entry', handle: { title: '单题录入', description: '以一题一屏方式完成现场录入。' } },
-  { path: '/work-session', handle: { title: '工作循环', description: '查看调查工作的标准循环。' } },
+  { path: '/entry', handle: { title: '问卷录入', description: '通过一页一屏题目完成问卷录入。' } },
   { path: '/ai-assistant', handle: { title: 'AI 问卷助手', description: '通过多轮对话生成、校验并应用问卷草稿。' } },
   { path: '/admin/login', handle: { title: '管理员验证', description: '使用当前项目密码进入数据管理后台。' } },
   { path: '/admin/data', handle: { title: '数据管理', description: '查看、编辑、删除和导出当前项目的加密记录。', requiresAdmin: true } },
@@ -45,7 +43,6 @@ const implementedRouteElements: Record<string, React.ReactElement> = {
   '/designer': <DesignerPage />,
   '/entry': <EntryPage />,
   '/import': <ImportPage />,
-  '/work-session': <WorkSessionPage />,
   '/ai-assistant': <AIQuestionnairePage />,
   '/admin/login': <AdminLoginPage />,
   '/admin/data': <AdminDashboard />,

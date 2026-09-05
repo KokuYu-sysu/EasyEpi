@@ -65,7 +65,7 @@ function renderDesigner(store?: QnaireStore) {
     [
       {
         path: '/designer',
-        handle: { title: '问卷设计', description: '组织题目、规则与问卷结构。' },
+        handle: { title: '问卷设计', description: '生成和编辑题目，确定问卷逻辑和结构。' },
         element: <DesignerPage store={s} />
       }
     ],
@@ -89,6 +89,7 @@ describe('designer demo page', () => {
     renderDesigner()
 
     expect(screen.getByRole('heading', { level: 1, name: '问卷设计' })).toBeVisible()
+    expect(screen.getByText('生成和编辑题目，确定问卷逻辑和结构。')).toBeVisible()
     await waitFor(() => {
       expect(screen.getByText('暂无题目')).toBeVisible()
     })

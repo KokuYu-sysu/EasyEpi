@@ -136,7 +136,7 @@ export function EntryPage({ store: injectedStore }: EntryPageProps) {
     <div className="grid gap-[var(--space-5)]">
       <PageHeader
         title={handle.title}
-        description={handle.description ?? '以一题一屏方式完成现场录入。'}
+        description={handle.description ?? '通过一页一屏题目完成问卷录入。'}
       />
       {content}
     </div>

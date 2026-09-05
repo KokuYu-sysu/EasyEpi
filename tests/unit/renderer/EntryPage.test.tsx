@@ -56,7 +56,7 @@ describe('EntryPage keyboard workflow', () => {
       [
         {
           path: '/entry',
-          handle: { title: '单题录入' },
+          handle: { title: '问卷录入', description: '通过一页一屏题目完成问卷录入。' },
           element: <EntryPage />
         },
         { path: '/', element: <h1>欢迎页</h1> }
@@ -65,7 +65,8 @@ describe('EntryPage keyboard workflow', () => {
     )
     render(<RouterProvider router={router} />)
 
-    expect(await screen.findByRole('heading', { level: 1, name: '单题录入' })).toBeVisible()
+    expect(await screen.findByRole('heading', { level: 1, name: '问卷录入' })).toBeVisible()
+    expect(screen.getByText('通过一页一屏题目完成问卷录入。')).toBeVisible()
     await user.click(await screen.findByRole('button', { name: '开始录入' }))
     const notes = screen.getByRole('textbox', { name: '现场备注' })
     await user.click(notes)

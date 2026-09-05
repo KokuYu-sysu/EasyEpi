@@ -144,7 +144,7 @@ test.describe('built Electron application', () => {
     await expect(page.getByRole('heading', { name: '问卷设计' })).toBeVisible()
     await navigateHash(page, '/')
     await page.getByRole('link', { name: '进入录入' }).click()
-    await expect(page.getByRole('heading', { name: '单题录入' })).toBeVisible()
+    await expect(page.getByRole('heading', { name: '问卷录入' })).toBeVisible()
     await navigateHash(page, '/')
     await page
       .getByRole('navigation', { name: '欢迎页主要操作' })
@@ -670,6 +670,8 @@ test.describe('built Electron application', () => {
     await navigateHash(page, '/missing-route')
     await expect(page.getByRole('heading', { name: '页面未找到' })).toBeVisible()
     await expect(page.getByRole('link', { name: '返回欢迎页' })).toBeVisible()
+    await navigateHash(page, '/work-session')
+    await expect(page.getByRole('heading', { name: '页面未找到' })).toBeVisible()
     await navigateHash(page, '/__components')
     await expect(page.getByRole('heading', { name: '页面未找到' })).toBeVisible()
     await expect(page.getByText('设计系统组件展厅')).toHaveCount(0)
@@ -723,7 +725,7 @@ test.describe('built Electron application', () => {
     for (const { path, heading } of [
       { path: '/', heading: '欢迎页' },
       { path: '/designer', heading: '问卷设计' },
-      { path: '/entry', heading: '单题录入' },
+      { path: '/entry', heading: '问卷录入' },
       { path: '/admin/login', heading: '管理员验证' }
     ]) {
       await navigateHash(page, path)
