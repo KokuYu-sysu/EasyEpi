@@ -34,7 +34,34 @@ function clarification(options: unknown = [{ id: 'adult', label: 'Adults' }]): s
 }
 
 describe('questionnaire harness trust boundary', () => {
-  it('registers v2 while retaining the historical v1 stamp for directed migration', () => {
+  it('uses the v2.2 prompt and harness stamp with schema v2', () => {
+    const current = getAiVersionStamp()
+    expect({
+      promptVersion: current.promptVersion,
+      harnessVersion: current.harnessVersion,
+      schemaVersion: current.schemaVersion
+    }).toEqual({ promptVersion: '2.2.0', harnessVersion: '2.2.0', schemaVersion: 2 })
+  })
+
+  it('guides authoritative academic retrieval and honest citation reporting', () => {
+    const currentEntry = resolveAIRegistryEntry(getAiVersionStamp())
+    expect(currentEntry.systemPrompt).toContain('Web Search')
+    expect(currentEntry.systemPrompt).toContain('PubMed')
+    expect(currentEntry.systemPrompt).toContain('Web of Science')
+    expect(currentEntry.systemPrompt).toContain('WHO')
+    expect(currentEntry.systemPrompt).toContain('CDC')
+    expect(currentEntry.systemPrompt).toContain('国家卫生健康委员会')
+    expect(currentEntry.systemPrompt).toMatch(/title and publishing institution when applicable/i)
+    expect(currentEntry.systemPrompt).toMatch(/year/i)
+    expect(currentEntry.systemPrompt).toMatch(/accessible URL/i)
+    expect(currentEntry.systemPrompt).toMatch(/DOI\/PMID when available/i)
+    expect(currentEntry.systemPrompt).toMatch(/cross-check/i)
+    expect(currentEntry.systemPrompt).toMatch(/separate retrieved evidence from model suggestions.*assistantMessage/i)
+    expect(currentEntry.systemPrompt).toMatch(/never fabricate.*DOI.*PMID.*URL/i)
+    expect(currentEntry.systemPrompt).toMatch(/search is unavailable or.*evidence is insufficient/i)
+  })
+
+  it('retains historical registry stamps for directed migration to v2.2', () => {
     const current = getAiVersionStamp()
     const previous = {
       promptId: current.promptId,
@@ -43,7 +70,20 @@ describe('questionnaire harness trust boundary', () => {
       harnessVersion: '1.1.0',
       schemaVersion: 1
     }
-    expect(current).toMatchObject({ promptVersion: '2.0.0', harnessVersion: '2.0.0', schemaVersion: 2 })
+    const previousV2 = {
+      promptId: current.promptId,
+      promptVersion: '2.0.0',
+      promptHash: 'sha256:1226be3d706ef0f4d05784d54e67e4e91d3d09d66d179783a72500f2231b1f36',
+      harnessVersion: '2.0.0',
+      schemaVersion: 2
+    }
+    const previousV2_1 = {
+      promptId: current.promptId,
+      promptVersion: '2.1.0',
+      promptHash: 'sha256:c3ebc53c12c59795d68c65d53b900f5a4b87f62be8f1eca73f8f0cfde168f6ad',
+      harnessVersion: '2.1.0',
+      schemaVersion: 2
+    }
     expect(resolveAIRegistryEntry(current)).toMatchObject({
       versionStamp: current,
       compatibility: 'supported'
@@ -52,7 +92,17 @@ describe('questionnaire harness trust boundary', () => {
       versionStamp: previous,
       compatibility: 'requires-migration'
     })
+    expect(resolveAIRegistryEntry(previousV2)).toMatchObject({
+      versionStamp: previousV2,
+      compatibility: 'requires-migration'
+    })
+    expect(resolveAIRegistryEntry(previousV2_1)).toMatchObject({
+      versionStamp: previousV2_1,
+      compatibility: 'requires-migration'
+    })
     expect(() => migrateAISessionVersion(previous, current)).not.toThrow()
+    expect(() => migrateAISessionVersion(previousV2, current)).not.toThrow()
+    expect(() => migrateAISessionVersion(previousV2_1, current)).not.toThrow()
     expect(() => resolveAIRegistryEntry({
       ...getAiVersionStamp(),
       promptHash: 'sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff'
@@ -63,6 +113,8 @@ describe('questionnaire harness trust boundary', () => {
 
   it('preserves privacy and regex rules while requesting one clarification before questionnaire data', () => {
     expect(QUESTIONNAIRE_SYSTEM_PROMPT).toContain('Never create, remove, or modify a regex constraint')
+    expect(QUESTIONNAIRE_SYSTEM_PROMPT).toContain('use built-in non-regex constraints only')
+    expect(QUESTIONNAIRE_SYSTEM_PROMPT).toContain('use question type fixed_length')
     expect(QUESTIONNAIRE_SYSTEM_PROMPT).toContain('Never request, infer, read, or emit derived variables')
     expect(QUESTIONNAIRE_SYSTEM_PROMPT).toContain('at most one core clarification question')
     expect(QUESTIONNAIRE_SYSTEM_PROMPT.indexOf('assistantMessage'))
@@ -153,10 +205,22 @@ describe('questionnaire harness trust boundary', () => {
   })
 
   it('selects the registered v2 provider schema with five required nullable-superset fields', async () => {
-    let requestBody: Record<string, any> | undefined
+    let requestBody: {
+      response_format: {
+        json_schema: {
+          schema: {
+            type: string
+            additionalProperties: boolean
+            required: string[]
+            anyOf?: unknown
+            properties: { questionnaire: { type: string[] } }
+          }
+        }
+      }
+    } | undefined
     const client = createOpenAICompatibleClient({
       fetch: async (_input, init) => {
-        requestBody = JSON.parse(String(init?.body))
+        requestBody = JSON.parse(String(init?.body)) as typeof requestBody
         return new Response(JSON.stringify({
           choices: [{ index: 0, finish_reason: 'stop', message: { role: 'assistant', content: clarification() } }]
         }), { status: 200, headers: { 'content-type': 'application/json' } })
@@ -167,6 +231,7 @@ describe('questionnaire harness trust boundary', () => {
       streamingSupported: false
     })).resolves.toMatchObject({ responseFormatSupported: true })
     const schema = requestBody?.response_format.json_schema.schema
+    if (schema === undefined) throw new Error('expected response schema')
     expect(schema).toMatchObject({
       type: 'object',
       additionalProperties: false,

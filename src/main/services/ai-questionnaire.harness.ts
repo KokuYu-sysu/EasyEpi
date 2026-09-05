@@ -23,8 +23,8 @@ import {
 } from '@shared/types/qnaire'
 
 export const AI_PROMPT_ID = 'easyepi-questionnaire-assistant'
-export const AI_PROMPT_VERSION = '2.0.0'
-export const HARNESS_VERSION = '2.0.0'
+export const AI_PROMPT_VERSION = '2.2.0'
+export const HARNESS_VERSION = '2.2.0'
 export const QUESTIONNAIRE_SCHEMA_VERSION = 2
 
 const QUESTIONNAIRE_SYSTEM_PROMPT_V1_0_0 = `You are EasyEpi's questionnaire drafting assistant.
@@ -44,7 +44,20 @@ Never create, remove, or modify a regex constraint. An existing regex constraint
 Never request, infer, read, or emit derived variables, responses, baseline data, administrator data, files, passwords, credentials, or filesystem paths. Never output a project file or instructions to modify one.
 Return exactly one strict JSON object with required keys kind, assistantMessage, rollingSummary, options, and questionnaire, in that order so assistantMessage appears before the large questionnaire. Set kind to clarification or questionnaire. Ask at most one core clarification question per response, only when a core requirement is missing; otherwise generate the questionnaire directly. A clarification has one to five options and questionnaire null. A questionnaire has options [] and a questionnaire object. The questionnaire candidate may contain only name, description, questions, conditionRules, and keyQuestionIds. Each question may contain only id, content, variableName, type, options, constraint, defaultValue, isKey, allowSkip, skipValue, and order. Each rule may contain only id, sourceQuestionId, conditions, logic, action, and targetQuestionIds. Do not use markdown except that a single JSON fence is tolerated by the local parser.`
 
-export const QUESTIONNAIRE_SYSTEM_PROMPT = QUESTIONNAIRE_SYSTEM_PROMPT_V2_0_0
+const QUESTIONNAIRE_SYSTEM_PROMPT_V2_1_0 = `You are EasyEpi's questionnaire drafting assistant.
+You may create or revise only: questionnaire name and description; questions; question types; options; variable names; order; required/allowSkip behavior; skip/default values; constraints; key-question flags; and conditional rules.
+Never create, remove, or modify a regex constraint. An existing regex constraint may only be copied with exactly the same regexPattern and regexFlags. For every new question, use built-in non-regex constraints only: none, integer, decimal, chinese, english, alphanumeric, or date. For fixed-length identifiers such as a national ID, use question type fixed_length, constraint type alphanumeric, and fixedLength instead of writing a regex.
+Never request, infer, read, or emit derived variables, responses, baseline data, administrator data, files, passwords, credentials, or filesystem paths. Never output a project file or instructions to modify one.
+Return exactly one strict JSON object with required keys kind, assistantMessage, rollingSummary, options, and questionnaire, in that order so assistantMessage appears before the large questionnaire. Set kind to clarification or questionnaire. Ask at most one core clarification question per response, only when a core requirement is missing; otherwise generate the questionnaire directly. A clarification has one to five options and questionnaire null. A questionnaire has options [] and a questionnaire object. The questionnaire candidate may contain only name, description, questions, conditionRules, and keyQuestionIds. Each question may contain only id, content, variableName, type, options, constraint, defaultValue, isKey, allowSkip, skipValue, and order. Each rule may contain only id, sourceQuestionId, conditions, logic, action, and targetQuestionIds. Do not use markdown except that a single JSON fence is tolerated by the local parser.`
+
+const QUESTIONNAIRE_SYSTEM_PROMPT_V2_2_0 = `You are EasyEpi's questionnaire drafting assistant.
+You may create or revise only: questionnaire name and description; questions; question types; options; variable names; order; required/allowSkip behavior; skip/default values; constraints; key-question flags; and conditional rules.
+Never create, remove, or modify a regex constraint. An existing regex constraint may only be copied with exactly the same regexPattern and regexFlags. For every new question, use built-in non-regex constraints only: none, integer, decimal, chinese, english, alphanumeric, or date. For fixed-length identifiers such as a national ID, use question type fixed_length, constraint type alphanumeric, and fixedLength instead of writing a regex.
+Never request, infer, read, or emit derived variables, responses, baseline data, administrator data, files, passwords, credentials, or filesystem paths. Never output a project file or instructions to modify one.
+Before drafting, use the current provider's built-in Web Search when available and search authoritative sources. Prioritize peer-reviewed research and systematic reviews indexed by PubMed or Web of Science; then official guidance and data from WHO, CDC, and 国家卫生健康委员会; then other reputable academic or public-health sources. Cross-check material claims across independent sources. Separate retrieved evidence from model suggestions in assistantMessage. For every cited source, include its title and publishing institution when applicable, year, an accessible URL, and DOI/PMID when available. Explicitly disclose when provider Web Search is unavailable or when evidence is insufficient. Never fabricate citation titles, institutions, years, DOI, PMID, or URL.
+Return exactly one strict JSON object with required keys kind, assistantMessage, rollingSummary, options, and questionnaire, in that order so assistantMessage appears before the large questionnaire. Set kind to clarification or questionnaire. Ask at most one core clarification question per response, only when a core requirement is missing; otherwise generate the questionnaire directly. A clarification has one to five options and questionnaire null. A questionnaire has options [] and a questionnaire object. The questionnaire candidate may contain only name, description, questions, conditionRules, and keyQuestionIds. Each question may contain only id, content, variableName, type, options, constraint, defaultValue, isKey, allowSkip, skipValue, and order. Each rule may contain only id, sourceQuestionId, conditions, logic, action, and targetQuestionIds. Do not use markdown except that a single JSON fence is tolerated by the local parser.`
+
+export const QUESTIONNAIRE_SYSTEM_PROMPT = QUESTIONNAIRE_SYSTEM_PROMPT_V2_2_0
 
 export interface AIValidationError {
   code: string
@@ -1114,7 +1127,7 @@ export function getAiVersionStamp(): AiVersionStamp {
   return {
     promptId: AI_PROMPT_ID,
     promptVersion: AI_PROMPT_VERSION,
-    promptHash: `sha256:${createHash('sha256').update(QUESTIONNAIRE_SYSTEM_PROMPT_V2_0_0).digest('hex')}`,
+    promptHash: `sha256:${createHash('sha256').update(QUESTIONNAIRE_SYSTEM_PROMPT_V2_2_0).digest('hex')}`,
     harnessVersion: HARNESS_VERSION,
     schemaVersion: QUESTIONNAIRE_SCHEMA_VERSION
   }
@@ -1138,6 +1151,20 @@ const previousV1Stamp: AiVersionStamp = Object.freeze({
   harnessVersion: '1.1.0',
   schemaVersion: 1
 })
+const previousV2Stamp: AiVersionStamp = Object.freeze({
+  promptId: AI_PROMPT_ID,
+  promptVersion: '2.0.0',
+  promptHash: `sha256:${createHash('sha256').update(QUESTIONNAIRE_SYSTEM_PROMPT_V2_0_0).digest('hex')}`,
+  harnessVersion: '2.0.0',
+  schemaVersion: QUESTIONNAIRE_SCHEMA_VERSION
+})
+const previousV2_1Stamp: AiVersionStamp = Object.freeze({
+  promptId: AI_PROMPT_ID,
+  promptVersion: '2.1.0',
+  promptHash: `sha256:${createHash('sha256').update(QUESTIONNAIRE_SYSTEM_PROMPT_V2_1_0).digest('hex')}`,
+  harnessVersion: '2.1.0',
+  schemaVersion: QUESTIONNAIRE_SCHEMA_VERSION
+})
 const currentV2Stamp: AiVersionStamp = Object.freeze(getAiVersionStamp())
 const historicalV1RegistryEntry: AIRegistryEntry = Object.freeze({
   versionStamp: historicalV1Stamp,
@@ -1157,9 +1184,21 @@ const legacyHarnessV1_1RegistryEntry: AIRegistryEntry = Object.freeze({
   schemaVersion: 1,
   compatibility: 'requires-migration'
 })
+const previousV2RegistryEntry: AIRegistryEntry = Object.freeze({
+  versionStamp: previousV2Stamp,
+  systemPrompt: QUESTIONNAIRE_SYSTEM_PROMPT_V2_0_0,
+  schemaVersion: QUESTIONNAIRE_SCHEMA_VERSION,
+  compatibility: 'requires-migration'
+})
+const previousV2_1RegistryEntry: AIRegistryEntry = Object.freeze({
+  versionStamp: previousV2_1Stamp,
+  systemPrompt: QUESTIONNAIRE_SYSTEM_PROMPT_V2_1_0,
+  schemaVersion: QUESTIONNAIRE_SCHEMA_VERSION,
+  compatibility: 'requires-migration'
+})
 const currentV2RegistryEntry: AIRegistryEntry = Object.freeze({
   versionStamp: currentV2Stamp,
-  systemPrompt: QUESTIONNAIRE_SYSTEM_PROMPT_V2_0_0,
+  systemPrompt: QUESTIONNAIRE_SYSTEM_PROMPT_V2_2_0,
   schemaVersion: QUESTIONNAIRE_SCHEMA_VERSION,
   compatibility: 'supported',
   runHarness: runQuestionnaireHarness
@@ -1179,6 +1218,8 @@ const AI_REGISTRY = new Map<string, AIRegistryEntry>([
   [versionRegistryKey(historicalV1Stamp), historicalV1RegistryEntry],
   [versionRegistryKey(legacyHarnessV1_1Stamp), legacyHarnessV1_1RegistryEntry],
   [versionRegistryKey(previousV1Stamp), previousV1RegistryEntry],
+  [versionRegistryKey(previousV2Stamp), previousV2RegistryEntry],
+  [versionRegistryKey(previousV2_1Stamp), previousV2_1RegistryEntry],
   [versionRegistryKey(currentV2Stamp), currentV2RegistryEntry]
 ])
 
@@ -1192,8 +1233,10 @@ export function migrateAISessionVersion(from: AiVersionStamp, to: AiVersionStamp
   resolveAIRegistryEntry(from)
   const target = resolveAIRegistryEntry(to)
   if (target.compatibility !== 'supported') throw new Error('AI_VERSION_MIGRATION_REQUIRED')
-  if (versionRegistryKey(from) !== versionRegistryKey(previousV1Stamp) ||
-    versionRegistryKey(to) !== versionRegistryKey(currentV2Stamp)) {
+  const supportedSource = versionRegistryKey(from) === versionRegistryKey(previousV1Stamp) ||
+    versionRegistryKey(from) === versionRegistryKey(previousV2Stamp) ||
+    versionRegistryKey(from) === versionRegistryKey(previousV2_1Stamp)
+  if (!supportedSource || versionRegistryKey(to) !== versionRegistryKey(currentV2Stamp)) {
     throw new Error('AI_VERSION_MIGRATION_NOT_ALLOWED')
   }
 }
