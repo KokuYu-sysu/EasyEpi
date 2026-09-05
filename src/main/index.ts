@@ -1,7 +1,7 @@
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
-import { app, BrowserWindow, ipcMain, safeStorage, session } from 'electron'
+import { app, BrowserWindow, ipcMain, Menu, safeStorage, session } from 'electron'
 
 import { registerPreferencesIpc } from './preferences-ipc'
 import { createPreferencesStore } from './preferences-store'
@@ -93,6 +93,7 @@ function createMainWindow(): BrowserWindow {
 }
 
 void app.whenReady().then(() => {
+  Menu.setApplicationMenu(null)
   configureSessionPermissions()
   disposeSystemIpc = registerSystemIpc(
     ipcMain,

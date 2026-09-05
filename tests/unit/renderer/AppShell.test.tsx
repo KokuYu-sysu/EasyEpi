@@ -167,6 +167,23 @@ describe('AppShell', () => {
     expect(await screen.findByText('AI 服务配置已保存。')).toBeVisible()
   })
 
+  it('shows the current font scale and exposes the next large-text action', async () => {
+    const user = userEvent.setup()
+    renderShell()
+
+    const button = screen.getByRole('button', { name: '启用大字模式' })
+    expect(button).toHaveAttribute('aria-pressed', 'false')
+    expect(within(button).getByText('ab')).toBeVisible()
+    expect(within(button).getByText('ab')).toHaveAttribute('aria-hidden', 'true')
+
+    await user.click(button)
+
+    const pressedButton = screen.getByRole('button', { name: '关闭大字模式' })
+    expect(pressedButton).toHaveAttribute('aria-pressed', 'true')
+    expect(within(pressedButton).getByText('AB')).toBeVisible()
+    expect(within(pressedButton).getByText('AB')).toHaveAttribute('aria-hidden', 'true')
+  })
+
   it('requires a fresh API key after the provider URL changes', async () => {
     const user = userEvent.setup()
     const { configUpdate } = renderShell('/entry', '录入页元数据标题', {

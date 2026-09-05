@@ -1,6 +1,5 @@
 import {
   Calculator,
-  CaseUpper,
   Database,
   FilePenLine,
   Home,
@@ -234,7 +233,9 @@ export function AppShell({ children }: PropsWithChildren) {
               aria-pressed={preferences.largeText}
               onClick={() => setPreferences({ largeText: !preferences.largeText })}
             >
-              <CaseUpper aria-hidden="true" size={20} />
+              <span aria-hidden="true" className="inline-block min-w-6 text-center font-bold">
+                {preferences.largeText ? 'AB' : 'ab'}
+              </span>
               <span className="hidden xl:inline">大字</span>
             </Button>
             <BackupDialog />
