@@ -722,17 +722,25 @@ function responseErrorCode(value: unknown): string {
   return code
 }
 
+function hasControlCharacter(value: string, allowFormattingWhitespace = false): boolean {
+  for (const character of value) {
+    const codePoint = character.codePointAt(0)!
+    const isControl = codePoint <= 0x1f || (codePoint >= 0x7f && codePoint <= 0x9f)
+    const isFormattingWhitespace = codePoint === 0x09 || codePoint === 0x0a || codePoint === 0x0d
+    if (isControl && (!allowFormattingWhitespace || !isFormattingWhitespace)) return true
+  }
+  return false
+}
+
 function responsePlainText(value: unknown, maxLength: number): string {
   const text = responseString(value, maxLength)
-  if (text !== text.trim() || /[\u0000-\u001f\u007f-\u009f]/u.test(text)) invalidResponse()
+  if (text !== text.trim() || hasControlCharacter(text)) invalidResponse()
   return text
 }
 
 function responseReadableText(value: unknown, maxLength: number, allowEmpty = false): string {
   const text = responseString(value, maxLength, allowEmpty)
-  if (/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/u.test(text)) {
-    invalidResponse()
-  }
+  if (hasControlCharacter(text, true)) invalidResponse()
   return text
 }
 

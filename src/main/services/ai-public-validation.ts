@@ -26,11 +26,17 @@ export interface AIInternalAttemptFailure {
 
 const VALIDATION_FIELD_PATTERN =
   /^\$(?:\.[A-Za-z][A-Za-z0-9]*|\[(?:0|[1-9][0-9]{0,2})\]){0,12}$/
-const CONTROL_CHARACTERS = /[\u0000-\u001f\u007f-\u009f]/gu
 const MAX_PUBLIC_ISSUES = 20
 
+function isControlCharacter(character: string): boolean {
+  const codePoint = character.codePointAt(0)!
+  return codePoint <= 0x1f || (codePoint >= 0x7f && codePoint <= 0x9f)
+}
+
 function stripControlCharacters(value: string, maxLength: number): string {
-  return value.replace(CONTROL_CHARACTERS, '').trim().slice(0, maxLength)
+  return [...value].filter((character) => !isControlCharacter(character)).join('')
+    .trim()
+    .slice(0, maxLength)
 }
 
 function publicCode(value: unknown): AIPublicValidationCode {

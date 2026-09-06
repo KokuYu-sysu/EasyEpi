@@ -381,6 +381,41 @@ describe('AI streaming and clarification public contract', () => {
     })).toThrow('INVALID_AI_RESPONSE')
   })
 
+  it('keeps single-line labels free of controls without rejecting Unicode text', () => {
+    expect(parseAIPublicClarification({
+      ...clarification,
+      options: [{ id: 'safe', label: '中文 👍' }]
+    })).toMatchObject({ options: [{ label: '中文 👍' }] })
+
+    for (const control of ['\0', '\u0009', '\u000a', '\u001b', '\u007f', '\u009f']) {
+      expect(() => parseAIPublicClarification({
+        ...clarification,
+        options: [{ id: 'safe', label: `before${control}after` }]
+      })).toThrow('INVALID_AI_RESPONSE')
+    }
+  })
+
+  it('allows formatting whitespace in readable messages but rejects other controls', () => {
+    const content = '中文 👍\nnext\tcolumn\rend'
+    expect(parseAISendResponse({
+      ok: true,
+      requestId: 'request-2',
+      outcome: 'clarification',
+      message: { ...publicMessage, content },
+      attempts: 2
+    })).toMatchObject({ message: { content } })
+
+    for (const control of ['\0', '\u0008', '\u000b', '\u000c', '\u000e', '\u001b', '\u007f', '\u009f']) {
+      expect(() => parseAISendResponse({
+        ok: true,
+        requestId: 'request-2',
+        outcome: 'clarification',
+        message: { ...publicMessage, content: `before${control}after` },
+        attempts: 2
+      })).toThrow('INVALID_AI_RESPONSE')
+    }
+  })
+
   it('parses exact bounded failure details and rejects unsafe fields and unknown keys', () => {
     const details = {
       attempts: [{
@@ -555,7 +590,9 @@ describe('AI streaming and clarification public contract', () => {
   })
 
   it('sanitizes, deduplicates, and bounds internal Harness errors without exposing messages', () => {
-    expect(sanitizeAIValidationField('$.questionnaire\u0000.questions[0]')).toBe('$')
+    for (const control of ['\0', '\u0009', '\u000a', '\u001b', '\u007f', '\u009f']) {
+      expect(sanitizeAIValidationField(`$.questionnaire${control}.questions[0]`)).toBe('$')
+    }
     expect(sanitizeAIValidationField(`$.${'a'.repeat(300)}`)).toBe('$')
     const errors = [
       { code: 'INVALID_TYPE', path: '$.questionnaire.questions[0].content', message: 'raw secret' },
@@ -578,6 +615,7 @@ describe('AI streaming and clarification public contract', () => {
       code: 'AI_VALIDATION_ERROR', field: '$',
       summary: PUBLIC_VALIDATION_CODES.AI_VALIDATION_ERROR
     })
+    expect(failure.issues[1]?.summary).toContain('校验')
     expect(JSON.stringify(failure)).not.toContain('raw secret')
     expect(JSON.stringify(failure)).not.toContain('provider body')
 
