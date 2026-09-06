@@ -607,6 +607,9 @@ describe('AI streaming and clarification public contract', () => {
     expect(sanitizeAIValidationField(`$.${'a'.repeat(300)}`)).toBe('$')
     const errors = [
       { code: ' \u0000INVALID_TYPE\u001f ', path: legalField, message: 'trimmed code' },
+      {
+        code: 'INVALID\u007f_\u009fTYPE', path: '$.questionnaire.name', message: 'C1 controls'
+      },
       { code: `INVALID_TYPE${'X'.repeat(128)}`, path: legalField, message: 'bounded code' },
       { code: 'INVALID_TYPE', path: '$.questionnaire.questions[0].content', message: 'raw secret' },
       { code: 'INVALID_TYPE', path: '$.questionnaire.questions[0].content', message: 'different raw' },
@@ -625,20 +628,25 @@ describe('AI streaming and clarification public contract', () => {
       summary: PUBLIC_VALIDATION_CODES.INVALID_TYPE
     })
     expect(failure.issues[1]).toEqual({
+      code: 'INVALID_TYPE',
+      field: '$.questionnaire.name',
+      summary: PUBLIC_VALIDATION_CODES.INVALID_TYPE
+    })
+    expect(failure.issues[2]).toEqual({
       code: 'AI_VALIDATION_ERROR',
       field: legalField,
       summary: PUBLIC_VALIDATION_CODES.AI_VALIDATION_ERROR
     })
-    expect(failure.issues[2]).toEqual({
+    expect(failure.issues[3]).toEqual({
       code: 'INVALID_TYPE',
       field: '$.questionnaire.questions[0].content',
       summary: PUBLIC_VALIDATION_CODES.INVALID_TYPE
     })
-    expect(failure.issues[3]).toEqual({
+    expect(failure.issues[4]).toEqual({
       code: 'AI_VALIDATION_ERROR', field: '$',
       summary: PUBLIC_VALIDATION_CODES.AI_VALIDATION_ERROR
     })
-    expect(failure.issues[3]?.summary).toContain('校验')
+    expect(failure.issues[4]?.summary).toContain('校验')
     expect(JSON.stringify(failure)).not.toContain('raw secret')
     expect(JSON.stringify(failure)).not.toContain('provider body')
 
