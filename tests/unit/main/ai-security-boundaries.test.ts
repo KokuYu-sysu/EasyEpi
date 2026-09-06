@@ -382,12 +382,15 @@ describe('AI streaming and clarification public contract', () => {
   })
 
   it('keeps single-line labels free of controls without rejecting Unicode text', () => {
+    const boundaryText = 'before after~\u00a0中文 👍'
     expect(parseAIPublicClarification({
       ...clarification,
-      options: [{ id: 'safe', label: '中文 👍' }]
-    })).toMatchObject({ options: [{ label: '中文 👍' }] })
+      options: [{ id: 'safe', label: boundaryText }]
+    })).toMatchObject({ options: [{ label: boundaryText }] })
 
-    for (const control of ['\0', '\u0009', '\u000a', '\u001b', '\u007f', '\u009f']) {
+    for (const control of [
+      '\0', '\u0009', '\u000a', '\u000d', '\u001b', '\u001f', '\u007f', '\u009f'
+    ]) {
       expect(() => parseAIPublicClarification({
         ...clarification,
         options: [{ id: 'safe', label: `before${control}after` }]
@@ -396,7 +399,8 @@ describe('AI streaming and clarification public contract', () => {
   })
 
   it('allows formatting whitespace in readable messages but rejects other controls', () => {
-    const content = '中文 👍\nnext\tcolumn\rend'
+    const formattingWhitespace = '\t\n\r'
+    const content = `before after~\u00a0中文 👍${formattingWhitespace}end`
     expect(parseAISendResponse({
       ok: true,
       requestId: 'request-2',
@@ -405,7 +409,9 @@ describe('AI streaming and clarification public contract', () => {
       attempts: 2
     })).toMatchObject({ message: { content } })
 
-    for (const control of ['\0', '\u0008', '\u000b', '\u000c', '\u000e', '\u001b', '\u007f', '\u009f']) {
+    for (const control of [
+      '\0', '\u0008', '\u000b', '\u000c', '\u000e', '\u001b', '\u001f', '\u007f', '\u009f'
+    ]) {
       expect(() => parseAISendResponse({
         ok: true,
         requestId: 'request-2',
@@ -590,11 +596,18 @@ describe('AI streaming and clarification public contract', () => {
   })
 
   it('sanitizes, deduplicates, and bounds internal Harness errors without exposing messages', () => {
-    for (const control of ['\0', '\u0009', '\u000a', '\u001b', '\u007f', '\u009f']) {
+    const legalField = '$.questionnaire.questions[0]'
+    expect(sanitizeAIValidationField(legalField)).toBe(legalField)
+    for (const control of [
+      '\0', '\u0009', '\u000a', '\u000d', '\u001b', '\u001f', '\u007f', '\u009f'
+    ]) {
+      // Removing the control would produce legalField, but the original untrusted path is rejected.
       expect(sanitizeAIValidationField(`$.questionnaire${control}.questions[0]`)).toBe('$')
     }
     expect(sanitizeAIValidationField(`$.${'a'.repeat(300)}`)).toBe('$')
     const errors = [
+      { code: ' \u0000INVALID_TYPE\u001f ', path: legalField, message: 'trimmed code' },
+      { code: `INVALID_TYPE${'X'.repeat(128)}`, path: legalField, message: 'bounded code' },
       { code: 'INVALID_TYPE', path: '$.questionnaire.questions[0].content', message: 'raw secret' },
       { code: 'INVALID_TYPE', path: '$.questionnaire.questions[0].content', message: 'different raw' },
       { code: 'UNKNOWN\u0000CODE', path: 'file:///C:/secret', message: 'provider body' },
@@ -608,14 +621,24 @@ describe('AI streaming and clarification public contract', () => {
     expect(failure.truncated).toBe(true)
     expect(failure.issues[0]).toEqual({
       code: 'INVALID_TYPE',
-      field: '$.questionnaire.questions[0].content',
+      field: legalField,
       summary: PUBLIC_VALIDATION_CODES.INVALID_TYPE
     })
     expect(failure.issues[1]).toEqual({
+      code: 'AI_VALIDATION_ERROR',
+      field: legalField,
+      summary: PUBLIC_VALIDATION_CODES.AI_VALIDATION_ERROR
+    })
+    expect(failure.issues[2]).toEqual({
+      code: 'INVALID_TYPE',
+      field: '$.questionnaire.questions[0].content',
+      summary: PUBLIC_VALIDATION_CODES.INVALID_TYPE
+    })
+    expect(failure.issues[3]).toEqual({
       code: 'AI_VALIDATION_ERROR', field: '$',
       summary: PUBLIC_VALIDATION_CODES.AI_VALIDATION_ERROR
     })
-    expect(failure.issues[1]?.summary).toContain('校验')
+    expect(failure.issues[3]?.summary).toContain('校验')
     expect(JSON.stringify(failure)).not.toContain('raw secret')
     expect(JSON.stringify(failure)).not.toContain('provider body')
 
