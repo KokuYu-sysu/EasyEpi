@@ -38,9 +38,15 @@ describe('questionnaire harness trust boundary', () => {
     const current = getAiVersionStamp()
     expect({
       promptVersion: current.promptVersion,
+      promptHash: current.promptHash,
       harnessVersion: current.harnessVersion,
       schemaVersion: current.schemaVersion
-    }).toEqual({ promptVersion: '2.2.0', harnessVersion: '2.2.0', schemaVersion: 2 })
+    }).toEqual({
+      promptVersion: '2.2.0',
+      promptHash: 'sha256:69236b7bb3695d10ff2a7940a7d8fa8a3286792a61603e6f95ad1616d232e304',
+      harnessVersion: '2.2.0',
+      schemaVersion: 2
+    })
   })
 
   it('guides authoritative academic retrieval and honest citation reporting', () => {
