@@ -918,6 +918,7 @@ export class AISessionRepository {
     const progress = input.progress === undefined ? undefined : validateProgress(input.progress)
     const result = input.result === undefined ? undefined : validateRunResult(input.result)
     if (input.failure !== undefined) {
+      if (!isPlainObject(input.failure)) throw new Error('INVALID_AI_RUN_FAILURE')
       validateTimestamp(input.failure.completedAt)
       validateFailureInput({ errorCode: input.failure.errorCode, details: input.failure.details })
     }

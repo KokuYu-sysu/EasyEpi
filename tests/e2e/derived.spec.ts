@@ -42,6 +42,8 @@ test('computes derived variables on entry and exports them as columns', async ()
           folderPath,
           password: 'derived-password'
         })
+        const adminSession = await api.admin.login({ password: 'derived-password' })
+        if (!adminSession.success) throw new Error('ADMIN_LOGIN_FAILED')
         await api.qnaire.addQuestion({
           id: 'q-age',
           content: '年龄',
@@ -139,9 +141,7 @@ test('computes derived variables on entry and exports them as columns', async ()
     expect(Number(recordAnswers['bmi'])).toBeCloseTo(24.22, 1)
     expect(recordAnswers['age_group']).toBe('老年')
 
-    await navigateHash(page, '/admin/login')
-    await page.getByLabel('当前项目密码').fill('derived-password')
-    await page.getByRole('button', { name: '登录管理后台' }).click()
+    await navigateHash(page, '/admin/data')
     await expect(page.getByText('共 1 条记录')).toBeVisible()
 
     const exported = await page.evaluate(

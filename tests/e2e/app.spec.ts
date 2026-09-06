@@ -217,11 +217,11 @@ test.describe('built Electron application', () => {
         await page.locator('body').focus()
         await pressTabUntil(page, '打开导航菜单')
         await expect(compactMenuTrigger).toBeFocused()
-        await expect(page.getByRole('tooltip')).toHaveText('打开导航菜单，显示全部9个页面入口')
+        await expect(page.getByRole('tooltip')).toHaveText('打开导航菜单，显示全部6个页面入口')
         await page.keyboard.press('Enter')
         await expect(
           page.getByRole('navigation', { name: '紧凑导航' }).getByRole('link')
-        ).toHaveCount(9)
+        ).toHaveCount(6)
       } else {
         await expect(page.getByRole('navigation', { name: '主要导航' })).toBeVisible()
         await expect(page.getByRole('navigation', { name: '主要导航' }).locator('..')).toBeVisible()
@@ -270,8 +270,9 @@ test.describe('built Electron application', () => {
       '数字范围',
       '日期'
     ])
-    await page.keyboard.press('ArrowDown')
-    await page.keyboard.press('Enter')
+    const multipleChoiceOption = page.getByRole('option', { name: '多选题', exact: true })
+    await expect(multipleChoiceOption).toBeVisible()
+    await multipleChoiceOption.click()
     await expect(page.getByRole('option')).toHaveCount(0)
     await expect(questionType).toContainText('多选题')
 
@@ -646,7 +647,7 @@ test.describe('built Electron application', () => {
 
     await pressTabUntil(page, '打开设置')
     await page.keyboard.press('Enter')
-    await expect(page.getByRole('dialog', { name: '界面设置' })).toBeVisible()
+    await expect(page.getByRole('dialog', { name: '设置' })).toBeVisible()
     await expect(page.getByRole('radio', { name: '跟随系统' })).toBeFocused()
     await page.keyboard.press('ArrowDown')
     await expect(page.getByRole('radio', { name: '浅色' })).toBeFocused()
@@ -734,7 +735,7 @@ test.describe('built Electron application', () => {
       await assertNoAxeViolations(page)
     }
     await page.getByRole('button', { name: '打开设置' }).click()
-    await expect(page.getByRole('dialog', { name: '界面设置' })).toBeVisible()
+    await expect(page.getByRole('dialog', { name: '设置' })).toBeVisible()
     await assertNoAxeViolations(page)
   })
 })

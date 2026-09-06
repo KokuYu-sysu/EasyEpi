@@ -17,10 +17,25 @@ import { runWithProjectAIQueue } from '@main/services/ai-questionnaire.orchestra
 import { getAiVersionStamp } from '@main/services/ai-questionnaire.harness'
 import {
   AI_PRIVACY_NOTICE_VERSION,
+  AI_PRIVACY_NOTICE,
+  parseAIArtifactApplyRequest,
+  parseAIArtifactRequest,
+  parseAICancelRequest,
+  parseAIConfigResponse,
+  parseAIConfigUpdateRequest,
+  parseAIConnectionTestResponse,
   parseAIProgressEvent,
   parseAIPublicClarification,
   parseAIPublicFailureDetails,
   parseAIPublicRunSnapshot,
+  parseAIPrivacyStatusResponse,
+  parseAIResponse,
+  parseAISessionClearCacheResponse,
+  parseAISessionCreateRequest,
+  parseAISessionDeleteResponse,
+  parseAISessionGetRequest,
+  parseAISessionIdRequest,
+  parseAISessionUpdateRequest,
   parseAISendResponse,
   parseAISendRequest,
   type AiVersionStamp
@@ -156,6 +171,179 @@ function invalidQuestionnaireCompletion(): string {
     questionnaire: { name: '', questions: [], conditionRules: [], keyQuestionIds: [] }
   })
 }
+
+describe('AI IPC request parser boundaries', () => {
+  const parseInvalidRequestCases: Array<[string, (value: unknown) => unknown, unknown]> = [
+    ['config rejects non-objects', parseAIConfigUpdateRequest, null],
+    ['config rejects missing fields', parseAIConfigUpdateRequest, { baseUrl: 'https://example.com/v1' }],
+    ['config rejects extra fields', parseAIConfigUpdateRequest, {
+      baseUrl: 'https://example.com/v1', model: 'model', extra: true
+    }],
+    ['config rejects empty base URLs', parseAIConfigUpdateRequest, { baseUrl: '', model: 'model' }],
+    ['config rejects padded model names', parseAIConfigUpdateRequest, {
+      baseUrl: 'https://example.com/v1', model: ' model '
+    }],
+    ['config rejects non-string API keys', parseAIConfigUpdateRequest, {
+      baseUrl: 'https://example.com/v1', model: 'model', apiKey: 1
+    }],
+    ['config rejects NUL in API keys', parseAIConfigUpdateRequest, {
+      baseUrl: 'https://example.com/v1', model: 'model', apiKey: 'secret\0suffix'
+    }],
+    ['create rejects an empty title', parseAISessionCreateRequest, { title: '' }],
+    ['session id rejects malformed UUIDs', parseAISessionIdRequest, { sessionId: 'not-a-session' }],
+    ['session get rejects negative offsets', parseAISessionGetRequest, { sessionId, offset: -1 }],
+    ['session get rejects fractional offsets', parseAISessionGetRequest, { sessionId, offset: 0.5 }],
+    ['session get rejects zero limits', parseAISessionGetRequest, { sessionId, limit: 0 }],
+    ['session get rejects oversized limits', parseAISessionGetRequest, { sessionId, limit: 101 }],
+    ['session update rejects non-string titles', parseAISessionUpdateRequest, { sessionId, title: 1 }],
+    ['send rejects non-boolean questionnaire flags', parseAISendRequest, {
+      requestId: 'request-1', sessionId, content: 'hello', includeCurrentQuestionnaire: 1
+    }],
+    ['send rejects non-string content', parseAISendRequest, {
+      requestId: 'request-1', sessionId, content: null, includeCurrentQuestionnaire: false
+    }],
+    ['send rejects NUL content', parseAISendRequest, {
+      requestId: 'request-1', sessionId, content: 'hello\0world', includeCurrentQuestionnaire: false
+    }],
+    ['send rejects blank free text', parseAISendRequest, {
+      requestId: 'request-1', sessionId, content: '   ', includeCurrentQuestionnaire: false
+    }],
+    ['quick reply rejects simultaneous free text', parseAISendRequest, {
+      requestId: 'request-1', sessionId, content: 'also text', includeCurrentQuestionnaire: false,
+      clarificationSelection: { clarificationId: 'clarification-1', optionId: 'option-1' }
+    }],
+    ['quick reply rejects malformed selection objects', parseAISendRequest, {
+      requestId: 'request-1', sessionId, content: '', includeCurrentQuestionnaire: false,
+      clarificationSelection: []
+    }],
+    ['quick reply rejects unsafe option ids', parseAISendRequest, {
+      requestId: 'request-1', sessionId, content: '', includeCurrentQuestionnaire: false,
+      clarificationSelection: { clarificationId: 'clarification-1', optionId: '../option' }
+    }],
+    ['cancel rejects unsafe request ids', parseAICancelRequest, { requestId: '../request' }],
+    ['artifact request rejects unsafe artifact ids', parseAIArtifactRequest, {
+      sessionId, artifactId: 'artifact/1'
+    }],
+    ['artifact apply rejects unsafe operation ids', parseAIArtifactApplyRequest, {
+      sessionId, artifactId: 'artifact-1', operationId: 'operation/1'
+    }]
+  ]
+
+  it.each(parseInvalidRequestCases)('%s', (_name, parser, value) => {
+    expect(() => parser(value)).toThrow('INVALID_AI_REQUEST')
+  })
+
+  it('preserves optional request fields only when supplied', () => {
+    expect(parseAIConfigUpdateRequest({
+      baseUrl: 'https://example.com/v1', model: 'model'
+    })).toEqual({ baseUrl: 'https://example.com/v1', model: 'model' })
+    expect(parseAIConfigUpdateRequest({
+      baseUrl: 'https://example.com/v1', model: 'model', apiKey: null
+    })).toEqual({ baseUrl: 'https://example.com/v1', model: 'model', apiKey: null })
+    expect(parseAISessionCreateRequest({})).toEqual({})
+    expect(parseAISessionCreateRequest({ title: 'Study' })).toEqual({ title: 'Study' })
+    expect(parseAISessionGetRequest({ sessionId })).toEqual({ sessionId, offset: 0, limit: 50 })
+    expect(parseAIArtifactApplyRequest({ sessionId, artifactId: 'artifact-1' }))
+      .toEqual({ sessionId, artifactId: 'artifact-1' })
+    expect(parseAIArtifactApplyRequest({
+      sessionId, artifactId: 'artifact-1', operationId: 'operation-1'
+    })).toEqual({ sessionId, artifactId: 'artifact-1', operationId: 'operation-1' })
+  })
+})
+
+describe('AI IPC response parser boundaries', () => {
+  it('accepts both success and public-error response branches', () => {
+    expect(parseAIConnectionTestResponse({ ok: true })).toEqual({ ok: true })
+    expect(parseAIConnectionTestResponse({
+      ok: false, errorCode: 'AI_PROVIDER_ERROR', message: 'Provider unavailable'
+    })).toEqual({ ok: false, errorCode: 'AI_PROVIDER_ERROR', message: 'Provider unavailable' })
+    expect(parseAIResponse<{ ok: true; value: string }>({ ok: true, value: 'safe' }, ['value']))
+      .toEqual({ ok: true, value: 'safe' })
+  })
+
+  it('validates provider configuration masking and privacy timestamps', () => {
+    expect(parseAIConfigResponse({
+      ok: true,
+      config: {
+        baseUrl: 'https://example.com/v1', model: 'model', hasApiKey: true,
+        maskedApiKey: '••••••••'
+      }
+    })).toMatchObject({ ok: true, config: { hasApiKey: true } })
+    expect(parseAIConfigResponse({
+      ok: true,
+      config: {
+        baseUrl: 'https://example.com/v1', model: '', hasApiKey: false, maskedApiKey: null
+      }
+    })).toMatchObject({ ok: true, config: { hasApiKey: false } })
+    expect(parseAIPrivacyStatusResponse({
+      ok: true, accepted: true, acceptedAt: at, notice: AI_PRIVACY_NOTICE
+    })).toMatchObject({ accepted: true })
+    expect(parseAIPrivacyStatusResponse({
+      ok: true, accepted: false, acceptedAt: null, notice: AI_PRIVACY_NOTICE
+    })).toMatchObject({ accepted: false })
+  })
+
+  const invalidResponses: Array<[string, () => unknown]> = [
+    ['non-object response', () => parseAIConnectionTestResponse(null)],
+    ['unknown result discriminator', () => parseAIConnectionTestResponse({ ok: 'yes' })],
+    ['invalid public error code', () => parseAIConnectionTestResponse({
+      ok: false, errorCode: 'bad-code', message: 'failure'
+    })],
+    ['empty public error message', () => parseAIConnectionTestResponse({
+      ok: false, errorCode: 'AI_ERROR', message: ''
+    })],
+    ['unexpected success field', () => parseAIConnectionTestResponse({ ok: true, extra: true })],
+    ['unmasked stored key', () => parseAIConfigResponse({
+      ok: true,
+      config: { baseUrl: 'https://example.com', model: 'm', hasApiKey: true, maskedApiKey: 'secret' }
+    })],
+    ['mask without a stored key', () => parseAIConfigResponse({
+      ok: true,
+      config: { baseUrl: 'https://example.com', model: 'm', hasApiKey: false, maskedApiKey: '••••••••' }
+    })],
+    ['non-boolean key state', () => parseAIConfigResponse({
+      ok: true,
+      config: { baseUrl: 'https://example.com', model: 'm', hasApiKey: 1, maskedApiKey: null }
+    })],
+    ['stale privacy notice', () => parseAIPrivacyStatusResponse({
+      ok: true, accepted: false, acceptedAt: null, notice: 'stale'
+    })],
+    ['invalid accepted timestamp', () => parseAIPrivacyStatusResponse({
+      ok: true, accepted: true, acceptedAt: 'not-a-date', notice: AI_PRIVACY_NOTICE
+    })],
+    ['timestamp while unaccepted', () => parseAIPrivacyStatusResponse({
+      ok: true, accepted: false, acceptedAt: at, notice: AI_PRIVACY_NOTICE
+    })],
+    ['non-finite tree number', () => parseAIResponse({ ok: true, value: Number.NaN }, ['value'])],
+    ['oversized tree collection', () => parseAIResponse({
+      ok: true, value: Array.from({ length: 10_001 }, () => null)
+    }, ['value'])],
+    ['sensitive tree key', () => parseAIResponse({ ok: true, password: 'secret' }, ['password'])]
+  ]
+
+  it.each(invalidResponses)('rejects %s', (_name, parse) => {
+    expect(parse).toThrow('INVALID_AI_RESPONSE')
+  })
+
+  it('rejects cyclic and excessively deep response trees before DTO parsing', () => {
+    const cyclic: Record<string, unknown> = { ok: true }
+    cyclic.self = cyclic
+    expect(() => parseAIResponse(cyclic, ['self'])).toThrow('INVALID_AI_RESPONSE')
+
+    let deep: Record<string, unknown> = { leaf: true }
+    for (let index = 0; index < 25; index += 1) deep = { child: deep }
+    expect(() => parseAIResponse({ ok: true, value: deep }, ['value']))
+      .toThrow('INVALID_AI_RESPONSE')
+  })
+
+  it('validates boolean and non-negative integer response DTOs', () => {
+    expect(parseAISessionDeleteResponse({ ok: true, deleted: false })).toEqual({ ok: true, deleted: false })
+    expect(parseAISessionClearCacheResponse({ ok: true, removed: 0 })).toEqual({ ok: true, removed: 0 })
+    expect(() => parseAISessionDeleteResponse({ ok: true, deleted: 0 })).toThrow('INVALID_AI_RESPONSE')
+    expect(() => parseAISessionClearCacheResponse({ ok: true, removed: -1 })).toThrow('INVALID_AI_RESPONSE')
+    expect(() => parseAISessionClearCacheResponse({ ok: true, removed: 0.5 })).toThrow('INVALID_AI_RESPONSE')
+  })
+})
 
 describe('AI configuration security boundary', () => {
   it.each([

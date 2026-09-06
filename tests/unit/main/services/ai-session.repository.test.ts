@@ -1,7 +1,10 @@
 import { describe, expect, it } from 'vitest'
 
 import { getAiVersionStamp } from '@main/services/ai-questionnaire.harness'
-import { AISessionRepository } from '@main/services/ai-session.repository'
+import {
+  AISessionRepository,
+  parseAISessionVirtualPath
+} from '@main/services/ai-session.repository'
 import type {
   AIClarification,
   AIRun,
@@ -659,5 +662,145 @@ describe('AI session repository v2 persistence', () => {
       clarificationId: 'new', messageId: 'missing', runId: 'legacy',
       options: [{ id: 'x', label: 'X' }], status: 'unresolved', createdAt: 'x'
     })).toThrow('AI_SESSION_VERSION_MIGRATION_REQUIRED')
+  })
+
+  it.each([
+    ['control characters', `session://${SESSION_ID}/cache/values/bad\u0001key`],
+    ['missing partition and key', `session://${SESSION_ID}`],
+    ['missing value key', `session://${SESSION_ID}/cache`],
+    ['empty value segment', `session://${SESSION_ID}/cache/values/`],
+    ['unknown partition', `session://${SESSION_ID}/unknown/value`]
+  ])('rejects virtual paths containing %s', (_name, path) => {
+    expect(() => parseAISessionVirtualPath(path, SESSION_ID)).toThrow('INVALID_AI_SESSION_PATH')
+  })
+
+  it('covers session creation, lookup, update, and collision boundaries', () => {
+    const value = project()
+    const repo = new AISessionRepository(
+      value,
+      () => SESSION_ID,
+      () => '2024-02-29T23:59:59.000Z'
+    )
+    expect(repo.get('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa')).toBeUndefined()
+    expect(repo.create(getAiVersionStamp(), 'Leap session').value.manifest.createdAt)
+      .toBe('2024-02-29T23:59:59.000Z')
+    expect(repo.update(SESSION_ID, { title: 'Leap session' }).mutated).toBe(false)
+    expect(repo.update(SESSION_ID, { title: 'Updated session' })).toMatchObject({
+      mutated: true,
+      value: { manifest: { title: 'Updated session' } }
+    })
+    expect(() => repo.create(getAiVersionStamp(), 'Collision')).toThrow('AI_SESSION_ID_COLLISION')
+    expect(() => repo.update(SESSION_ID, { title: ' bad ' })).toThrow('INVALID_AI_SESSION_TITLE')
+    expect(() => repo.updateState(SESSION_ID, { status: 'unknown' as never }))
+      .toThrow('INVALID_AI_SESSION_STATE')
+  })
+
+  it('rejects cyclic, dangerous, and non-JSON cache values', () => {
+    const { repository: repo, sessionId } = repository()
+    const path = `session://${sessionId}/cache/values/test`
+    const cyclic: Record<string, unknown> = {}
+    cyclic.self = cyclic
+    for (const invalid of [
+      cyclic,
+      JSON.parse('{"__proto__":true}'),
+      new Date(),
+      Number.NaN
+    ]) {
+      expect(() => repo.writeVirtual(path, invalid as never, sessionId))
+        .toThrow('INVALID_AI_JSON_VALUE')
+    }
+  })
+
+  it('validates message and attachment shapes while preserving idempotent attachments', () => {
+    const { repository: repo, sessionId } = repository()
+    expect(() => repo.appendMessage(sessionId, null)).toThrow('INVALID_AI_MESSAGE')
+    expect(() => repo.appendMessage(sessionId, {
+      id: 'assistant-orphan', role: 'assistant', content: 'orphan', createdAt: '2026-08-29T00:00:01.000Z',
+      runId: 'missing-run'
+    })).toThrow('AI_RUN_NOT_FOUND')
+    repo.appendMessage(sessionId, {
+      id: USER_MESSAGE_ID, role: 'user', content: 'Create', createdAt: '2026-08-29T00:00:01.000Z'
+    })
+    expect(() => repo.appendMessage(sessionId, {
+      id: USER_MESSAGE_ID, role: 'user', content: 'Duplicate', createdAt: '2026-08-29T00:00:02.000Z'
+    })).toThrow('AI_MESSAGE_ID_CONFLICT')
+    expect(() => repo.upsertAttachment(sessionId, null)).toThrow('INVALID_AI_ATTACHMENT')
+    expect(() => repo.upsertAttachment(sessionId, {
+      attachmentId: 'a1', messageId: 'missing', kind: 'questionnaire',
+      createdAt: '2026-08-29T00:00:02.000Z', value: {}
+    })).toThrow('AI_MESSAGE_NOT_FOUND')
+    const attachment = {
+      attachmentId: 'a1', messageId: USER_MESSAGE_ID, kind: 'questionnaire',
+      createdAt: '2026-08-29T00:00:02.000Z', value: { name: 'Study' }
+    }
+    expect(repo.upsertAttachment(sessionId, attachment).mutated).toBe(true)
+    expect(repo.upsertAttachment(sessionId, attachment).mutated).toBe(false)
+    expect(repo.upsertAttachment(sessionId, {
+      ...attachment, value: { name: 'Updated' }
+    })).toMatchObject({ mutated: true, value: { value: { name: 'Updated' } } })
+  })
+
+  it('exercises reserved virtual cache creation, idempotency, reads, and deletions', () => {
+    const { repository: repo, sessionId } = repository()
+    const path = `session://${sessionId}/cache/values/provider`
+    expect(repo.writeVirtual(path, { mode: 'json' }, sessionId)).toMatchObject({ mutated: true })
+    expect(repo.writeVirtual(path, { mode: 'json' }, sessionId)).toMatchObject({ mutated: false })
+    expect(repo.writeVirtual(path, { mode: 'text' }, sessionId)).toMatchObject({ mutated: true })
+    expect(repo.readVirtual(path, sessionId)).toEqual({ mode: 'text' })
+    expect(() => repo.readVirtual(
+      `session://${sessionId}/cache/values/missing`, sessionId
+    )).toThrow('AI_SESSION_VALUE_NOT_FOUND')
+    expect(repo.deleteVirtual(`session://${sessionId}/cache/values/missing`, sessionId))
+      .toEqual({ value: false, mutated: false })
+    expect(repo.deleteVirtual(path, sessionId)).toEqual({ value: true, mutated: true })
+    expect(repo.clearCache(sessionId)).toEqual({ value: 0, mutated: false })
+    repo.writeVirtual(path, true, sessionId)
+    expect(repo.clearCache(sessionId)).toEqual({ value: 1, mutated: true })
+    expect(repo.cleanupRunTemp(sessionId, 'missing')).toEqual({ value: false, mutated: false })
+    expect(repo.delete('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'))
+      .toEqual({ value: false, mutated: false })
+  })
+
+  it('rejects malformed current-version runs before persistence', () => {
+    const { repository: repo, sessionId } = repository()
+    repo.appendMessage(sessionId, {
+      id: USER_MESSAGE_ID, role: 'user', content: 'Create', runId: RUN_ID,
+      createdAt: '2026-08-29T00:00:01.000Z'
+    })
+    const cases: Array<[unknown, string]> = [
+      [null, 'INVALID_AI_RUN'],
+      [{ ...runningRun(), status: 'idle' }, 'INVALID_AI_RUN'],
+      [{ ...runningRun(), completedAt: 1 }, 'INVALID_AI_RUN'],
+      [{ ...runningRun(), errorCode: '' }, 'INVALID_AI_RUN'],
+      [{ ...runningRun(), progress: undefined }, 'INVALID_AI_RUN_PROGRESS'],
+      [{ ...runningRun(), progress: null }, 'INVALID_AI_RUN_PROGRESS'],
+      [{ ...runningRun(), result: null }, 'INVALID_AI_RUN_RESULT'],
+      [{ ...runningRun(), failure: null }, 'INVALID_AI_RUN_FAILURE'],
+      [{ ...runningRun(), completedAt: '2026-08-29T00:00:02.000Z' }, 'INVALID_AI_RUN']
+    ]
+    for (const [input, code] of cases) {
+      expect(() => repo.upsertRun(sessionId, input as AIRun)).toThrow(code)
+    }
+  })
+
+  it('rejects malformed artifact variants and accepts optional value and error fields', () => {
+    const { repository: repo, sessionId } = repository()
+    const base = {
+      artifactId: 'artifact-1', operationId: 'operation-1', kind: 'questionnaire-draft',
+      status: 'pending' as const, versionStamp: getAiVersionStamp()
+    }
+    expect(() => repo.upsertArtifact(sessionId, null)).toThrow('INVALID_AI_ARTIFACT')
+    expect(() => repo.upsertArtifact(sessionId, { ...base, errorCode: '' }))
+      .toThrow('INVALID_AI_ARTIFACT')
+    expect(() => repo.upsertArtifact(sessionId, { ...base, errorCode: 1 }))
+      .toThrow('INVALID_AI_ARTIFACT')
+    expect(repo.upsertArtifact(sessionId, { ...base, value: { draft: true } })).toMatchObject({
+      mutated: true,
+      value: { value: { draft: true } }
+    })
+    expect(repo.upsertArtifact(sessionId, {
+      artifactId: 'artifact-2', operationId: 'operation-2', kind: 'questionnaire-draft',
+      status: 'failed', versionStamp: getAiVersionStamp(), errorCode: 'AI_PROVIDER_ERROR'
+    })).toMatchObject({ mutated: true, value: { errorCode: 'AI_PROVIDER_ERROR' } })
   })
 })
