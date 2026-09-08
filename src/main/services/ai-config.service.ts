@@ -3,12 +3,18 @@ import { mkdir, open, readFile, rename, unlink } from 'node:fs/promises'
 import path from 'node:path'
 
 import type {
+  AIProviderId,
   AIProviderConfigErrorCode,
   AIProviderConfigResult,
   AIProviderConfigUpdate,
   AIProviderConfigView
 } from '@shared/ai-assistant-contract'
-import { AI_MASKED_API_KEY, AI_PRIVACY_NOTICE_VERSION } from '@shared/ai-assistant-contract'
+import {
+  AI_MASKED_API_KEY,
+  AI_PRIVACY_NOTICE_VERSION,
+  isAIProviderId
+} from '@shared/ai-assistant-contract'
+import { detectAIProviderId } from '@shared/ai-provider-profiles'
 
 const CONFIG_FILE_NAME = 'ai-provider-config.json'
 const DEFAULT_BASE_URL = 'https://api.openai.com/v1'
@@ -17,9 +23,11 @@ const MAX_MODEL_LENGTH = 200
 const MAX_API_KEY_LENGTH = 8_192
 
 interface StoredAIConfig {
-  schemaVersion: 1
+  schemaVersion: 1 | 2
+  providerId: AIProviderId
   baseUrl: string
   model: string
+  webSearchEnabled: boolean
   encryptedApiKey?: string
   privacyAcceptedAt?: string
   privacyNoticeVersion?: number
@@ -32,8 +40,10 @@ export interface AISecureStorage {
 }
 
 export interface AIMainConfig {
+  providerId?: AIProviderId
   baseUrl: string
   model: string
+  webSearchEnabled?: boolean
   apiKey?: string
 }
 
@@ -113,7 +123,7 @@ export function normalizeAIBaseUrl(value: string): string {
 export function validateAIConfigUpdate(request: unknown): AIProviderConfigUpdate {
   if (!isPlainObject(request)) throw new Error('INVALID_AI_CONFIG')
 
-  const { baseUrl, model, apiKey } = request
+  const { providerId, baseUrl, model, webSearchEnabled, apiKey } = request
   if (
     typeof baseUrl !== 'string' ||
     typeof model !== 'string' ||
@@ -121,6 +131,8 @@ export function validateAIConfigUpdate(request: unknown): AIProviderConfigUpdate
     model.length === 0 ||
     model.length > MAX_MODEL_LENGTH ||
     hasControlCharacter(model) ||
+    (providerId !== undefined && !isAIProviderId(providerId)) ||
+    (webSearchEnabled !== undefined && typeof webSearchEnabled !== 'boolean') ||
     (apiKey !== undefined && apiKey !== null && typeof apiKey !== 'string') ||
     (typeof apiKey === 'string' && (apiKey.length > MAX_API_KEY_LENGTH || apiKey.includes('\0')))
   ) {
@@ -128,8 +140,10 @@ export function validateAIConfigUpdate(request: unknown): AIProviderConfigUpdate
   }
 
   const normalized: AIProviderConfigUpdate = {
+    providerId: providerId ?? detectAIProviderId(baseUrl),
     baseUrl: normalizeAIBaseUrl(baseUrl),
-    model
+    model,
+    webSearchEnabled: webSearchEnabled ?? false
   }
   if (apiKey !== undefined) normalized.apiKey = apiKey
   return normalized
@@ -138,10 +152,13 @@ export function validateAIConfigUpdate(request: unknown): AIProviderConfigUpdate
 function parseStoredAIConfig(value: unknown): StoredAIConfig {
   if (!isPlainObject(value)) throw new Error('INVALID_AI_CONFIG_FILE')
   const {
-    schemaVersion, baseUrl, model, encryptedApiKey, privacyAcceptedAt, privacyNoticeVersion
+    schemaVersion, providerId, baseUrl, model, webSearchEnabled,
+    encryptedApiKey, privacyAcceptedAt, privacyNoticeVersion
   } = value
   if (
-    schemaVersion !== 1 ||
+    (schemaVersion !== 1 && schemaVersion !== 2) ||
+    (schemaVersion === 2 && !isAIProviderId(providerId)) ||
+    (schemaVersion === 2 && typeof webSearchEnabled !== 'boolean') ||
     typeof baseUrl !== 'string' ||
     typeof model !== 'string' ||
     (encryptedApiKey !== undefined &&
@@ -159,8 +176,10 @@ function parseStoredAIConfig(value: unknown): StoredAIConfig {
     : validateAIConfigUpdate({ baseUrl, model })
   return {
     schemaVersion,
+    providerId: schemaVersion === 1 ? detectAIProviderId(validated.baseUrl) : providerId as AIProviderId,
     baseUrl: validated.baseUrl,
     model: validated.model,
+    webSearchEnabled: schemaVersion === 1 ? false : webSearchEnabled as boolean,
     ...(encryptedApiKey === undefined ? {} : { encryptedApiKey }),
     ...(privacyAcceptedAt === undefined ? {} : { privacyAcceptedAt }),
     ...(privacyNoticeVersion === undefined ? {} : { privacyNoticeVersion: Number(privacyNoticeVersion) })
@@ -170,15 +189,23 @@ function parseStoredAIConfig(value: unknown): StoredAIConfig {
 function configView(config: StoredAIConfig): AIProviderConfigView {
   const hasApiKey = config.encryptedApiKey !== undefined
   return {
+    providerId: config.providerId,
     baseUrl: config.baseUrl,
     model: config.model,
+    webSearchEnabled: config.webSearchEnabled,
     hasApiKey,
     maskedApiKey: hasApiKey ? AI_MASKED_API_KEY : null
   }
 }
 
 function emptyConfig(): StoredAIConfig {
-  return { schemaVersion: 1, baseUrl: DEFAULT_BASE_URL, model: '' }
+  return {
+    schemaVersion: 2,
+    providerId: 'openai',
+    baseUrl: DEFAULT_BASE_URL,
+    model: '',
+    webSearchEnabled: false
+  }
 }
 
 async function electronSafeStorage(): Promise<AISecureStorage> {
@@ -225,7 +252,7 @@ export function createAIConfigService(
       const handle = await open(temporaryPath, 'wx')
       created = true
       try {
-        await handle.writeFile(`${JSON.stringify(config)}\n`, 'utf8')
+        await handle.writeFile(`${JSON.stringify({ ...config, schemaVersion: 2 })}\n`, 'utf8')
         await handle.sync()
       } finally {
         await handle.close()
@@ -266,7 +293,9 @@ export function createAIConfigService(
       let privacyNoticeVersion: number | undefined
       try {
         const current = await readStored()
-        encryptedApiKey = validated.apiKey === undefined && validated.baseUrl === current.baseUrl
+        encryptedApiKey = validated.apiKey === undefined &&
+          validated.providerId === current.providerId &&
+          validated.baseUrl === current.baseUrl
           ? current.encryptedApiKey
           : undefined
         privacyAcceptedAt = current.privacyAcceptedAt
@@ -294,9 +323,11 @@ export function createAIConfigService(
       }
 
       const stored: StoredAIConfig = {
-        schemaVersion: 1,
+        schemaVersion: 2,
+        providerId: validated.providerId!,
         baseUrl: validated.baseUrl,
         model: validated.model,
+        webSearchEnabled: validated.webSearchEnabled!,
         ...(encryptedApiKey === undefined ? {} : { encryptedApiKey }),
         ...(privacyAcceptedAt === undefined ? {} : { privacyAcceptedAt }),
         ...(privacyNoticeVersion === undefined ? {} : { privacyNoticeVersion })
@@ -347,7 +378,12 @@ export function createAIConfigService(
   async function getPlaintextForMain(): Promise<AIMainConfig> {
     const stored = await readStored()
     if (stored.encryptedApiKey === undefined) {
-      return { baseUrl: stored.baseUrl, model: stored.model }
+      return {
+        providerId: stored.providerId,
+        baseUrl: stored.baseUrl,
+        model: stored.model,
+        webSearchEnabled: stored.webSearchEnabled
+      }
     }
 
     let storage: AISecureStorage
@@ -355,7 +391,13 @@ export function createAIConfigService(
       storage = await secureStorage()
       if (!storage.isEncryptionAvailable()) throw new Error('UNAVAILABLE')
       const apiKey = storage.decryptString(Buffer.from(stored.encryptedApiKey, 'base64'))
-      return { baseUrl: stored.baseUrl, model: stored.model, apiKey }
+      return {
+        providerId: stored.providerId,
+        baseUrl: stored.baseUrl,
+        model: stored.model,
+        webSearchEnabled: stored.webSearchEnabled,
+        apiKey
+      }
     } catch {
       const code: AIProviderConfigErrorCode = 'AI_SECURE_STORAGE_UNAVAILABLE'
       throw new Error(code)

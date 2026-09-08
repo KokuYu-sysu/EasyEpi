@@ -416,8 +416,10 @@ describe('AI configuration security boundary', () => {
         }
       })
       await expect(service.getPlaintextForMain()).resolves.toEqual({
+        providerId: 'custom',
         baseUrl: 'https://second.example/v1',
-        model: 'model-a'
+        model: 'model-a',
+        webSearchEnabled: false
       })
     } finally {
       rmSync(directory, { recursive: true, force: true })
@@ -451,8 +453,10 @@ describe('AI configuration security boundary', () => {
           config: { hasApiKey: false, maskedApiKey: null }
         })
         await expect(service.getPlaintextForMain()).resolves.toEqual({
+          providerId: 'custom',
           baseUrl: 'https://first.example/v1',
-          model: 'model-a'
+          model: 'model-a',
+          webSearchEnabled: false
         })
       } finally {
         rmSync(directory, { recursive: true, force: true })
@@ -479,8 +483,10 @@ describe('AI configuration security boundary', () => {
         model: 'model-b',
       })
       await expect(service.getPlaintextForMain()).resolves.toEqual({
+        providerId: 'custom',
         baseUrl: 'https://first.example/v1',
         model: 'model-b',
+        webSearchEnabled: false,
         apiKey: 'first-secret'
       })
     } finally {
