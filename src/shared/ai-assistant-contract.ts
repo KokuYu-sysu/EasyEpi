@@ -34,6 +34,7 @@ export const AI_PROVIDER_IDS = [
 
 export type AIProviderId = (typeof AI_PROVIDER_IDS)[number]
 export type AIResearchStatus = 'searched' | 'not_needed' | 'disabled' | 'unsupported' | 'failed'
+export interface AIResearchCitation { url: string; title: string }
 
 export function isAIProviderId(value: unknown): value is AIProviderId {
   return typeof value === 'string' && (AI_PROVIDER_IDS as readonly string[]).includes(value)
@@ -196,8 +197,14 @@ export interface AIRunFailure {
 }
 
 export type AIRunResult =
-  | { kind: 'questionnaire'; artifactId: string; researchStatus?: AIResearchStatus }
-  | { kind: 'clarification'; messageId: string; clarificationId: string; researchStatus?: AIResearchStatus }
+  | {
+      kind: 'questionnaire'; artifactId: string
+      researchStatus?: AIResearchStatus; citations?: AIResearchCitation[]
+    }
+  | {
+      kind: 'clarification'; messageId: string; clarificationId: string
+      researchStatus?: AIResearchStatus; citations?: AIResearchCitation[]
+    }
 
 export interface AIRun {
   runId: string
@@ -532,6 +539,7 @@ export type AISendResult =
       artifact: AIQuestionnaireArtifactPreviewDto
       attempts: number
       researchStatus?: AIResearchStatus
+      citations?: AIResearchCitation[]
     }
   | {
       ok: true
@@ -540,6 +548,7 @@ export type AISendResult =
       message: AIPublicMessage
       attempts: number
       researchStatus?: AIResearchStatus
+      citations?: AIResearchCitation[]
     }
   | (AIErrorResult & { details?: AIPublicFailureDetails })
 export type AICancelResult = { ok: true; cancelled: boolean } | AIErrorResult
@@ -1415,7 +1424,7 @@ export function parseAISendResponse(value: unknown): AISendResult {
   assertSafeResponseTree(value)
   const discriminator = responseKeys(value, ['ok'], [
     'requestId', 'outcome', 'artifact', 'message', 'attempts',
-    'researchStatus', 'errorCode', 'message', 'details'
+    'researchStatus', 'citations', 'errorCode', 'message', 'details'
   ])
   if (discriminator.ok === false) {
     const failure = responseKeys(
@@ -1432,18 +1441,32 @@ export function parseAISendResponse(value: unknown): AISendResult {
     if (discriminator.researchStatus !== undefined && ![
       'searched', 'not_needed', 'disabled', 'unsupported', 'failed'
     ].includes(String(discriminator.researchStatus))) invalidResponse()
+    if (discriminator.citations !== undefined) {
+      if (!Array.isArray(discriminator.citations) || discriminator.citations.length > 20) invalidResponse()
+      for (const value of discriminator.citations) {
+        const citation = responseKeys(value, ['url', 'title'])
+        const url = responseString(citation.url, 2_048)
+        responsePlainText(citation.title, 500)
+        try {
+          const parsed = new URL(url)
+          if (parsed.protocol !== 'https:' || parsed.username || parsed.password) invalidResponse()
+        } catch {
+          invalidResponse()
+        }
+      }
+    }
     if (discriminator.outcome === 'questionnaire') {
       responseKeys(
         discriminator,
         ['ok', 'requestId', 'outcome', 'artifact', 'attempts'],
-        ['researchStatus']
+        ['researchStatus', 'citations']
       )
       assertQuestionnaireArtifactPreview(discriminator.artifact)
     } else if (discriminator.outcome === 'clarification') {
       responseKeys(
         discriminator,
         ['ok', 'requestId', 'outcome', 'message', 'attempts'],
-        ['researchStatus']
+        ['researchStatus', 'citations']
       )
       assertPublicMessage(discriminator.message)
       const message = discriminator.message as {

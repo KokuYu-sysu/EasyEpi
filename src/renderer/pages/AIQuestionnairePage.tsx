@@ -40,6 +40,7 @@ import {
   type AIPublicMessage,
   type AIProgressEvent,
   type AIQuestionnaireArtifactPreviewDto,
+  type AIResearchCitation,
   type AIResearchStatus,
   type AISessionListItem,
   type AISessionPage,
@@ -454,6 +455,7 @@ export function AIQuestionnairePage() {
   const [renameTitle, setRenameTitle] = useState('')
   const [announcement, setAnnouncement] = useState('')
   const [researchNotice, setResearchNotice] = useState<string | null>(null)
+  const [researchCitations, setResearchCitations] = useState<AIResearchCitation[]>([])
   const [liveRun, setLiveRun] = useState<LiveRunState | null>(null)
   const [liveFailure, setLiveFailure] = useState<{
     runId: string | null
@@ -575,6 +577,7 @@ export function AIQuestionnairePage() {
     setLiveRun(null)
     setLiveFailure(null)
     setResearchNotice(null)
+    setResearchCitations([])
     setPendingClarificationId(null)
     activeRequestIdRef.current = null
     activeRunIdRef.current = null
@@ -1179,6 +1182,7 @@ export function AIQuestionnairePage() {
       }
       setDraft('')
       setResearchNotice(RESEARCH_STATUS_LABELS[result.researchStatus ?? 'disabled'])
+      setResearchCitations(result.citations ?? [])
       if (result.outcome === 'clarification') {
         setAnnouncement('AI 提出了一个补充问题。')
         await Promise.all([
@@ -1426,9 +1430,16 @@ export function AIQuestionnairePage() {
         </Card>
       ) : null}
       {researchNotice ? (
-        <p role="status" className="m-0 rounded-[var(--radius-1)] border border-[var(--color-border-default)] bg-[var(--color-surface-sunken)] p-[var(--space-3)]">
-          {researchNotice}
-        </p>
+        <div role="status" className="rounded-[var(--radius-1)] border border-[var(--color-border-default)] bg-[var(--color-surface-sunken)] p-[var(--space-3)]">
+          <p className="m-0">{researchNotice}</p>
+          {researchCitations.length > 0 ? (
+            <ul className="mb-0 mt-[var(--space-2)]">
+              {researchCitations.map(({ url, title }) => (
+                <li key={url}><a href={url} target="_blank" rel="noreferrer">{title}</a></li>
+              ))}
+            </ul>
+          ) : null}
+        </div>
       ) : null}
       {error ? (
         <div role="alert" className="flex flex-wrap items-center justify-between gap-[var(--space-2)] rounded-[var(--radius-1)] border border-[var(--color-danger)] bg-[var(--color-danger-soft)] p-[var(--space-3)] text-[var(--color-danger)]">

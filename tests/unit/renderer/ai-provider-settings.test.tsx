@@ -180,8 +180,10 @@ describe('AIProviderSettings', () => {
     render(<AIProviderSettings />)
     await screen.findByDisplayValue(savedConfig.baseUrl)
 
+    await user.type(screen.getByLabelText('API Key'), 'old-provider-secret')
     await user.selectOptions(screen.getByLabelText('AI 厂商'), 'openai')
     expect(screen.getByLabelText('Base URL')).toHaveValue('https://api.openai.com/v1')
+    expect(screen.getByLabelText('API Key')).toHaveValue('')
     await user.click(screen.getByLabelText('启用内置联网搜索'))
     expect(screen.getByText(/可能产生额外费用/)).toBeVisible()
     await user.type(screen.getByLabelText('API Key'), 'new-secret')

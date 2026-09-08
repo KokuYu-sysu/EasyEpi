@@ -39,6 +39,7 @@ const PROVIDER_BY_HOST = new Map<string, AIProviderId>([
   ['generativelanguage.googleapis.com', 'gemini'],
   ['dashscope.aliyuncs.com', 'qwen'],
   ['api.moonshot.cn', 'moonshot'],
+  ['api.moonshot.ai', 'moonshot'],
   ['open.bigmodel.cn', 'glm'],
   ['api.x.ai', 'xai'],
   ['api.xiaomimimo.com', 'mimo']

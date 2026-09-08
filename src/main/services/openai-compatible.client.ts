@@ -299,7 +299,7 @@ function providerErrorMetadata(text: string): { param?: string; signal: string }
 
 function unsupportedSignal(signal: string, allowInvalidParameter: boolean): boolean {
   const normalized = signal.replaceAll('_', ' ')
-  return ['unsupported', 'not support', 'unknown', 'unrecognized', 'unavailable']
+  return ['unsupported', 'not support', 'unknown', 'unrecognized']
     .some((term) => normalized.includes(term)) ||
     allowInvalidParameter && normalized.includes('invalid parameter')
 }
@@ -308,7 +308,7 @@ function narrowlyNamesUnsupportedCapability(signal: string, capability: Negotiat
   const patterns = capability === 'response_format'
     ? [
         /(?:unsupported|unknown|unrecognized)\s+(?:parameter\s*[:=]?\s*)?["'`]?response_format\b/,
-        /\bresponse_format(?:\s+(?:json_schema|type))?\s+(?:parameter\s+)?(?:is\s+)?(?:unsupported|not supported|unknown|unrecognized|unavailable)\b/,
+        /\bresponse_format(?:\s+(?:json_schema|type))?\s+(?:parameter\s+)?(?:is\s+)?(?:unsupported|not supported|unknown|unrecognized)\b/,
         /\b(?:does not|doesn't)\s+support\s+(?:the\s+)?response_format\b/
       ]
     : [
@@ -618,7 +618,7 @@ export function createOpenAICompatibleClient(
         : policy.responseFormat
       if (responseFormat === 'json_schema') providerSchema(request.schemaVersion)
       let useStreaming = safeRequest.streamingSupported !== false
-      for (let negotiation = 0; negotiation < 3; negotiation += 1) {
+      for (let negotiation = 0; negotiation < 4; negotiation += 1) {
         const result = await requestOnce(safeRequest, useStreaming, responseFormat)
         if (result.kind === 'complete') {
           if (useStreaming && !result.usedSse) {
@@ -632,8 +632,12 @@ export function createOpenAICompatibleClient(
           }
         }
         if (responseFormat !== 'text' && unsupportedCapability(result.status, result.text, 'response_format')) {
-          responseFormat = 'text'
-          safeRequest.onCapabilityFallback?.('response_format')
+          if (responseFormat === 'json_schema' && result.text.toLowerCase().includes('json_schema')) {
+            responseFormat = 'json_object'
+          } else {
+            responseFormat = 'text'
+            safeRequest.onCapabilityFallback?.('response_format')
+          }
           continue
         }
         if (useStreaming && unsupportedCapability(result.status, result.text, 'streaming')) {

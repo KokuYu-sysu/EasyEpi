@@ -407,10 +407,10 @@ function validateProgress(value: unknown): AIRunProgress {
 function validateRunResult(value: unknown): AIRunResult {
   if (!isPlainObject(value)) throw new Error('INVALID_AI_RUN_RESULT')
   if (value.kind === 'questionnaire') {
-    exactKeys(value, ['kind', 'artifactId'], ['researchStatus'])
+    exactKeys(value, ['kind', 'artifactId'], ['researchStatus', 'citations'])
     validatePathSegment(value.artifactId)
   } else if (value.kind === 'clarification') {
-    exactKeys(value, ['kind', 'messageId', 'clarificationId'], ['researchStatus'])
+    exactKeys(value, ['kind', 'messageId', 'clarificationId'], ['researchStatus', 'citations'])
     validatePathSegment(value.messageId)
     validatePathSegment(value.clarificationId)
   } else {
@@ -419,6 +419,21 @@ function validateRunResult(value: unknown): AIRunResult {
   if (value.researchStatus !== undefined && ![
     'searched', 'not_needed', 'disabled', 'unsupported', 'failed'
   ].includes(String(value.researchStatus))) throw new Error('INVALID_AI_RUN_RESULT')
+  if (value.citations !== undefined) {
+    if (!Array.isArray(value.citations) || value.citations.length > 20) throw new Error('INVALID_AI_RUN_RESULT')
+    for (const citation of value.citations) {
+      if (!isPlainObject(citation)) throw new Error('INVALID_AI_RUN_RESULT')
+      exactKeys(citation, ['url', 'title'])
+      if (typeof citation.url !== 'string' || typeof citation.title !== 'string' ||
+        citation.title.length === 0 || citation.title.length > 500) throw new Error('INVALID_AI_RUN_RESULT')
+      try {
+        const url = new URL(citation.url)
+        if (url.protocol !== 'https:' || url.username || url.password) throw new Error('invalid')
+      } catch {
+        throw new Error('INVALID_AI_RUN_RESULT')
+      }
+    }
+  }
   return clone(value) as unknown as AIRunResult
 }
 

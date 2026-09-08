@@ -35,7 +35,7 @@ function clarification(options: unknown = [{ id: 'adult', label: 'Adults' }]): s
 }
 
 describe('questionnaire harness trust boundary', () => {
-  it('uses the v2.2 prompt and harness stamp with schema v2', () => {
+  it('uses the v2.3 prompt and harness stamp with schema v2', () => {
     const current = getAiVersionStamp()
     expect({
       promptVersion: current.promptVersion,
@@ -43,9 +43,9 @@ describe('questionnaire harness trust boundary', () => {
       harnessVersion: current.harnessVersion,
       schemaVersion: current.schemaVersion
     }).toEqual({
-      promptVersion: '2.2.0',
-      promptHash: 'sha256:69236b7bb3695d10ff2a7940a7d8fa8a3286792a61603e6f95ad1616d232e304',
-      harnessVersion: '2.2.0',
+      promptVersion: '2.3.0',
+      promptHash: 'sha256:423713b43b27c04ffe307e49a6fd0bbb96b24ae128165c355d57ed9a3e91314d',
+      harnessVersion: '2.3.0',
       schemaVersion: 2
     })
   })

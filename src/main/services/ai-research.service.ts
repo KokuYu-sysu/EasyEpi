@@ -33,6 +33,7 @@ interface AIResearchServiceOptions {
   fetch?: typeof fetch
   responsesClient?: ResponsesClient
   maxResponseBytes?: number
+  timeoutMs?: number
 }
 
 const EMPTY: Pick<AIResearchResult, 'evidence' | 'citations'> = { evidence: '', citations: [] }
@@ -117,8 +118,26 @@ async function readJson(response: Response, maxBytes: number): Promise<unknown> 
   }
   const declared = Number(response.headers.get('content-length'))
   if (Number.isFinite(declared) && declared > maxBytes) throw new Error('large')
-  const bytes = new Uint8Array(await response.arrayBuffer())
-  if (bytes.byteLength > maxBytes) throw new Error('large')
+  if (response.body === null) throw new Error('invalid')
+  const reader = response.body.getReader()
+  const chunks: Uint8Array[] = []
+  let size = 0
+  for (;;) {
+    const next = await reader.read()
+    if (next.done) break
+    size += next.value.byteLength
+    if (size > maxBytes) {
+      await reader.cancel().catch(() => undefined)
+      throw new Error('large')
+    }
+    chunks.push(next.value)
+  }
+  const bytes = new Uint8Array(size)
+  let offset = 0
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset)
+    offset += chunk.byteLength
+  }
   return JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes))
 }
 
@@ -128,23 +147,33 @@ export function createAIResearchService(options: AIResearchServiceOptions = {}):
   const fetcher = options.fetch ?? fetch
   const responsesClient = options.responsesClient ?? createOpenAIResponsesClient({ fetch: fetcher })
   const maxResponseBytes = options.maxResponseBytes ?? 2_000_000
+  const timeoutMs = options.timeoutMs ?? 60_000
 
   async function postChat(request: AIResearchRequest, messages: unknown[]): Promise<unknown> {
-    const response = await fetcher(resolveOpenAICompatibleEndpoint(request.baseUrl, 'chat'), {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        ...(request.apiKey ? { authorization: `Bearer ${request.apiKey}` } : {})
-      },
-      body: JSON.stringify({
-        model: request.model,
-        messages,
-        stream: false,
-        ...searchBody(request.providerId)
-      }),
-      signal: request.signal
-    })
-    return readJson(response, maxResponseBytes)
+    const controller = new AbortController()
+    const timeout = setTimeout(() => controller.abort(), timeoutMs)
+    const onAbort = (): void => controller.abort()
+    request.signal?.addEventListener('abort', onAbort, { once: true })
+    try {
+      const response = await fetcher(resolveOpenAICompatibleEndpoint(request.baseUrl, 'chat'), {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          ...(request.apiKey ? { authorization: `Bearer ${request.apiKey}` } : {})
+        },
+        body: JSON.stringify({
+          model: request.model,
+          messages,
+          stream: false,
+          ...searchBody(request.providerId)
+        }),
+        signal: controller.signal
+      })
+      return await readJson(response, maxResponseBytes)
+    } finally {
+      clearTimeout(timeout)
+      request.signal?.removeEventListener('abort', onAbort)
+    }
   }
 
   return {

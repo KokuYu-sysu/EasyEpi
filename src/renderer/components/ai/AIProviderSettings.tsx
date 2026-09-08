@@ -160,6 +160,7 @@ export function AIProviderSettings() {
                 const next = event.target.value as AIProviderId
                 const preset = AI_PROVIDER_PRESETS.find(({ id }) => id === next)!
                 setProviderId(next)
+                setApiKey('')
                 if (preset.defaultBaseUrl) setBaseUrl(preset.defaultBaseUrl)
                 if (['deepseek', 'gemini', 'custom'].includes(next)) setWebSearchEnabled(false)
                 markDirty()

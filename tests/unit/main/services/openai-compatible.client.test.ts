@@ -358,7 +358,7 @@ describe('OpenAI-compatible bounded streaming transport', () => {
     })
   })
 
-  it('falls back when a provider reports that response_format is temporarily unavailable', async () => {
+  it('does not cache a transient response_format outage as unsupported', async () => {
     const fallbacks: string[] = []
     const fetcher = vi.fn()
       .mockResolvedValueOnce(errorResponse(400, JSON.stringify({
@@ -375,12 +375,9 @@ describe('OpenAI-compatible bounded streaming transport', () => {
     await expect(client.complete(request({
       streamingSupported: false,
       onCapabilityFallback: (capability) => fallbacks.push(capability)
-    }))).resolves.toEqual({
-      content: envelope,
-      streamingSupported: false,
-      responseFormatSupported: false
-    })
-    expect(fallbacks).toEqual(['response_format'])
+    }))).rejects.toMatchObject({ code: 'AI_PROVIDER_ERROR' })
+    expect(fallbacks).toEqual([])
+    expect(fetcher).toHaveBeenCalledOnce()
   })
 
   it('falls back independently for explicit response_format then stream rejections', async () => {
