@@ -1,4 +1,10 @@
-import { normalizeAIBaseUrl, validateAIConfigUpdate } from './ai-config.service'
+import type { AIProviderId } from '@shared/ai-assistant-contract'
+
+import { validateAIConfigUpdate } from './ai-config.service'
+import {
+  getAIProviderRequestPolicy,
+  resolveOpenAICompatibleEndpoint
+} from './ai-provider-policy'
 import {
   OpenAIStreamParseError,
   createAssistantMessageExtractor,
@@ -31,6 +37,7 @@ export interface AIChatMessage {
 }
 
 export interface AIChatCompletionRequest {
+  providerId?: AIProviderId
   baseUrl: string
   model: string
   apiKey?: string
@@ -195,17 +202,6 @@ function providerSchema(schemaVersion: number | undefined): typeof MODEL_ENVELOP
   const schema = PROVIDER_SCHEMA_REGISTRY.get(schemaVersion ?? 2)
   if (schema === undefined) throw new Error('AI_SCHEMA_NOT_REGISTERED')
   return schema
-}
-
-function endpoint(baseUrl: string): string {
-  const normalized = normalizeAIBaseUrl(baseUrl)
-  return normalized.endsWith('/chat/completions') ? normalized : `${normalized}/chat/completions`
-}
-
-function providerCompatibilityOptions(baseUrl: string): Record<string, unknown> {
-  return new URL(baseUrl).hostname.toLowerCase() === 'api.deepseek.com'
-    ? { thinking: { type: 'disabled' } }
-    : {}
 }
 
 async function cancelResponseBody(response: Response): Promise<void> {
@@ -450,7 +446,10 @@ export function createOpenAICompatibleClient(
     }
     request.signal?.addEventListener('abort', onAbort, { once: true })
     try {
-      const response = await fetcher(endpoint(request.baseUrl), {
+      const policy = getAIProviderRequestPolicy(
+        request.providerId ?? 'custom', request.baseUrl, request.model
+      )
+      const response = await fetcher(resolveOpenAICompatibleEndpoint(request.baseUrl, 'chat'), {
         method: 'POST',
         headers: {
           'content-type': 'application/json',
@@ -461,7 +460,7 @@ export function createOpenAICompatibleClient(
         body: JSON.stringify({
           model: request.model,
           messages: request.messages,
-          ...providerCompatibilityOptions(request.baseUrl),
+          ...policy.chatBody,
           ...(useStreaming ? { stream: true } : {}),
           ...(useResponseFormat
             ? {
@@ -603,6 +602,7 @@ export function createOpenAICompatibleClient(
       }
       const safeRequest: AIChatCompletionRequest = {
         ...request,
+        providerId: validated.providerId,
         baseUrl: validated.baseUrl,
         model: validated.model,
         apiKey: typeof validated.apiKey === 'string' ? validated.apiKey : undefined

@@ -56,6 +56,19 @@ function errorCode(error: unknown): string | undefined {
 }
 
 describe('OpenAI-compatible bounded streaming transport', () => {
+  it('normalizes a Responses Base URL back to the Chat Completions endpoint', async () => {
+    const fetcher = vi.fn().mockResolvedValue(jsonResponse())
+    const client = createOpenAICompatibleClient({ fetch: fetcher })
+
+    await client.complete(request({
+      baseUrl: 'https://api.openai.com/v1/responses',
+      streamingSupported: false,
+      responseFormatSupported: false
+    }))
+
+    expect(fetcher.mock.calls[0]?.[0]).toBe('https://api.openai.com/v1/chat/completions')
+  })
+
   it('preserves split UTF-8 and accepts CRLF/LF framing, comments, keepalives, role/usage/empty chunks, stop, and DONE', async () => {
     const bytes = encoder.encode(sse(
       JSON.stringify({ choices: [{ index: 0, delta: { role: 'assistant' }, finish_reason: null }] }),
