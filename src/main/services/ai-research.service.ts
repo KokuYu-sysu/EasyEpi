@@ -1,4 +1,4 @@
-import type { AIProviderId } from '@shared/ai-assistant-contract'
+import type { AIProviderId, AIResearchStatus } from '@shared/ai-assistant-contract'
 
 import { getAIProviderRequestPolicy, resolveOpenAICompatibleEndpoint } from './ai-provider-policy'
 import { AIClientError } from './openai-compatible.client'
@@ -8,8 +8,6 @@ import {
   type AIResponsesSearchResult
 } from './openai-responses.client'
 import type { AIResponseCitation } from './openai-responses.parser'
-
-export type AIResearchStatus = 'searched' | 'not_needed' | 'disabled' | 'unsupported' | 'failed'
 
 export interface AIResearchRequest {
   providerId: AIProviderId

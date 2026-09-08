@@ -407,15 +407,18 @@ function validateProgress(value: unknown): AIRunProgress {
 function validateRunResult(value: unknown): AIRunResult {
   if (!isPlainObject(value)) throw new Error('INVALID_AI_RUN_RESULT')
   if (value.kind === 'questionnaire') {
-    exactKeys(value, ['kind', 'artifactId'])
+    exactKeys(value, ['kind', 'artifactId'], ['researchStatus'])
     validatePathSegment(value.artifactId)
   } else if (value.kind === 'clarification') {
-    exactKeys(value, ['kind', 'messageId', 'clarificationId'])
+    exactKeys(value, ['kind', 'messageId', 'clarificationId'], ['researchStatus'])
     validatePathSegment(value.messageId)
     validatePathSegment(value.clarificationId)
   } else {
     throw new Error('INVALID_AI_RUN_RESULT')
   }
+  if (value.researchStatus !== undefined && ![
+    'searched', 'not_needed', 'disabled', 'unsupported', 'failed'
+  ].includes(String(value.researchStatus))) throw new Error('INVALID_AI_RUN_RESULT')
   return clone(value) as unknown as AIRunResult
 }
 

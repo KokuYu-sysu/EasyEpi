@@ -98,6 +98,43 @@ function expectQuestionnaireResult(
 }
 
 describe('AI questionnaire orchestrator', () => {
+  it('runs research once before generation and labels untrusted evidence', async () => {
+    const value = project()
+    const order: string[] = []
+    const research = vi.fn(async () => {
+      order.push('research')
+      return {
+        status: 'searched' as const,
+        evidence: 'PubMed evidence',
+        citations: [{ url: 'https://pubmed.ncbi.nlm.nih.gov/1/', title: 'Study' }]
+      }
+    })
+    const complete = vi.fn(async (request) => {
+      order.push('generate')
+      expect(request.messages).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          role: 'system',
+          content: expect.stringContaining('<untrusted_research_evidence>')
+        })
+      ]))
+      expect(JSON.stringify(request.messages)).toContain('PubMed evidence')
+      return { content: validCompletion(), streamingSupported: true, responseFormatSupported: true }
+    })
+
+    const result = await createAIQuestionnaireOrchestrator({
+      persistProject: vi.fn(), client: { complete }, researchService: { research }
+    }).sendTurn(sendRequest(value, {
+      config: {
+        providerId: 'qwen', baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+        model: 'qwen-plus', webSearchEnabled: true
+      }
+    }))
+
+    expect(order).toEqual(['research', 'generate'])
+    expect(result).toMatchObject({ ok: true, researchStatus: 'searched' })
+    expect(research).toHaveBeenCalledOnce()
+  })
+
   it('treats migration to the current v2 version as a no-op', async () => {
     const value = project()
     const persistProject = vi.fn()

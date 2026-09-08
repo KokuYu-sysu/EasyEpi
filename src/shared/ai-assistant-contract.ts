@@ -33,6 +33,7 @@ export const AI_PROVIDER_IDS = [
 ] as const
 
 export type AIProviderId = (typeof AI_PROVIDER_IDS)[number]
+export type AIResearchStatus = 'searched' | 'not_needed' | 'disabled' | 'unsupported' | 'failed'
 
 export function isAIProviderId(value: unknown): value is AIProviderId {
   return typeof value === 'string' && (AI_PROVIDER_IDS as readonly string[]).includes(value)
@@ -195,8 +196,8 @@ export interface AIRunFailure {
 }
 
 export type AIRunResult =
-  | { kind: 'questionnaire'; artifactId: string }
-  | { kind: 'clarification'; messageId: string; clarificationId: string }
+  | { kind: 'questionnaire'; artifactId: string; researchStatus?: AIResearchStatus }
+  | { kind: 'clarification'; messageId: string; clarificationId: string; researchStatus?: AIResearchStatus }
 
 export interface AIRun {
   runId: string
