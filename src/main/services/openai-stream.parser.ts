@@ -127,7 +127,7 @@ export function createSseChatCompletionParser(limits: StreamLimits): SseChatComp
 
     const finishReason = has(choice, 'finish_reason') ? choice.finish_reason : null
     const emitted: StreamContentDelta[] = []
-    if (has(delta, 'content')) {
+    if (hasPayload(delta, 'content')) {
       if (typeof delta.content !== 'string') invalid()
       if (delta.content.length > 0) {
         if (terminal) invalid()

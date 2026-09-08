@@ -240,6 +240,27 @@ describe('OpenAI-compatible bounded streaming transport', () => {
     expect(body).not.toHaveProperty('response_format')
   })
 
+  it('disables DeepSeek default thinking without adding provider extensions elsewhere', async () => {
+    const fetcher = vi.fn().mockImplementation(() => Promise.resolve(jsonResponse()))
+    const client = createOpenAICompatibleClient({ fetch: fetcher })
+
+    await client.complete(request({
+      baseUrl: 'https://api.deepseek.com',
+      streamingSupported: false,
+      responseFormatSupported: false
+    }))
+    await client.complete(request({
+      baseUrl: 'https://example.test/v1',
+      streamingSupported: false,
+      responseFormatSupported: false
+    }))
+
+    expect(JSON.parse(String(fetcher.mock.calls[0]?.[1]?.body))).toMatchObject({
+      thinking: { type: 'disabled' }
+    })
+    expect(JSON.parse(String(fetcher.mock.calls[1]?.[1]?.body))).not.toHaveProperty('thinking')
+  })
+
   it('treats null refusal and tool payloads as unused in JSON and SSE responses', async () => {
     const json = new Response(JSON.stringify({
       choices: [{
@@ -266,6 +287,66 @@ describe('OpenAI-compatible bounded streaming transport', () => {
 
     await expect(client.complete(request({ streamingSupported: false }))).resolves.toMatchObject({ content: envelope })
     await expect(client.complete(request())).resolves.toMatchObject({ content: envelope })
+  })
+
+  it('ignores null SSE content while a reasoning model emits hidden reasoning deltas', async () => {
+    const stream = streamingResponse([sse(
+      JSON.stringify({
+        choices: [{
+          index: 0,
+          delta: { role: 'assistant', content: null, reasoning_content: '' },
+          finish_reason: null
+        }]
+      }),
+      JSON.stringify({
+        choices: [{
+          index: 0,
+          delta: { content: null, reasoning_content: 'hidden reasoning' },
+          finish_reason: null
+        }]
+      }),
+      chunk(envelope),
+      JSON.stringify({
+        choices: [{
+          index: 0,
+          delta: { content: '', reasoning_content: null },
+          finish_reason: 'stop'
+        }]
+      }),
+      '[DONE]'
+    )])
+    const client = createOpenAICompatibleClient({ fetch: vi.fn().mockResolvedValue(stream) })
+
+    await expect(client.complete(request())).resolves.toEqual({
+      content: envelope,
+      streamingSupported: true,
+      responseFormatSupported: true
+    })
+  })
+
+  it('falls back when a provider reports that response_format is temporarily unavailable', async () => {
+    const fallbacks: string[] = []
+    const fetcher = vi.fn()
+      .mockResolvedValueOnce(errorResponse(400, JSON.stringify({
+        error: {
+          message: 'This response_format type is unavailable now',
+          type: 'invalid_request_error',
+          param: null,
+          code: 'invalid_request_error'
+        }
+      })))
+      .mockResolvedValueOnce(jsonResponse())
+    const client = createOpenAICompatibleClient({ fetch: fetcher })
+
+    await expect(client.complete(request({
+      streamingSupported: false,
+      onCapabilityFallback: (capability) => fallbacks.push(capability)
+    }))).resolves.toEqual({
+      content: envelope,
+      streamingSupported: false,
+      responseFormatSupported: false
+    })
+    expect(fallbacks).toEqual(['response_format'])
   })
 
   it('falls back independently for explicit response_format then stream rejections', async () => {

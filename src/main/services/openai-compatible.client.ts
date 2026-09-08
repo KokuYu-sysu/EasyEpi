@@ -202,6 +202,12 @@ function endpoint(baseUrl: string): string {
   return normalized.endsWith('/chat/completions') ? normalized : `${normalized}/chat/completions`
 }
 
+function providerCompatibilityOptions(baseUrl: string): Record<string, unknown> {
+  return new URL(baseUrl).hostname.toLowerCase() === 'api.deepseek.com'
+    ? { thinking: { type: 'disabled' } }
+    : {}
+}
+
 async function cancelResponseBody(response: Response): Promise<void> {
   try {
     await response.body?.cancel()
@@ -296,7 +302,8 @@ function providerErrorMetadata(text: string): { param?: string; signal: string }
 
 function unsupportedSignal(signal: string, allowInvalidParameter: boolean): boolean {
   const normalized = signal.replaceAll('_', ' ')
-  return ['unsupported', 'not support', 'unknown', 'unrecognized'].some((term) => normalized.includes(term)) ||
+  return ['unsupported', 'not support', 'unknown', 'unrecognized', 'unavailable']
+    .some((term) => normalized.includes(term)) ||
     allowInvalidParameter && normalized.includes('invalid parameter')
 }
 
@@ -304,12 +311,12 @@ function narrowlyNamesUnsupportedCapability(signal: string, capability: Negotiat
   const patterns = capability === 'response_format'
     ? [
         /(?:unsupported|unknown|unrecognized)\s+(?:parameter\s*[:=]?\s*)?["'`]?response_format\b/,
-        /\bresponse_format(?:\s+json_schema)?\s+(?:parameter\s+)?(?:is\s+)?(?:unsupported|not supported|unknown|unrecognized)\b/,
+        /\bresponse_format(?:\s+(?:json_schema|type))?\s+(?:parameter\s+)?(?:is\s+)?(?:unsupported|not supported|unknown|unrecognized|unavailable)\b/,
         /\b(?:does not|doesn't)\s+support\s+(?:the\s+)?response_format\b/
       ]
     : [
         /(?:unsupported|unknown|unrecognized)\s+(?:parameter\s*[:=]?\s*)?["'`]?stream\b/,
-        /\bstream\s+(?:parameter\s+)?(?:is\s+)?(?:unsupported|not supported|unknown|unrecognized)\b/,
+        /\bstream\s+(?:parameter\s+)?(?:is\s+)?(?:unsupported|not supported|unknown|unrecognized|unavailable)\b/,
         /\b(?:does not|doesn't)\s+support\s+(?:the\s+)?stream(?:ing)?\b/
       ]
   return patterns.some((pattern) => pattern.test(signal))
@@ -454,6 +461,7 @@ export function createOpenAICompatibleClient(
         body: JSON.stringify({
           model: request.model,
           messages: request.messages,
+          ...providerCompatibilityOptions(request.baseUrl),
           ...(useStreaming ? { stream: true } : {}),
           ...(useResponseFormat
             ? {
