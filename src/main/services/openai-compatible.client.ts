@@ -448,7 +448,7 @@ export function createOpenAICompatibleClient(
     request.signal?.addEventListener('abort', onAbort, { once: true })
     try {
       const policy = getAIProviderRequestPolicy(
-        request.providerId ?? 'custom', request.baseUrl, request.model
+        request.providerId ?? 'custom', request.baseUrl
       )
       const response = await fetcher(resolveOpenAICompatibleEndpoint(request.baseUrl, 'chat'), {
         method: 'POST',
@@ -611,7 +611,7 @@ export function createOpenAICompatibleClient(
         apiKey: typeof validated.apiKey === 'string' ? validated.apiKey : undefined
       }
       const policy = getAIProviderRequestPolicy(
-        safeRequest.providerId ?? 'custom', safeRequest.baseUrl, safeRequest.model
+        safeRequest.providerId ?? 'custom', safeRequest.baseUrl
       )
       let responseFormat: AIResponseFormatLevel = safeRequest.responseFormatSupported === false
         ? 'text'

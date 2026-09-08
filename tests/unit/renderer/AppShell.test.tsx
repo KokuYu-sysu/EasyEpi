@@ -210,8 +210,10 @@ describe('AppShell', () => {
     expect(screen.getByText('服务地址变化后需重新输入 API Key')).toBeVisible()
     await user.click(screen.getByRole('button', { name: '保存' }))
     await waitFor(() => expect(configUpdate).toHaveBeenCalledWith({
+      providerId: 'custom',
       baseUrl: 'https://second.example/v1',
-      model: 'model-a'
+      model: 'model-a',
+      webSearchEnabled: false
     }))
     expect(await screen.findByText('未配置 API Key。')).toBeVisible()
   })

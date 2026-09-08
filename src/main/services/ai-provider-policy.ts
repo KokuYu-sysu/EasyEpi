@@ -59,8 +59,7 @@ const STANDARD_POLICY: AIProviderRequestPolicy = Object.freeze({
 
 export function getAIProviderRequestPolicy(
   providerId: AIProviderId,
-  baseUrl: string,
-  _model: string
+  baseUrl: string
 ): AIProviderRequestPolicy {
   if (!isOfficialAIProviderHost(providerId, baseUrl)) return STANDARD_POLICY
 

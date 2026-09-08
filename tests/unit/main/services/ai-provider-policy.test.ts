@@ -32,7 +32,7 @@ describe('provider request policy', () => {
   ] as const)(
     'selects safe capabilities for %s',
     (providerId, baseUrl, responseFormat, chatBody, searchTransport) => {
-      expect(getAIProviderRequestPolicy(providerId, baseUrl, 'model')).toEqual({
+      expect(getAIProviderRequestPolicy(providerId, baseUrl)).toEqual({
         officialHost: providerId !== 'custom',
         responseFormat,
         chatBody,
@@ -42,7 +42,7 @@ describe('provider request policy', () => {
   )
 
   it('suppresses private fields when a preset points at a non-official host', () => {
-    expect(getAIProviderRequestPolicy('deepseek', 'https://gateway.example/v1', 'deepseek-v4-flash'))
+    expect(getAIProviderRequestPolicy('deepseek', 'https://gateway.example/v1'))
       .toEqual({
         officialHost: false,
         responseFormat: 'json_schema',

@@ -128,4 +128,88 @@ describe('provider built-in research service', () => {
       model: 'qwen-plus', enabled: true, query: 'lung cancer screening'
     })).resolves.toEqual({ status: 'failed', evidence: '', citations: [] })
   })
+
+  it('reports when a Responses provider did not actually search', async () => {
+    const service = createAIResearchService({
+      responsesClient: {
+        search: vi.fn().mockResolvedValue({
+          content: 'No search needed', citations: [], searched: false, streamingSupported: true
+        })
+      }
+    })
+    await expect(service.research({
+      providerId: 'xai', baseUrl: 'https://api.x.ai/v1', model: 'grok',
+      enabled: true, query: 'hello'
+    })).resolves.toEqual({ status: 'not_needed', evidence: 'No search needed', citations: [] })
+  })
+
+  it('accepts HTTPS Chat citations and sends bearer authentication', async () => {
+    const fetcher = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      choices: [{
+        index: 0, finish_reason: 'stop',
+        message: {
+          role: 'assistant', content: 'Evidence', annotations: [
+            { url_citation: { url: 'https://pubmed.ncbi.nlm.nih.gov/1', title: 'Paper' } },
+            { url: 'http://unsafe.example/a', title: 'Unsafe' },
+            null
+          ]
+        }
+      }]
+    }), { status: 200 }))
+    const service = createAIResearchService({ fetch: fetcher })
+    await expect(service.research({
+      providerId: 'qwen', baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+      model: 'qwen-plus', apiKey: 'secret', enabled: true, query: 'question'
+    })).resolves.toEqual({
+      status: 'searched', evidence: 'Evidence',
+      citations: [{ url: 'https://pubmed.ncbi.nlm.nih.gov/1', title: 'Paper' }]
+    })
+    expect(fetcher.mock.calls[0]?.[1]?.headers).toMatchObject({ authorization: 'Bearer secret' })
+  })
+
+  it('handles a Kimi direct answer and rejects an unknown built-in tool', async () => {
+    const direct = createAIResearchService({ fetch: vi.fn().mockResolvedValue(chatResponse('Direct')) })
+    await expect(direct.research({
+      providerId: 'moonshot', baseUrl: 'https://api.moonshot.cn/v1', model: 'kimi',
+      enabled: true, query: 'question'
+    })).resolves.toEqual({ status: 'not_needed', evidence: 'Direct', citations: [] })
+
+    const invalid = createAIResearchService({ fetch: vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      choices: [{
+        index: 0, finish_reason: 'tool_calls',
+        message: {
+          role: 'assistant', content: null,
+          tool_calls: [{
+            id: 'tool:0', type: 'builtin_function',
+            function: { name: '$unknown', arguments: '{}' }
+          }]
+        }
+      }]
+    }), { status: 200 })) })
+    await expect(invalid.research({
+      providerId: 'moonshot', baseUrl: 'https://api.moonshot.cn/v1', model: 'kimi',
+      enabled: true, query: 'question'
+    })).resolves.toEqual({ status: 'failed', evidence: '', citations: [] })
+  })
+
+  it('preserves cancellation and bounds declared response sizes', async () => {
+    const controller = new AbortController()
+    controller.abort()
+    const cancelled = createAIResearchService({ fetch: vi.fn().mockRejectedValue(new Error('aborted')) })
+    await expect(cancelled.research({
+      providerId: 'qwen', baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+      model: 'qwen', enabled: true, query: 'question', signal: controller.signal
+    })).rejects.toMatchObject({ code: 'AI_CANCELLED' })
+
+    const oversized = createAIResearchService({
+      maxResponseBytes: 10,
+      fetch: vi.fn().mockResolvedValue(new Response('x', {
+        status: 200, headers: { 'content-length': '11' }
+      }))
+    })
+    await expect(oversized.research({
+      providerId: 'glm', baseUrl: 'https://open.bigmodel.cn/api/paas/v4',
+      model: 'glm', enabled: true, query: 'question'
+    })).resolves.toEqual({ status: 'failed', evidence: '', citations: [] })
+  })
 })

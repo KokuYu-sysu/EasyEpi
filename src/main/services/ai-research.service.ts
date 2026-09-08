@@ -150,7 +150,7 @@ export function createAIResearchService(options: AIResearchServiceOptions = {}):
   return {
     async research(request) {
       if (!request.enabled) return { status: 'disabled', ...EMPTY }
-      const policy = getAIProviderRequestPolicy(request.providerId, request.baseUrl, request.model)
+      const policy = getAIProviderRequestPolicy(request.providerId, request.baseUrl)
       if (policy.searchTransport === 'unsupported') return { status: 'unsupported', ...EMPTY }
       try {
         if (policy.searchTransport === 'responses') {
