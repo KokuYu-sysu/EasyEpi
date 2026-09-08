@@ -562,6 +562,8 @@ test('runs the M6 derived, quality, export and double-entry workflow in the pack
           folderPath,
           password: 'm6-exe-password'
         })
+        const adminSession = await api.admin.login({ password: 'm6-exe-password' })
+        if (!adminSession.success) throw new Error('M6_ADMIN_LOGIN_FAILED')
         await api.qnaire.addQuestion({
           id: 'm6-key',
           content: 'Participant ID',
