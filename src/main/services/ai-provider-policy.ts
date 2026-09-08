@@ -75,7 +75,7 @@ export function getAIProviderRequestPolicy(
         searchTransport: 'unsupported'
       }
     case 'gemini':
-      return { officialHost: true, responseFormat: 'json_schema', chatBody: {}, searchTransport: 'chat' }
+      return { officialHost: true, responseFormat: 'json_schema', chatBody: {}, searchTransport: 'unsupported' }
     case 'qwen':
       return { officialHost: true, responseFormat: 'json_object', chatBody: {}, searchTransport: 'chat' }
     case 'moonshot':

@@ -22,7 +22,7 @@ describe('provider request policy', () => {
   it.each([
     ['openai', 'https://api.openai.com/v1', 'json_schema', {}, 'responses'],
     ['deepseek', 'https://api.deepseek.com', 'json_object', { thinking: { type: 'disabled' } }, 'unsupported'],
-    ['gemini', 'https://generativelanguage.googleapis.com/v1beta/openai', 'json_schema', {}, 'chat'],
+    ['gemini', 'https://generativelanguage.googleapis.com/v1beta/openai', 'json_schema', {}, 'unsupported'],
     ['qwen', 'https://dashscope.aliyuncs.com/compatible-mode/v1', 'json_object', {}, 'chat'],
     ['moonshot', 'https://api.moonshot.cn/v1', 'json_object', { thinking: { type: 'disabled' } }, 'chat'],
     ['glm', 'https://open.bigmodel.cn/api/paas/v4', 'json_object', {}, 'chat'],
