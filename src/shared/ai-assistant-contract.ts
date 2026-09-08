@@ -20,16 +20,38 @@ export type AIJsonValue =
   | AIJsonValue[]
   | { [key: string]: AIJsonValue }
 
+export const AI_PROVIDER_IDS = [
+  'openai',
+  'deepseek',
+  'gemini',
+  'qwen',
+  'moonshot',
+  'glm',
+  'xai',
+  'mimo',
+  'custom'
+] as const
+
+export type AIProviderId = (typeof AI_PROVIDER_IDS)[number]
+
+export function isAIProviderId(value: unknown): value is AIProviderId {
+  return typeof value === 'string' && (AI_PROVIDER_IDS as readonly string[]).includes(value)
+}
+
 export interface AIProviderConfigUpdate {
+  providerId?: AIProviderId
   baseUrl: string
   model: string
+  webSearchEnabled?: boolean
   /** Undefined preserves the stored key; null or an empty string clears it. */
   apiKey?: string | null
 }
 
 export interface AIProviderConfigView {
+  providerId?: AIProviderId
   baseUrl: string
   model: string
+  webSearchEnabled?: boolean
   hasApiKey: boolean
   maskedApiKey: string | null
 }
@@ -337,8 +359,10 @@ export interface AIMutationResult<T> {
 }
 
 export interface AIConfigUpdateRequest {
+  providerId?: AIProviderId
   baseUrl: string
   model: string
+  webSearchEnabled?: boolean
   apiKey?: string | null
 }
 
@@ -559,7 +583,10 @@ function requestObject(value: unknown): Record<string, unknown> {
 
 export function parseAIConfigUpdateRequest(value: unknown): AIConfigUpdateRequest {
   const input = requestObject(value)
-  exactKeys(input, ['baseUrl', 'model'], ['apiKey'])
+  exactKeys(input, ['providerId', 'baseUrl', 'model', 'webSearchEnabled'], ['apiKey'])
+  if (!isAIProviderId(input.providerId) || typeof input.webSearchEnabled !== 'boolean') {
+    throw new Error('INVALID_AI_REQUEST')
+  }
   const baseUrl = safeString(input.baseUrl, 2_048)
   const model = safeString(input.model, 200)
   const apiKey = input.apiKey
@@ -567,7 +594,13 @@ export function parseAIConfigUpdateRequest(value: unknown): AIConfigUpdateReques
     (typeof apiKey !== 'string' || apiKey.length > 8_192 || apiKey.includes('\0'))) {
     throw new Error('INVALID_AI_REQUEST')
   }
-  return { baseUrl, model, ...(apiKey === undefined ? {} : { apiKey }) }
+  return {
+    providerId: input.providerId,
+    baseUrl,
+    model,
+    webSearchEnabled: input.webSearchEnabled,
+    ...(apiKey === undefined ? {} : { apiKey })
+  }
 }
 
 export function parseAISessionCreateRequest(value: unknown): AISessionCreateRequest {
@@ -1304,7 +1337,12 @@ export function parseAIResponse<T>(value: unknown, successKeys: readonly string[
 
 export function parseAIConfigResponse(value: unknown): AIConfigIpcResult {
   return parseKnownResponse<AIConfigIpcResult>(value, ['config'], (result) => {
-    const config = responseKeys(result.config, ['baseUrl', 'model', 'hasApiKey', 'maskedApiKey'])
+    const config = responseKeys(result.config, [
+      'providerId', 'baseUrl', 'model', 'webSearchEnabled', 'hasApiKey', 'maskedApiKey'
+    ])
+    if (!isAIProviderId(config.providerId) || typeof config.webSearchEnabled !== 'boolean') {
+      invalidResponse()
+    }
     responseString(config.baseUrl, 2_048)
     responseString(config.model, 200, true)
     if (typeof config.hasApiKey !== 'boolean') invalidResponse()

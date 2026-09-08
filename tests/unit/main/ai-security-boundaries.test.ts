@@ -235,11 +235,19 @@ describe('AI IPC request parser boundaries', () => {
 
   it('preserves optional request fields only when supplied', () => {
     expect(parseAIConfigUpdateRequest({
-      baseUrl: 'https://example.com/v1', model: 'model'
-    })).toEqual({ baseUrl: 'https://example.com/v1', model: 'model' })
+      providerId: 'custom', baseUrl: 'https://example.com/v1', model: 'model',
+      webSearchEnabled: false
+    })).toEqual({
+      providerId: 'custom', baseUrl: 'https://example.com/v1', model: 'model',
+      webSearchEnabled: false
+    })
     expect(parseAIConfigUpdateRequest({
-      baseUrl: 'https://example.com/v1', model: 'model', apiKey: null
-    })).toEqual({ baseUrl: 'https://example.com/v1', model: 'model', apiKey: null })
+      providerId: 'custom', baseUrl: 'https://example.com/v1', model: 'model',
+      webSearchEnabled: false, apiKey: null
+    })).toEqual({
+      providerId: 'custom', baseUrl: 'https://example.com/v1', model: 'model',
+      webSearchEnabled: false, apiKey: null
+    })
     expect(parseAISessionCreateRequest({})).toEqual({})
     expect(parseAISessionCreateRequest({ title: 'Study' })).toEqual({ title: 'Study' })
     expect(parseAISessionGetRequest({ sessionId })).toEqual({ sessionId, offset: 0, limit: 50 })
@@ -265,14 +273,15 @@ describe('AI IPC response parser boundaries', () => {
     expect(parseAIConfigResponse({
       ok: true,
       config: {
-        baseUrl: 'https://example.com/v1', model: 'model', hasApiKey: true,
-        maskedApiKey: '••••••••'
+        providerId: 'custom', baseUrl: 'https://example.com/v1', model: 'model',
+        webSearchEnabled: false, hasApiKey: true, maskedApiKey: '••••••••'
       }
     })).toMatchObject({ ok: true, config: { hasApiKey: true } })
     expect(parseAIConfigResponse({
       ok: true,
       config: {
-        baseUrl: 'https://example.com/v1', model: '', hasApiKey: false, maskedApiKey: null
+        providerId: 'openai', baseUrl: 'https://api.openai.com/v1', model: '',
+        webSearchEnabled: false, hasApiKey: false, maskedApiKey: null
       }
     })).toMatchObject({ ok: true, config: { hasApiKey: false } })
     expect(parseAIPrivacyStatusResponse({
