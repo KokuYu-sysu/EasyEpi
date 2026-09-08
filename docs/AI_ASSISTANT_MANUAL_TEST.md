@@ -6,6 +6,7 @@
 
 - Windows 10/11 x64；准备两个使用不同密码的测试项目 A、B，并能正常创建、打开和解锁。
 - 准备一个 OpenAI-compatible 服务，配置 Base URL、API Key 和模型。基线协议是 Chat Completions：应用向 `POST <Base URL>/chat/completions` 发送请求，并读取 `choices[0].message.content` 字符串。
+- 厂商预设包括 OpenAI、DeepSeek、Google Gemini、通义千问、Kimi/Moonshot、智谱 GLM、xAI 和小米 MiMo；也可选择自定义 OpenAI-Compatible。连接测试始终不启用联网搜索。
 - 兼容 URL 示例：`https://ai.example.org/v1`、`https://gateway.example.org/openai/v1`、`http://127.0.0.1:8000/v1`。HTTP 只允许 `localhost`、`127.0.0.1` 或 `[::1]` 回环地址；不要使用带账号、密码、查询串或片段的 URL。Base URL 已以 `/chat/completions` 结尾时不会重复追加。
 - 推荐模型至少能遵循多轮指令、输出单个 JSON 对象、返回完整问卷候选并在收到本地校验错误后修正。v2 响应根必须包含 `kind`、`assistantMessage`、`rollingSummary`、`options`、`questionnaire`；工具调用、流式响应和原生 JSON Schema 都不是基础兼容的必要条件。
 - 准备可查看并计数请求的本地兼容服务或 HTTPS 调试代理，以及可按脚本返回 400/401/403/404/429、延迟、断连和指定响应内容的 stub。代理必须脱敏 `Authorization`，测试捕获文件不得进入提交或正式日志。
@@ -13,6 +14,13 @@
 - 编译、typecheck 或 build 只能证明类型和产物可生成，不能证明真实服务的认证、模型能力、错误体格式、超时、限流或 JSON Schema 降级行为；以下联网项目必须观察真实请求或受控 stub。
 
 建议给测试 API Key、消息和问卷分别使用唯一标记，例如 `AI_KEY_SENTINEL_...`、`AI_CHAT_SENTINEL_...`、`AI_QNAIRE_SENTINEL_...`，便于结束后扫描明文旁路。
+
+### MT-AI-00 厂商预设与联网状态
+
+- **操作**：依次选择八个厂商预设，核对自动填入的 Base URL；再选择自定义服务并填写兼容地址。对每个厂商分别关闭和启用“内置联网搜索”，保存后重开设置。
+- **预期**：厂商、地址、模型和联网偏好均正确恢复；切换厂商或地址后要求重新输入 API Key；开关旁显示“可能产生额外费用，且可能需在厂商控制台开通”。DeepSeek、Gemini 和自定义服务的搜索不可用，但普通生成可继续并显示“本次未联网”。
+- **联网传输**：OpenAI、xAI 使用兼容 `/responses`；通义千问、Kimi/Moonshot、智谱 GLM、小米 MiMo 使用各自公开的 Chat Completions 扩展。检查研究提示词包含 PubMed、Web of Science、Cochrane Library、WHO、CDC 和国家卫生健康委员会，且检索正文被标记为不可信材料。
+- **状态**：实际执行搜索为 `searched`；服务商决定无需搜索为 `not_needed`；开关关闭为 `disabled`；无兼容能力为 `unsupported`；搜索失败但继续生成为 `failed`。除 `searched` 外，界面均须明确“本次未联网”。
 
 ## 2. 配置、安全存储与隐私
 

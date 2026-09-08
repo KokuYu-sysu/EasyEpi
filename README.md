@@ -1,6 +1,8 @@
 # EasyEpi
 
-EasyEpi 是面向流行病学现场调查的离线问卷设计与数据采集桌面软件。当前 M2 里程碑提供 Windows 10/11 x64 的安全 Electron 桌面应用、九个业务路由、持久化界面偏好，以及明确标注为“不保存”的问卷设计、问卷录入和数据管理交互演示。
+EasyEpi 0.8.0 是面向流行病学与社会调查的 Windows 桌面应用，集成问卷设计、问卷录入、数据管理、统计分析和 AI 问卷助手。核心业务离线运行；AI 功能仅在用户主动发送时连接所配置的服务。
+
+AI 问卷助手支持 OpenAI、DeepSeek、Google Gemini、通义千问、Kimi/Moonshot、智谱 GLM、xAI、小米 MiMo，以及自定义 OpenAI-Compatible 服务。普通生成统一使用兼容 Chat Completions；内置联网搜索按厂商能力使用兼容 Chat Completions 或 Responses。DeepSeek、Gemini 和自定义服务当前不启用兼容搜索，仍可正常生成，并明确显示“本次未联网”。
 
 ## 开发环境
 
@@ -34,8 +36,8 @@ pnpm install:electron
 ## 构建产物
 
 - 编译输出：`out/`
-- NSIS 安装包：`release/EasyEpi-0.2.0-setup-x64.exe`
-- 便携版：`release/EasyEpi-0.2.0-portable-x64.exe`
+- NSIS 安装包：`release/EasyEpi-0.8.0-setup-x64.exe`
+- 便携版：`release/EasyEpi-0.8.0-portable-x64.exe`
 
 M2 的测试数量、覆盖率、打包 E2E、安装/卸载结果和 SHA-256 记录在 [M2 验证报告](docs/milestones/M2_VERIFICATION.md) 中。
 

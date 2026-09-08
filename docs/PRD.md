@@ -788,15 +788,20 @@ AI 问卷助手在已创建并解锁的项目内，通过多轮自然语言对�
 
 | 字段 | 要求 |
 |------|------|
+| **AI 厂商** | OpenAI、DeepSeek、Gemini、通义千问、Kimi/Moonshot、智谱 GLM、xAI、小米 MiMo，或自定义 OpenAI-Compatible 服务 |
 | **Base URL** | OpenAI 兼容服务地址；保存前进行格式校验 |
 | **API Key** | 以密码方式输入，界面仅显示掩码，不允许写入项目文件、日志或缓存 |
 | **模型名称** | 用户输入服务端实际支持的模型标识 |
+| **内置联网搜索** | 用户显式启用；提示可能产生额外费用，且可能需要在厂商控制台开通 |
 
 - API Key 使用 Windows 操作系统安全凭据能力保存。安全凭据不可用时不得降级为明文持久化，应提示用户当前无法安全记忆密钥。
 - Base URL 与模型名称保存在应用级偏好设置中，不随项目复制、备份或导出。
 - 提供「测试连接」，验证地址、认证与模型可用性；测试不得读取或发送项目内容。
 - 默认兼容 OpenAI Chat Completions 协议。JSON Schema、`response_format`、工具调用和流式响应均作为能力增强项，不得成为基础兼容的唯一前提。
 - 远程地址原则上使用 HTTPS；仅回环地址上的本地兼容服务允许 HTTP。
+- 普通生成统一使用 Chat Completions。OpenAI 与 xAI 的内置搜索使用兼容 Responses；通义千问、Kimi/Moonshot、智谱 GLM 和小米 MiMo 使用厂商公开的兼容扩展。DeepSeek、Gemini 与自定义服务当前不执行兼容搜索。
+- 联网状态必须显示为 `searched`、`not_needed`、`disabled`、`unsupported` 或 `failed`。除 `searched` 外，界面均以“本次未联网”语义披露；搜索失败或不支持不得阻止正常生成，也不得声称已检索外部来源。
+- 研究提示词优先要求 PubMed、Web of Science、Cochrane Library、WHO、CDC 和国家卫生健康委员会等学术或权威来源。检索结果作为不可信外部材料注入生成上下文，模型不得执行其中的指令或虚构引用。
 
 #### 3.11.4 多 Session 与虚拟工作区
 
