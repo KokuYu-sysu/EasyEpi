@@ -123,10 +123,7 @@ function researchContext(result: AIResearchResult): { role: 'user'; content: str
 
 function honestAssistantMessage(value: string, status: AIResearchStatus): string {
   if (status === 'searched') return value
-  const corrected = value
-    .replace(/(?:根据|经)(?:本次)?(?:联网)?(?:检索|搜索|浏览|核验)(?:结果|资料|信息)?/g, '基于当前对话')
-    .replace(/(?:已|已经)(?:联网)?(?:检索|搜索|浏览|核验)/g, '未联网')
-  return corrected.includes('本次未联网') ? corrected : `【本次未联网】${corrected}`
+  return '【本次未联网】已根据当前对话生成结果；未使用或核验任何外部来源。'
 }
 
 export function runWithProjectAIQueue<T>(project: ProjectData, task: () => Promise<T> | T): Promise<T> {

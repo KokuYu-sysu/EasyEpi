@@ -1182,7 +1182,7 @@ export function AIQuestionnairePage() {
       }
       setDraft('')
       setResearchNotice(RESEARCH_STATUS_LABELS[result.researchStatus ?? 'disabled'])
-      setResearchCitations(result.citations ?? [])
+      setResearchCitations(result.researchStatus === 'searched' ? (result.citations ?? []) : [])
       if (result.outcome === 'clarification') {
         setAnnouncement('AI 提出了一个补充问题。')
         await Promise.all([

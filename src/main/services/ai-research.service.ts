@@ -96,6 +96,7 @@ function parseChoice(value: unknown): {
   finishReason: string
   message: Record<string, unknown>
   content?: string
+  searched: boolean
 } {
   const root = record(value)
   if (!Array.isArray(root.choices) || root.choices.length !== 1) throw new Error('invalid')
@@ -107,6 +108,8 @@ function parseChoice(value: unknown): {
   return {
     finishReason: choice.finish_reason,
     message,
+    searched: root.search_info !== undefined || message.search_info !== undefined ||
+      (Array.isArray(message.annotations) && message.annotations.length > 0),
     ...(typeof message.content === 'string' && message.content.length > 0 ? { content: message.content } : {})
   }
 }
@@ -150,6 +153,7 @@ export function createAIResearchService(options: AIResearchServiceOptions = {}):
   const timeoutMs = options.timeoutMs ?? 60_000
 
   async function postChat(request: AIResearchRequest, messages: unknown[]): Promise<unknown> {
+    if (request.signal?.aborted === true) throw new AIClientError('AI_CANCELLED')
     const controller = new AbortController()
     const timeout = setTimeout(() => controller.abort(), timeoutMs)
     const onAbort = (): void => controller.abort()
@@ -207,7 +211,12 @@ export function createAIResearchService(options: AIResearchServiceOptions = {}):
         const first = parseChoice(await postChat(request, messages))
         if (request.providerId !== 'moonshot') {
           if (first.finishReason !== 'stop' || first.content === undefined) throw new Error('invalid')
-          return { status: 'searched', evidence: first.content, citations: citationsFrom(first.message) }
+          const citations = citationsFrom(first.message)
+          return {
+            status: first.searched || citations.length > 0 ? 'searched' : 'not_needed',
+            evidence: first.content,
+            citations
+          }
         }
         if (first.finishReason === 'stop' && first.content !== undefined) {
           return { status: 'not_needed', evidence: first.content, citations: citationsFrom(first.message) }

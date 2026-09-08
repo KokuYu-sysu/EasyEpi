@@ -5,6 +5,7 @@ import { createAIResearchService } from '@main/services/ai-research.service'
 function chatResponse(content = 'Evidence summary'): Response {
   return new Response(JSON.stringify({
     id: 'chat_1', object: 'chat.completion',
+    search_info: {},
     choices: [{
       index: 0, finish_reason: 'stop',
       message: { role: 'assistant', content }

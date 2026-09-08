@@ -381,7 +381,7 @@ describe('AI questionnaire orchestrator', () => {
 
     expect(first).toMatchObject({
       ok: true, outcome: 'clarification', requestId: 'request-1', attempts: 1,
-      message: { role: 'assistant', content: '【本次未联网】请选择筛查年龄范围？', clarification: {
+      message: { role: 'assistant', content: '【本次未联网】已根据当前对话生成结果；未使用或核验任何外部来源。', clarification: {
         status: 'unresolved', options: [{ id: 'age-range', label: '45–74 岁' }]
       } }
     })
@@ -888,7 +888,7 @@ describe('AI questionnaire orchestrator', () => {
       generated.artifact.artifactId,
       false,
       true
-    )?.assistantMessage).toBe('【本次未联网】Done')
+    )?.assistantMessage).toBe('【本次未联网】已根据当前对话生成结果；未使用或核验任何外部来源。')
     const backup = vi.fn()
     await expect(applyArtifact({
       project: value,
