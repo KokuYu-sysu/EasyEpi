@@ -57,7 +57,7 @@ function errorCode(error: unknown): string | undefined {
 
 describe('OpenAI-compatible bounded streaming transport', () => {
   it('normalizes a Responses Base URL back to the Chat Completions endpoint', async () => {
-    const fetcher = vi.fn().mockResolvedValue(jsonResponse())
+    const fetcher = vi.fn().mockImplementation(() => Promise.resolve(jsonResponse()))
     const client = createOpenAICompatibleClient({ fetch: fetcher })
 
     await client.complete(request({
@@ -272,6 +272,27 @@ describe('OpenAI-compatible bounded streaming transport', () => {
       thinking: { type: 'disabled' }
     })
     expect(JSON.parse(String(fetcher.mock.calls[1]?.[1]?.body))).not.toHaveProperty('thinking')
+  })
+
+  it('uses the provider response-format level instead of forcing JSON Schema', async () => {
+    const fetcher = vi.fn().mockImplementation(() => Promise.resolve(jsonResponse()))
+    const client = createOpenAICompatibleClient({ fetch: fetcher })
+
+    await client.complete(request({
+      providerId: 'deepseek',
+      baseUrl: 'https://api.deepseek.com',
+      streamingSupported: false
+    }))
+    await client.complete(request({
+      providerId: 'deepseek',
+      baseUrl: 'https://gateway.example/v1',
+      streamingSupported: false
+    }))
+
+    expect(JSON.parse(String(fetcher.mock.calls[0]?.[1]?.body)).response_format)
+      .toEqual({ type: 'json_object' })
+    expect(JSON.parse(String(fetcher.mock.calls[1]?.[1]?.body)).response_format)
+      .toMatchObject({ type: 'json_schema' })
   })
 
   it('treats null refusal and tool payloads as unused in JSON and SSE responses', async () => {

@@ -3,7 +3,8 @@ import type { AIProviderId } from '@shared/ai-assistant-contract'
 import { validateAIConfigUpdate } from './ai-config.service'
 import {
   getAIProviderRequestPolicy,
-  resolveOpenAICompatibleEndpoint
+  resolveOpenAICompatibleEndpoint,
+  type AIResponseFormatLevel
 } from './ai-provider-policy'
 import {
   OpenAIStreamParseError,
@@ -427,7 +428,7 @@ export function createOpenAICompatibleClient(
   async function requestOnce(
     request: AIChatCompletionRequest,
     useStreaming: boolean,
-    useResponseFormat: boolean
+    responseFormat: AIResponseFormatLevel
   ): Promise<
     | { kind: 'error'; status: number; text: string }
     | { kind: 'complete'; content: string; usedSse: boolean }
@@ -462,7 +463,7 @@ export function createOpenAICompatibleClient(
           messages: request.messages,
           ...policy.chatBody,
           ...(useStreaming ? { stream: true } : {}),
-          ...(useResponseFormat
+          ...(responseFormat === 'json_schema'
             ? {
                 response_format: {
                   type: 'json_schema',
@@ -473,7 +474,9 @@ export function createOpenAICompatibleClient(
                   }
                 }
               }
-            : {})
+            : responseFormat === 'json_object'
+              ? { response_format: { type: 'json_object' } }
+              : {})
         }),
         signal: controller.signal
       })
@@ -607,12 +610,16 @@ export function createOpenAICompatibleClient(
         model: validated.model,
         apiKey: typeof validated.apiKey === 'string' ? validated.apiKey : undefined
       }
-      const preferSchema = safeRequest.responseFormatSupported !== false
-      if (preferSchema) providerSchema(request.schemaVersion)
-      let useResponseFormat = preferSchema
+      const policy = getAIProviderRequestPolicy(
+        safeRequest.providerId ?? 'custom', safeRequest.baseUrl, safeRequest.model
+      )
+      let responseFormat: AIResponseFormatLevel = safeRequest.responseFormatSupported === false
+        ? 'text'
+        : policy.responseFormat
+      if (responseFormat === 'json_schema') providerSchema(request.schemaVersion)
       let useStreaming = safeRequest.streamingSupported !== false
       for (let negotiation = 0; negotiation < 3; negotiation += 1) {
-        const result = await requestOnce(safeRequest, useStreaming, useResponseFormat)
+        const result = await requestOnce(safeRequest, useStreaming, responseFormat)
         if (result.kind === 'complete') {
           if (useStreaming && !result.usedSse) {
             useStreaming = false
@@ -621,11 +628,11 @@ export function createOpenAICompatibleClient(
           return {
             content: result.content,
             streamingSupported: useStreaming && result.usedSse,
-            responseFormatSupported: useResponseFormat
+            responseFormatSupported: responseFormat !== 'text'
           }
         }
-        if (useResponseFormat && unsupportedCapability(result.status, result.text, 'response_format')) {
-          useResponseFormat = false
+        if (responseFormat !== 'text' && unsupportedCapability(result.status, result.text, 'response_format')) {
+          responseFormat = 'text'
           safeRequest.onCapabilityFallback?.('response_format')
           continue
         }
