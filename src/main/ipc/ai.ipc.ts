@@ -795,7 +795,8 @@ export function registerAIIpcHandlers(
           requestId: request.requestId,
           outcome: 'clarification',
           message: result.message,
-          attempts: result.attempts
+          attempts: result.attempts,
+          researchStatus: result.researchStatus
         } satisfies AISendResult
       }
       const preview = previewQuestionnaireArtifact(
@@ -810,7 +811,8 @@ export function registerAIIpcHandlers(
         requestId: request.requestId,
         outcome: 'questionnaire',
         artifact: toPublicQuestionnaireArtifact(result.artifact, preview),
-        attempts: result.attempts
+        attempts: result.attempts,
+        researchStatus: result.researchStatus
       } satisfies AISendResult
     } catch (error) {
       return publicError(error)

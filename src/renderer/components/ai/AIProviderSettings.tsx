@@ -1,33 +1,42 @@
 import { useCallback, useEffect, useState } from 'react'
 
 import { Button, Input } from '@renderer/components/ui'
-import type { AIProviderConfigView } from '@shared/ai-assistant-contract'
+import type { AIProviderConfigView, AIProviderId } from '@shared/ai-assistant-contract'
+import { AI_PROVIDER_PRESETS } from '@shared/ai-provider-profiles'
 import { friendlyAIError } from './ai-errors'
 import { notifyAIConfigChanged } from './ai-config-events'
 
 const EMPTY_CONFIG: AIProviderConfigView = {
+  providerId: 'custom',
   baseUrl: '',
   model: '',
+  webSearchEnabled: false,
   hasApiKey: false,
   maskedApiKey: null
 }
 
 export function AIProviderSettings() {
   const [saved, setSaved] = useState<AIProviderConfigView>(EMPTY_CONFIG)
+  const [providerId, setProviderId] = useState<AIProviderId>('custom')
   const [baseUrl, setBaseUrl] = useState('')
   const [model, setModel] = useState('')
+  const [webSearchEnabled, setWebSearchEnabled] = useState(false)
   const [apiKey, setApiKey] = useState('')
   const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState(false)
   const [dirty, setDirty] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [status, setStatus] = useState<string | null>(null)
-  const baseUrlChanged = baseUrl.trim() !== saved.baseUrl
+  const providerChanged = providerId !== (saved.providerId ?? 'custom')
+  const baseUrlChanged = providerChanged || baseUrl.trim() !== saved.baseUrl
+  const searchSupported = !['deepseek', 'gemini', 'custom'].includes(providerId)
 
   const adopt = useCallback((config: AIProviderConfigView) => {
     setSaved(config)
+    setProviderId(config.providerId ?? 'custom')
     setBaseUrl(config.baseUrl)
     setModel(config.model)
+    setWebSearchEnabled(config.webSearchEnabled === true)
     setApiKey('')
     setDirty(false)
   }, [])
@@ -58,8 +67,10 @@ export function AIProviderSettings() {
     setStatus(null)
     try {
       const result = await window.easyEpi.ai.config.update({
+        providerId,
         baseUrl: nextBaseUrl,
         model: nextModel,
+        webSearchEnabled,
         ...(apiKey.trim().length > 0 ? { apiKey } : {})
       })
       if (!result.ok) {
@@ -97,7 +108,8 @@ export function AIProviderSettings() {
   }
 
   const testConnection = async () => {
-    if (dirty || baseUrl !== saved.baseUrl || model !== saved.model || apiKey.length > 0) {
+    if (dirty || providerId !== saved.providerId || baseUrl !== saved.baseUrl ||
+      model !== saved.model || webSearchEnabled !== saved.webSearchEnabled || apiKey.length > 0) {
       setError('当前有未保存的更改，请先保存再测试连接。')
       return
     }
@@ -138,6 +150,24 @@ export function AIProviderSettings() {
       </div>
       {loading ? <p role="status" className="m-0">正在读取 AI 服务配置…</p> : (
         <>
+          <label className="grid gap-[var(--space-1)] font-[var(--font-weight-medium)]">
+            <span>AI 厂商</span>
+            <select
+              className="min-h-11 w-full rounded-[var(--radius-1)] border border-[var(--color-border-default)] bg-[var(--color-surface-base)] px-[var(--space-3)]"
+              value={providerId}
+              disabled={busy}
+              onChange={(event) => {
+                const next = event.target.value as AIProviderId
+                const preset = AI_PROVIDER_PRESETS.find(({ id }) => id === next)!
+                setProviderId(next)
+                if (preset.defaultBaseUrl) setBaseUrl(preset.defaultBaseUrl)
+                if (['deepseek', 'gemini', 'custom'].includes(next)) setWebSearchEnabled(false)
+                markDirty()
+              }}
+            >
+              {AI_PROVIDER_PRESETS.map(({ id, label }) => <option key={id} value={id}>{label}</option>)}
+            </select>
+          </label>
           <Input
             label="Base URL"
             value={baseUrl}
@@ -166,6 +196,23 @@ export function AIProviderSettings() {
             hint="为保护凭据，已保存的 Key 不会回显。"
             onChange={(event) => { setApiKey(event.target.value); markDirty() }}
           />
+          <label className="flex items-start gap-[var(--space-2)]">
+            <input
+              type="checkbox"
+              aria-label="启用内置联网搜索"
+              checked={webSearchEnabled}
+              disabled={busy || !searchSupported}
+              onChange={(event) => { setWebSearchEnabled(event.target.checked); markDirty() }}
+            />
+            <span>
+              启用内置联网搜索
+              <small className="block text-[var(--color-text-secondary)]">
+                {searchSupported
+                  ? '可能产生额外费用，且可能需在厂商控制台开通。'
+                  : '该厂商当前未提供可用的 OpenAI-Compatible 内置搜索；生成时将显示“本次未联网”。'}
+              </small>
+            </span>
+          </label>
           {baseUrlChanged ? (
             <p role="status" className="m-0 text-[length:var(--font-size-sm)] text-[var(--color-warning)]">
               服务地址变化后需重新输入 API Key

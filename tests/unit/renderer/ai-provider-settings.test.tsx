@@ -6,15 +6,19 @@ import { AIProviderSettings } from '@renderer/components/ai/AIProviderSettings'
 import type { AIProviderConfigView } from '@shared/ai-assistant-contract'
 
 const savedConfig: AIProviderConfigView = {
+  providerId: 'custom',
   baseUrl: 'https://api.example.com/v1',
   model: 'research-model',
+  webSearchEnabled: false,
   hasApiKey: true,
   maskedApiKey: 'sk-***'
 }
 
 const emptyConfig: AIProviderConfigView = {
+  providerId: 'custom',
   baseUrl: '',
   model: '',
+  webSearchEnabled: false,
   hasApiKey: false,
   maskedApiKey: null
 }
@@ -67,8 +71,10 @@ describe('AIProviderSettings', () => {
     await user.click(screen.getByRole('button', { name: '保存' }))
 
     expect(config.update).toHaveBeenCalledWith({
+      providerId: 'custom',
       baseUrl: updatedConfig.baseUrl,
       model: updatedConfig.model,
+      webSearchEnabled: false,
       apiKey: 'new-secret'
     })
     expect(await screen.findByText('AI 服务配置已保存。')).toBeVisible()
@@ -117,8 +123,10 @@ describe('AIProviderSettings', () => {
     expect(await screen.findByRole('alert')).toBeVisible()
 
     expect(config.update).toHaveBeenCalledWith({
+      providerId: 'custom',
       baseUrl: savedConfig.baseUrl,
-      model: savedConfig.model
+      model: savedConfig.model,
+      webSearchEnabled: false
     })
     expect(config.clear).toHaveBeenCalledOnce()
     expect(config.testConnection).toHaveBeenCalledOnce()
@@ -166,3 +174,24 @@ describe('AIProviderSettings', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent('AI 服务连接测试失败。')
   })
 })
+  it('adopts official provider URLs and saves the web-search preference', async () => {
+    const user = userEvent.setup()
+    const config = installConfigApi()
+    render(<AIProviderSettings />)
+    await screen.findByDisplayValue(savedConfig.baseUrl)
+
+    await user.selectOptions(screen.getByLabelText('AI 厂商'), 'openai')
+    expect(screen.getByLabelText('Base URL')).toHaveValue('https://api.openai.com/v1')
+    await user.click(screen.getByLabelText('启用内置联网搜索'))
+    expect(screen.getByText(/可能产生额外费用/)).toBeVisible()
+    await user.type(screen.getByLabelText('API Key'), 'new-secret')
+    await user.click(screen.getByRole('button', { name: '保存' }))
+
+    expect(config.update).toHaveBeenCalledWith({
+      providerId: 'openai',
+      baseUrl: 'https://api.openai.com/v1',
+      model: savedConfig.model,
+      webSearchEnabled: true,
+      apiKey: 'new-secret'
+    })
+  })

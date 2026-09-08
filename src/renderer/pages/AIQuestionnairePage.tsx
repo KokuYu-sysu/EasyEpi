@@ -40,6 +40,7 @@ import {
   type AIPublicMessage,
   type AIProgressEvent,
   type AIQuestionnaireArtifactPreviewDto,
+  type AIResearchStatus,
   type AISessionListItem,
   type AISessionPage,
   type AISessionStatus
@@ -108,6 +109,14 @@ const STATUS_LABELS: Record<AISessionStatus, string> = {
   completed: '已完成',
   failed: '失败',
   cancelled: '已取消'
+}
+
+const RESEARCH_STATUS_LABELS: Record<AIResearchStatus, string> = {
+  searched: '本次已联网检索',
+  not_needed: '服务商未执行联网检索',
+  disabled: '本次未联网（联网搜索未启用）',
+  unsupported: '本次未联网（当前厂商不支持兼容搜索）',
+  failed: '本次未联网（联网检索失败，已继续生成）'
 }
 
 function statusVariant(status: AISessionStatus): 'neutral' | 'success' | 'warning' | 'danger' {
@@ -444,6 +453,7 @@ export function AIQuestionnairePage() {
   const [renameOpen, setRenameOpen] = useState(false)
   const [renameTitle, setRenameTitle] = useState('')
   const [announcement, setAnnouncement] = useState('')
+  const [researchNotice, setResearchNotice] = useState<string | null>(null)
   const [liveRun, setLiveRun] = useState<LiveRunState | null>(null)
   const [liveFailure, setLiveFailure] = useState<{
     runId: string | null
@@ -564,6 +574,7 @@ export function AIQuestionnairePage() {
     setError(null)
     setLiveRun(null)
     setLiveFailure(null)
+    setResearchNotice(null)
     setPendingClarificationId(null)
     activeRequestIdRef.current = null
     activeRunIdRef.current = null
@@ -1167,6 +1178,7 @@ export function AIQuestionnairePage() {
         return
       }
       setDraft('')
+      setResearchNotice(RESEARCH_STATUS_LABELS[result.researchStatus ?? 'disabled'])
       if (result.outcome === 'clarification') {
         setAnnouncement('AI 提出了一个补充问题。')
         await Promise.all([
@@ -1412,6 +1424,11 @@ export function AIQuestionnairePage() {
             <p className="m-0"><strong>尚未完成 AI 服务配置。</strong> 请使用右上角「设置」配置 Base URL、模型名称和 API Key。</p>
           </CardContent>
         </Card>
+      ) : null}
+      {researchNotice ? (
+        <p role="status" className="m-0 rounded-[var(--radius-1)] border border-[var(--color-border-default)] bg-[var(--color-surface-sunken)] p-[var(--space-3)]">
+          {researchNotice}
+        </p>
       ) : null}
       {error ? (
         <div role="alert" className="flex flex-wrap items-center justify-between gap-[var(--space-2)] rounded-[var(--radius-1)] border border-[var(--color-danger)] bg-[var(--color-danger-soft)] p-[var(--space-3)] text-[var(--color-danger)]">

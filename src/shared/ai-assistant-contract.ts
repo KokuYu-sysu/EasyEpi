@@ -531,6 +531,7 @@ export type AISendResult =
       outcome: 'questionnaire'
       artifact: AIQuestionnaireArtifactPreviewDto
       attempts: number
+      researchStatus?: AIResearchStatus
     }
   | {
       ok: true
@@ -538,6 +539,7 @@ export type AISendResult =
       outcome: 'clarification'
       message: AIPublicMessage
       attempts: number
+      researchStatus?: AIResearchStatus
     }
   | (AIErrorResult & { details?: AIPublicFailureDetails })
 export type AICancelResult = { ok: true; cancelled: boolean } | AIErrorResult
@@ -1413,7 +1415,7 @@ export function parseAISendResponse(value: unknown): AISendResult {
   assertSafeResponseTree(value)
   const discriminator = responseKeys(value, ['ok'], [
     'requestId', 'outcome', 'artifact', 'message', 'attempts',
-    'errorCode', 'message', 'details'
+    'researchStatus', 'errorCode', 'message', 'details'
   ])
   if (discriminator.ok === false) {
     const failure = responseKeys(
@@ -1427,16 +1429,21 @@ export function parseAISendResponse(value: unknown): AISendResult {
   } else if (discriminator.ok === true) {
     responseId(discriminator.requestId)
     responseAttempt(discriminator.attempts)
+    if (discriminator.researchStatus !== undefined && ![
+      'searched', 'not_needed', 'disabled', 'unsupported', 'failed'
+    ].includes(String(discriminator.researchStatus))) invalidResponse()
     if (discriminator.outcome === 'questionnaire') {
       responseKeys(
         discriminator,
-        ['ok', 'requestId', 'outcome', 'artifact', 'attempts']
+        ['ok', 'requestId', 'outcome', 'artifact', 'attempts'],
+        ['researchStatus']
       )
       assertQuestionnaireArtifactPreview(discriminator.artifact)
     } else if (discriminator.outcome === 'clarification') {
       responseKeys(
         discriminator,
-        ['ok', 'requestId', 'outcome', 'message', 'attempts']
+        ['ok', 'requestId', 'outcome', 'message', 'attempts'],
+        ['researchStatus']
       )
       assertPublicMessage(discriminator.message)
       const message = discriminator.message as {

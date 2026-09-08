@@ -257,8 +257,10 @@ describe('createDesktopApi', () => {
       .mockResolvedValueOnce({
         ok: true,
         config: {
+          providerId: 'openai',
           baseUrl: 'https://api.openai.com/v1',
           model: 'gpt-4.1-mini',
+          webSearchEnabled: false,
           hasApiKey: true,
           maskedApiKey: '••••••••'
         }
@@ -266,8 +268,10 @@ describe('createDesktopApi', () => {
       .mockResolvedValueOnce({
         ok: true,
         config: {
+          providerId: 'openai',
           baseUrl: 'https://api.openai.com/v1',
           model: 'gpt-4.1-mini',
+          webSearchEnabled: false,
           hasApiKey: true,
           maskedApiKey: '********'
         }
@@ -275,14 +279,18 @@ describe('createDesktopApi', () => {
     const api = createDesktopApi(invoke)
 
     const result = await api.ai.config.update({
+      providerId: 'openai',
       baseUrl: 'https://api.openai.com/v1',
       model: 'gpt-4.1-mini',
+      webSearchEnabled: false,
       apiKey: 'sk-secret'
     })
 
     expect(invoke).toHaveBeenCalledWith(AI_CONFIG_UPDATE_CHANNEL, {
+      providerId: 'openai',
       baseUrl: 'https://api.openai.com/v1',
       model: 'gpt-4.1-mini',
+      webSearchEnabled: false,
       apiKey: 'sk-secret'
     })
     expect(JSON.stringify(result)).not.toContain('sk-secret')
