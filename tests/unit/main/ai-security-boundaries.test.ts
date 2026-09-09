@@ -693,6 +693,10 @@ describe('AI streaming and clarification public contract', () => {
       capability: 'streaming', reason: 'unsupported'
     },
     {
+      type: 'capability_fallback', attempt: 1,
+      capability: 'function_call', reason: 'unsupported'
+    },
+    {
       type: 'clarification', attempt: 1, outcome: 'clarification',
       messageId: 'message-1', clarification
     },
@@ -1088,7 +1092,8 @@ describe('AI IPC privacy boundary', () => {
                 ? validClarificationCompletion()
                 : validQuestionnaireCompletion(),
             streamingSupported: true,
-            responseFormatSupported: true
+            responseFormatSupported: true,
+            toolCallingSupported: true
           }
         })
       }
@@ -1205,7 +1210,8 @@ describe('AI IPC privacy boundary', () => {
           return {
             content: validQuestionnaireCompletion(),
             streamingSupported: true,
-            responseFormatSupported: true
+            responseFormatSupported: true,
+            toolCallingSupported: true
           }
         })
       }
@@ -1275,7 +1281,8 @@ describe('AI IPC privacy boundary', () => {
           return {
             content: validQuestionnaireCompletion(),
             streamingSupported: true,
-            responseFormatSupported: true
+            responseFormatSupported: true,
+            toolCallingSupported: true
           }
         })
       }
@@ -1340,7 +1347,8 @@ describe('AI IPC privacy boundary', () => {
           return {
             content: validQuestionnaireCompletion(),
             streamingSupported: true,
-            responseFormatSupported: true
+            responseFormatSupported: true,
+            toolCallingSupported: true
           }
         })
       }

@@ -119,7 +119,10 @@ describe('AI questionnaire orchestrator', () => {
       ]))
       expect(JSON.stringify(request.messages)).toContain('PubMed evidence')
       expect(JSON.stringify(request.messages)).not.toContain('</untrusted_research_evidence>')
-      return { content: validCompletion(), streamingSupported: true, responseFormatSupported: true }
+      return {
+        content: validCompletion(), streamingSupported: true,
+        responseFormatSupported: true, toolCallingSupported: true
+      }
     })
 
     const result = await createAIQuestionnaireOrchestrator({
@@ -155,7 +158,10 @@ describe('AI questionnaire orchestrator', () => {
     const complete = vi.fn(async (request) => {
       request.onModelStreaming?.()
       request.onContentDelta?.({ content: '正在创建', sequence: 1 })
-      return { content: validCompletion(), streamingSupported: true, responseFormatSupported: true }
+      return {
+        content: validCompletion(), streamingSupported: true,
+        responseFormatSupported: true, toolCallingSupported: true
+      }
     })
     const result = await createAIQuestionnaireOrchestrator({
       persistProject: vi.fn(),
@@ -206,7 +212,10 @@ describe('AI questionnaire orchestrator', () => {
           calls.push(request)
           request.onModelStreaming?.()
           request.onContentDelta?.({ content: `attempt-${calls.length}`, sequence: 1 })
-          return { content: invalid, streamingSupported: true, responseFormatSupported: true }
+          return {
+            content: invalid, streamingSupported: true,
+            responseFormatSupported: true, toolCallingSupported: true
+          }
         })
       }
     }).sendTurn(sendRequest(value, { onProgress: (event: AIProgressEvent) => events.push(event) }))
@@ -277,25 +286,54 @@ describe('AI questionnaire orchestrator', () => {
   it('persists independent capability outcomes and reports negotiation fallback without another generation attempt', async () => {
     const value = project()
     const events: AIProgressEvent[] = []
+    const seenToolCallingSupport: Array<boolean | undefined> = []
     const complete = vi.fn(async (request) => {
-      request.onCapabilityFallback?.('response_format')
-      request.onCapabilityFallback?.('streaming')
-      return { content: validCompletion(), streamingSupported: false, responseFormatSupported: false }
+      seenToolCallingSupport.push(request.toolCallingSupported)
+      if (complete.mock.calls.length === 1) {
+        request.onCapabilityFallback?.('response_format')
+        request.onCapabilityFallback?.('streaming')
+        request.onCapabilityFallback?.('function_call')
+      }
+      return {
+        content: validCompletion(),
+        streamingSupported: false,
+        responseFormatSupported: false,
+        toolCallingSupported: complete.mock.calls.length !== 1
+      }
     })
-    const result = await createAIQuestionnaireOrchestrator({
+    const orchestrator = createAIQuestionnaireOrchestrator({
       persistProject: vi.fn(), client: { complete }
-    }).sendTurn(sendRequest(value, { onProgress: (event: AIProgressEvent) => events.push(event) }))
+    })
+    const result = await orchestrator.sendTurn(sendRequest(value, {
+      onProgress: (event: AIProgressEvent) => events.push(event)
+    }))
 
     expect(result).toMatchObject({ ok: true, attempts: 1 })
     expect(events.filter(({ type }) => type === 'capability_fallback')).toEqual([
       expect.objectContaining({ capability: 'response_format', attempt: 1 }),
-      expect.objectContaining({ capability: 'streaming', attempt: 1 })
+      expect.objectContaining({ capability: 'streaming', attempt: 1 }),
+      expect.objectContaining({ capability: 'function_call', attempt: 1 })
     ])
     const cache = new AISessionRepository(value).get(sessionId)!.cache.values
-    expect(Object.values(cache)).toEqual(expect.arrayContaining([{ supported: false }, { supported: false }]))
+    expect(Object.values(cache)).toEqual(expect.arrayContaining([
+      { supported: false }, { supported: false }, { supported: false }
+    ]))
     expect(Object.keys(cache).filter((key) => key.startsWith('cap-streaming-'))).toHaveLength(1)
     expect(Object.keys(cache).filter((key) => key.startsWith('cap-response-format-'))).toHaveLength(1)
-    expect(complete).toHaveBeenCalledOnce()
+    expect(Object.keys(cache).filter((key) => key.startsWith('cap-function-call-'))).toHaveLength(1)
+
+    await orchestrator.sendTurn(sendRequest(value, {
+      requestId: 'request-2', operationId: 'operation-2', runId: 'run-2'
+    }))
+    await orchestrator.sendTurn(sendRequest(value, {
+      requestId: 'request-3', operationId: 'operation-3', runId: 'run-3',
+      config: { baseUrl: 'https://example.test/v1', model: 'different-model' }
+    }))
+    await orchestrator.sendTurn(sendRequest(value, {
+      requestId: 'request-4', operationId: 'operation-4', runId: 'run-4',
+      config: { baseUrl: 'https://different.example.test/v1', model: 'model' }
+    }))
+    expect(seenToolCallingSupport).toEqual([undefined, false, undefined, undefined])
   })
 
   it('atomically exposes streaming fallback in persisted progress while the model remains pending', async () => {
@@ -313,7 +351,10 @@ describe('AI questionnaire orchestrator', () => {
         complete: vi.fn(async (request) => {
           request.onCapabilityFallback?.('streaming')
           await pending
-          return { content: validCompletion(), streamingSupported: false, responseFormatSupported: true }
+          return {
+            content: validCompletion(), streamingSupported: false,
+            responseFormatSupported: true, toolCallingSupported: true
+          }
         })
       }
     }).sendTurn(sendRequest(value))
@@ -526,7 +567,10 @@ describe('AI questionnaire orchestrator', () => {
     const pending = new Promise<void>((resolve) => { release = resolve })
     const complete = vi.fn(async () => {
       await pending
-      return { content: validCompletion(), streamingSupported: true, responseFormatSupported: true }
+      return {
+        content: validCompletion(), streamingSupported: true,
+        responseFormatSupported: true, toolCallingSupported: true
+      }
     })
     const orchestrator = createAIQuestionnaireOrchestrator({ persistProject: vi.fn(), client: { complete } })
     const first = orchestrator.sendTurn(sendRequest(value))
@@ -641,7 +685,10 @@ describe('AI questionnaire orchestrator', () => {
 
   it('uses one call normally and no more than two validation-repair calls', async () => {
     const firstProject = project()
-    const oneCall = vi.fn().mockResolvedValue({ content: validCompletion(), responseFormatSupported: true })
+    const oneCall = vi.fn().mockResolvedValue({
+      content: validCompletion(), streamingSupported: true,
+      responseFormatSupported: true, toolCallingSupported: true
+    })
     const first = await createAIQuestionnaireOrchestrator({
       persistProject: vi.fn(),
       client: { complete: oneCall }
@@ -656,20 +703,25 @@ describe('AI questionnaire orchestrator', () => {
     expect(new AISessionRepository(firstProject).get(sessionId)?.temp.runs).toEqual({})
 
     const retryProject = project()
-    const requestLengths: number[] = []
+    const repairInstructions: string[] = []
     const invalidContent = JSON.stringify({
       kind: 'questionnaire', assistantMessage: 'invalid', rollingSummary: '', options: [],
       questionnaire: {
         name: 'Study', conditionRules: [], keyQuestionIds: [],
-        questions: Array.from({ length: 500 }, (_, order) => ({
-          content: '', variableName: '', type: 'free_text', options: [],
-          constraint: { type: 'none' }, isKey: false, allowSkip: false, order
-        }))
+        questions: [{
+          id: 7, content: 'Age', variableName: 'age', type: 'radio', options: [],
+          constraint: { type: 'none' }, defaultValue: null, isKey: false,
+          allowSkip: false, skipValue: null, order: 0, internalNote: 'remove me'
+        }]
       }
     })
     const alwaysInvalid = vi.fn().mockImplementation((request: { messages: Array<{ content: string }> }) => {
-      requestLengths.push(request.messages.reduce((sum, message) => sum + message.content.length, 0))
-      return Promise.resolve({ content: invalidContent, responseFormatSupported: true })
+      const repair = request.messages.at(-1)?.content
+      if (repair?.startsWith('The candidate was rejected')) repairInstructions.push(repair)
+      return Promise.resolve({
+        content: invalidContent, streamingSupported: true,
+        responseFormatSupported: true, toolCallingSupported: true
+      })
     })
     const retried = await createAIQuestionnaireOrchestrator({
       persistProject: vi.fn(),
@@ -682,7 +734,16 @@ describe('AI questionnaire orchestrator', () => {
     })
     expect(retried).toMatchObject({ ok: false, errorCode: 'AI_HARNESS_VALIDATION_FAILED' })
     expect(alwaysInvalid).toHaveBeenCalledTimes(3)
-    expect(Math.max(...requestLengths)).toBeLessThanOrEqual(60_000)
+    expect(repairInstructions).toHaveLength(2)
+    for (const repair of repairInstructions) {
+      expect(repair).toContain('"code":"INVALID_QUESTION_TYPE","path":"$.questionnaire.questions[0].type"')
+      expect(repair).toContain('"code":"INVALID_TYPE","path":"$.questionnaire.questions[0].id"')
+      expect(repair).toContain('"code":"FORBIDDEN_FIELD","path":"$.questionnaire.questions[0].internalNote"')
+      expect(repair).toContain('Allowed question.type values: single_choice, multiple_choice, fixed_length, free_text, numeric_range, date.')
+      expect(repair).toContain('Use JSON strings for id/content/variableName/defaultValue/skipValue and option value/label; JSON booleans for isKey/allowSkip; JSON numbers for order and numeric constraint fields.')
+      expect(repair).toContain('Remove every field not declared by submit_questionnaire.')
+      expect(new TextEncoder().encode(repair).byteLength).toBeLessThanOrEqual(8_000)
+    }
     if (!retried.ok) expect(retried.details?.attempts).toHaveLength(3)
     expect(new AISessionRepository(retryProject).get(sessionId)).toMatchObject({
       state: { status: 'failed' },

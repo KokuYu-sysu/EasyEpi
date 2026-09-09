@@ -218,7 +218,19 @@ function repairInstruction(
   const lock = branchLock === undefined
     ? ''
     : ` The response kind is locked to the ${branchLock} branch and must not change.`
-  const prefix = `The candidate was rejected by the local harness.${lock} Return a corrected full JSON envelope. Validation errors:\n`
+  const errorCodes = new Set(errors.map(({ code }) => code))
+  const guidance = [
+    errorCodes.has('INVALID_QUESTION_TYPE')
+      ? 'Allowed question.type values: single_choice, multiple_choice, fixed_length, free_text, numeric_range, date.'
+      : '',
+    errorCodes.has('INVALID_TYPE')
+      ? 'Use JSON strings for id/content/variableName/defaultValue/skipValue and option value/label; JSON booleans for isKey/allowSkip; JSON numbers for order and numeric constraint fields.'
+      : '',
+    errorCodes.has('FORBIDDEN_FIELD')
+      ? 'Remove every field not declared by submit_questionnaire.'
+      : ''
+  ].filter(Boolean).join(' ')
+  const prefix = `The candidate was rejected by the local harness.${lock} Return a corrected full JSON envelope.${guidance.length > 0 ? ` ${guidance}` : ''} Validation errors:\n`
   const selected: Array<{ code: string; path: string; message: string }> = []
   const encoder = new TextEncoder()
   for (const error of errors) {
@@ -373,6 +385,7 @@ export function createAIQuestionnaireOrchestrator(
       let activeArtifactId: string | undefined
       let streamingCapabilityKey: string
       let responseFormatCapabilityKey: string
+      let toolCallingCapabilityKey: string
       const protectedDerivedNames = (request.explicitAttachment?.derivedVariables ?? [])
         .map((item) => item.variableName)
       try {
@@ -426,6 +439,7 @@ export function createAIQuestionnaireOrchestrator(
         })
         streamingCapabilityKey = `cap-streaming-${capabilityKey}`
         responseFormatCapabilityKey = `cap-response-format-${capabilityKey}`
+        toolCallingCapabilityKey = `cap-function-call-${capabilityKey}`
       } catch (error) {
         return { ok: false, errorCode: safeErrorCode(error) }
       }
@@ -572,6 +586,7 @@ export function createAIQuestionnaireOrchestrator(
       const base = activeDraft ?? baseQuestionnaire
       let streamingCapability = responseCapability(runningSession.cache.values[streamingCapabilityKey])
       let responseFormatCapability = responseCapability(runningSession.cache.values[responseFormatCapabilityKey])
+      let toolCallingCapability = responseCapability(runningSession.cache.values[toolCallingCapabilityKey])
       const publicFailures: Array<ReturnType<typeof toAIPublicAttemptFailure>> = []
       let repair: string | undefined
       let branchLock: 'questionnaire' | 'clarification' | undefined
@@ -596,9 +611,10 @@ export function createAIQuestionnaireOrchestrator(
       }
       const persistCapabilities = async (
         streaming: boolean | undefined,
-        responseFormat: boolean | undefined
+        responseFormat: boolean | undefined,
+        toolCalling: boolean | undefined
       ): Promise<void> => {
-        if (streaming === undefined && responseFormat === undefined) return
+        if (streaming === undefined && responseFormat === undefined && toolCalling === undefined) return
         await mutateAndPersist(request.project, dependencies.persistProject, 'capability-updated', () => {
           if (streaming !== undefined) {
             repository.writeVirtual(
@@ -614,16 +630,25 @@ export function createAIQuestionnaireOrchestrator(
               request.sessionId
             )
           }
+          if (toolCalling !== undefined) {
+            repository.writeVirtual(
+              `session://${request.sessionId}/cache/values/${toolCallingCapabilityKey}`,
+              { supported: toolCalling },
+              request.sessionId
+            )
+          }
         })
       }
       const persistCapabilityFallback = async (
-        capability: 'streaming' | 'response_format',
+        capability: 'streaming' | 'response_format' | 'function_call',
         attempt: 1 | 2 | 3
       ): Promise<void> => {
         await mutateAndPersist(request.project, dependencies.persistProject, 'capability-updated', () => {
           const key = capability === 'streaming'
             ? streamingCapabilityKey
-            : responseFormatCapabilityKey
+            : capability === 'response_format'
+              ? responseFormatCapabilityKey
+              : toolCallingCapabilityKey
           repository.writeVirtual(
             `session://${request.sessionId}/cache/values/${key}`,
             { supported: false },
@@ -667,6 +692,7 @@ export function createAIQuestionnaireOrchestrator(
               signal: request.signal,
               streamingSupported: streamingCapability,
               responseFormatSupported: responseFormatCapability,
+              toolCallingSupported: toolCallingCapability,
               onModelStreaming: () => {
                 if (modelStreaming) return
                 modelStreaming = true
@@ -708,8 +734,13 @@ export function createAIQuestionnaireOrchestrator(
           if (signalAborted(request.signal)) throw new AIClientError('AI_CANCELLED')
           streamingCapability = completion.streamingSupported
           responseFormatCapability = completion.responseFormatSupported
+          toolCallingCapability = completion.toolCallingSupported
           streamFallback ||= !completion.streamingSupported
-          await persistCapabilities(streamingCapability, responseFormatCapability)
+          await persistCapabilities(
+            streamingCapability,
+            responseFormatCapability,
+            toolCallingCapability
+          )
           await persistProgress('validating', attempt)
           emit({ type: 'validating', attempt })
           const harness = registryEntry.runHarness(

@@ -485,7 +485,7 @@ export type AIProgressEvent =
   | (AIProgressEventBase & {
       type: 'capability_fallback'
       attempt: 1 | 2 | 3
-      capability: 'streaming' | 'response_format'
+      capability: 'streaming' | 'response_format' | 'function_call'
       reason: 'unsupported'
     })
   | (AIProgressEventBase & {
@@ -1293,7 +1293,8 @@ export function parseAIProgressEvent(value: unknown): AIProgressEvent {
         [...baseKeys, 'attempt', 'capability', 'reason']
       )
       responseAttempt(input.attempt)
-      if (input.capability !== 'streaming' && input.capability !== 'response_format') {
+      if (input.capability !== 'streaming' && input.capability !== 'response_format' &&
+        input.capability !== 'function_call') {
         invalidResponse()
       }
       if (input.reason !== 'unsupported') invalidResponse()
