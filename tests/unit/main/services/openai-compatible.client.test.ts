@@ -467,27 +467,61 @@ describe('OpenAI-compatible bounded streaming transport', () => {
     })
   })
 
-  it('does not activate capability fallback before unsupported-tools negotiation exists', async () => {
-    const fetcher = vi.fn().mockResolvedValue(toolResponse())
+  it('retries an explicit unsupported-tools response once in strict JSON content mode', async () => {
+    const fallback = vi.fn()
+    const fetcher = vi.fn()
+      .mockResolvedValueOnce(errorResponse(400, JSON.stringify({
+        error: {
+          message: 'Unknown parameter: tools',
+          param: 'tools',
+          code: 'unknown_parameter'
+        }
+      })))
+      .mockResolvedValueOnce(contentResponse(envelope))
     const client = createOpenAICompatibleClient({ fetch: fetcher })
 
     await expect(client.complete(request({
       streamingSupported: false,
-      responseFormatSupported: false,
-      toolCallingSupported: false
+      onCapabilityFallback: fallback
     }))).resolves.toEqual({
       content: envelope,
       streamingSupported: false,
       responseFormatSupported: true,
-      toolCallingSupported: true
+      toolCallingSupported: false
     })
-    const body = JSON.parse(String(fetcher.mock.calls[0]?.[1]?.body))
-    expect(body).not.toHaveProperty('stream')
-    expect(body).toMatchObject({
+    expect(fallback).toHaveBeenCalledOnce()
+    expect(fallback).toHaveBeenCalledWith('function_call')
+    const bodies = fetcher.mock.calls.map((call) => JSON.parse(String(call[1]?.body)))
+    expect(bodies[0]).toMatchObject({
       response_format: { type: 'json_object' },
       tools: [{ type: 'function', function: { name: 'submit_questionnaire' } }],
       tool_choice: { type: 'function', function: { name: 'submit_questionnaire' } }
     })
+    expect(bodies[1]).toMatchObject({ response_format: { type: 'json_object' } })
+    expect(bodies[1]).not.toHaveProperty('tools')
+    expect(bodies[1]).not.toHaveProperty('tool_choice')
+  })
+
+  it('starts cached unsupported function calling directly in strict JSON content mode', async () => {
+    const fallback = vi.fn()
+    const fetcher = vi.fn().mockResolvedValue(contentResponse(envelope))
+    const client = createOpenAICompatibleClient({ fetch: fetcher })
+
+    await expect(client.complete(request({
+      streamingSupported: false,
+      toolCallingSupported: false,
+      onCapabilityFallback: fallback
+    }))).resolves.toEqual({
+      content: envelope,
+      streamingSupported: false,
+      responseFormatSupported: true,
+      toolCallingSupported: false
+    })
+    expect(fallback).not.toHaveBeenCalled()
+    const body = JSON.parse(String(fetcher.mock.calls[0]?.[1]?.body))
+    expect(body).toMatchObject({ response_format: { type: 'json_object' } })
+    expect(body).not.toHaveProperty('tools')
+    expect(body).not.toHaveProperty('tool_choice')
   })
 
   it('disables DeepSeek default thinking without adding provider extensions elsewhere', async () => {

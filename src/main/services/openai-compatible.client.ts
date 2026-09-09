@@ -283,7 +283,7 @@ async function boundedText(response: Response, maxBytes: number, signal?: AbortS
   }
 }
 
-type NegotiatedCapability = 'streaming' | 'response_format'
+type NegotiatedCapability = 'streaming' | 'response_format' | 'function_call'
 
 function providerErrorMetadata(text: string): { param?: string; signal: string } {
   try {
@@ -308,7 +308,13 @@ function unsupportedSignal(signal: string, allowInvalidParameter: boolean): bool
 }
 
 function narrowlyNamesUnsupportedCapability(signal: string, capability: NegotiatedCapability): boolean {
-  const patterns = capability === 'response_format'
+  const patterns = capability === 'function_call'
+    ? [
+        /(?:unsupported|unknown|unrecognized)\s+(?:parameter\s*[:=]?\s*)?["'`]?(?:tools|tool_choice|function_call)\b/,
+        /\b(?:tools|tool_choice|function_call)\s+(?:parameter\s+|capability\s+)?(?:is\s+)?(?:unsupported|not supported|unknown|unrecognized)\b/,
+        /\b(?:does not|doesn't)\s+support\s+(?:the\s+)?(?:tools|tool_choice|function_call)\b/
+      ]
+    : capability === 'response_format'
     ? [
         /(?:unsupported|unknown|unrecognized)\s+(?:parameter\s*[:=]?\s*)?["'`]?response_format\b/,
         /\bresponse_format(?:\s+(?:json_schema|type))?\s+(?:parameter\s+)?(?:is\s+)?(?:unsupported|not supported|unknown|unrecognized)\b/,
@@ -329,9 +335,12 @@ function unsupportedCapability(
 ): boolean {
   if (status !== 400 && status !== 422) return false
   const metadata = providerErrorMetadata(text)
-  const expectedParam = capability === 'streaming' ? 'stream' : 'response_format'
+  const expectedParams = capability === 'function_call'
+    ? ['tools', 'tool_choice', 'function_call']
+    : [capability === 'streaming' ? 'stream' : 'response_format']
   if (metadata.param !== undefined) {
-    return metadata.param === expectedParam && unsupportedSignal(metadata.signal, true)
+    return expectedParams.includes(metadata.param) &&
+      unsupportedSignal(metadata.signal, capability !== 'function_call')
   }
   return narrowlyNamesUnsupportedCapability(metadata.signal, capability)
 }
@@ -462,7 +471,8 @@ export function createOpenAICompatibleClient(
     request: AIChatCompletionRequest,
     useStreaming: boolean,
     responseFormat: AIResponseFormatLevel,
-    questionnaireMode: boolean
+    questionnaireMode: boolean,
+    toolCallingMode: boolean
   ): Promise<
     | { kind: 'error'; status: number; text: string }
     | { kind: 'complete'; content: string; usedSse: boolean }
@@ -500,17 +510,21 @@ export function createOpenAICompatibleClient(
           ...(questionnaireMode
             ? {
                 response_format: { type: 'json_object' },
-                tools: [{
-                  type: 'function',
-                  function: {
-                    name: 'submit_questionnaire',
-                    parameters: providerSchema(request.schemaVersion)
-                  }
-                }],
-                tool_choice: {
-                  type: 'function',
-                  function: { name: 'submit_questionnaire' }
-                }
+                ...(toolCallingMode
+                  ? {
+                      tools: [{
+                        type: 'function',
+                        function: {
+                          name: 'submit_questionnaire',
+                          parameters: providerSchema(request.schemaVersion)
+                        }
+                      }],
+                      tool_choice: {
+                        type: 'function',
+                        function: { name: 'submit_questionnaire' }
+                      }
+                    }
+                  : {})
               }
             : responseFormat === 'json_schema'
               ? {
@@ -548,7 +562,7 @@ export function createOpenAICompatibleClient(
         const text = await boundedText(response, maxResponseBytes, controller.signal)
         return {
           kind: 'complete',
-          content: completionContent(text, questionnaireMode),
+          content: completionContent(text, toolCallingMode),
           usedSse: false
         }
       }
@@ -592,7 +606,7 @@ export function createOpenAICompatibleClient(
             throw new AIClientError('AI_RESPONSE_TOO_LARGE')
           }
           for (const modelDelta of parser.push(result.value)) {
-            if (questionnaireMode) throw new AIClientError('AI_INVALID_RESPONSE')
+            if (toolCallingMode) throw new AIClientError('AI_INVALID_RESPONSE')
             const safeDelta = extractor.push(modelDelta.content).join('')
             for (let offset = 0; offset < safeDelta.length;) {
               let end = Math.min(offset + maxCallbackDeltaCharacters, safeDelta.length)
@@ -615,7 +629,7 @@ export function createOpenAICompatibleClient(
         if (streamCompletion.toolArguments !== undefined) {
           const evidence = streamCompletion.choice
           if (
-            !questionnaireMode || evidence.choiceCount !== 1 || evidence.index !== 0 ||
+            !toolCallingMode || evidence.choiceCount !== 1 || evidence.index !== 0 ||
             evidence.finishReason !== 'tool_calls' || evidence.refusalPresent ||
             !evidence.toolCallPresent || evidence.role !== undefined && evidence.role !== 'assistant' ||
             streamCompletion.content.length > 0
@@ -687,8 +701,11 @@ export function createOpenAICompatibleClient(
           : policy.responseFormat
       if (questionnaireMode || responseFormat === 'json_schema') providerSchema(request.schemaVersion)
       let useStreaming = safeRequest.streamingSupported !== false
+      let toolCallingMode = questionnaireMode && safeRequest.toolCallingSupported !== false
       for (let negotiation = 0; negotiation < 4; negotiation += 1) {
-        const result = await requestOnce(safeRequest, useStreaming, responseFormat, questionnaireMode)
+        const result = await requestOnce(
+          safeRequest, useStreaming, responseFormat, questionnaireMode, toolCallingMode
+        )
         if (result.kind === 'complete') {
           if (useStreaming && !result.usedSse) {
             useStreaming = false
@@ -698,8 +715,16 @@ export function createOpenAICompatibleClient(
             content: result.content,
             streamingSupported: useStreaming && result.usedSse,
             responseFormatSupported: questionnaireMode || responseFormat !== 'text',
-            toolCallingSupported: questionnaireMode
+            toolCallingSupported: questionnaireMode && toolCallingMode
           }
+        }
+        if (
+          questionnaireMode && toolCallingMode &&
+          unsupportedCapability(result.status, result.text, 'function_call')
+        ) {
+          toolCallingMode = false
+          safeRequest.onCapabilityFallback?.('function_call')
+          continue
         }
         if (
           !questionnaireMode && responseFormat !== 'text' &&
