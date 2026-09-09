@@ -41,12 +41,6 @@ function streamingResponse(parts: Array<string | Uint8Array>, contentType = 'tex
   }), { status: 200, headers: { 'content-type': contentType } })
 }
 
-function contentResponse(content = envelope): Response {
-  return new Response(JSON.stringify({
-    choices: [{ index: 0, finish_reason: 'stop', message: { role: 'assistant', content } }]
-  }), { status: 200, headers: { 'content-type': 'application/json' } })
-}
-
 function toolResponse(argumentsValue: unknown = envelope): Response {
   return new Response(JSON.stringify({
     choices: [{
@@ -63,6 +57,21 @@ function toolResponse(argumentsValue: unknown = envelope): Response {
       }
     }]
   }), { status: 200, headers: { 'content-type': 'application/json' } })
+}
+
+function toolChoice(index?: number, finishReason = 'tool_calls'): object {
+  return {
+    ...(index === undefined ? {} : { index }),
+    finish_reason: finishReason,
+    message: {
+      role: 'assistant',
+      content: null,
+      tool_calls: [{
+        type: 'function',
+        function: { name: 'submit_questionnaire', arguments: envelope }
+      }]
+    }
+  }
 }
 
 function errorResponse(status: number, text: string): Response {
@@ -317,24 +326,27 @@ describe('OpenAI-compatible bounded streaming transport', () => {
     })
   })
 
-  it('supports an explicit generic non-streaming completion without a questionnaire schema', async () => {
-    const fetcher = vi.fn().mockResolvedValue(contentResponse('OK'))
+  it('does not activate capability fallback before unsupported-tools negotiation exists', async () => {
+    const fetcher = vi.fn().mockResolvedValue(toolResponse())
     const client = createOpenAICompatibleClient({ fetch: fetcher })
 
     await expect(client.complete(request({
-      schemaVersion: 1,
       streamingSupported: false,
       responseFormatSupported: false,
       toolCallingSupported: false
     }))).resolves.toEqual({
-      content: 'OK',
+      content: envelope,
       streamingSupported: false,
-      responseFormatSupported: false,
-      toolCallingSupported: false
+      responseFormatSupported: true,
+      toolCallingSupported: true
     })
     const body = JSON.parse(String(fetcher.mock.calls[0]?.[1]?.body))
     expect(body).not.toHaveProperty('stream')
-    expect(body).not.toHaveProperty('response_format')
+    expect(body).toMatchObject({
+      response_format: { type: 'json_object' },
+      tools: [{ type: 'function', function: { name: 'submit_questionnaire' } }],
+      tool_choice: { type: 'function', function: { name: 'submit_questionnaire' } }
+    })
   })
 
   it('disables DeepSeek default thinking without adding provider extensions elsewhere', async () => {
@@ -675,17 +687,11 @@ describe('OpenAI-compatible bounded streaming transport', () => {
 
   it.each([
     ['zero choices', { choices: [] }],
-    ['multiple choices', { choices: [
-      { index: 0, finish_reason: 'stop', message: { content: envelope } },
-      { index: 1, finish_reason: 'stop', message: { content: envelope } }
-    ] }],
-    ['nonzero index', { choices: [{ index: 2, finish_reason: 'stop', message: { content: envelope } }] }],
-    ['missing index', { choices: [{ finish_reason: 'stop', message: { content: envelope } }] }],
-    ['non-stop finish', { choices: [{ index: 0, finish_reason: 'length', message: { content: envelope } }] }],
-    ['empty content', { choices: [{ index: 0, finish_reason: 'stop', message: { content: '' } }] }],
-    ['refusal', { choices: [{ index: 0, finish_reason: 'stop', message: { content: envelope, refusal: 'no' } }] }],
-    ['tool calls', { choices: [{ index: 0, finish_reason: 'stop', message: { content: envelope, tool_calls: [] } }] }]
-  ])('uses the strict complete-choice validator for %s', async (_name, body) => {
+    ['multiple choices', { choices: [toolChoice(0), toolChoice(1)] }],
+    ['nonzero index', { choices: [toolChoice(2)] }],
+    ['missing index', { choices: [toolChoice()] }],
+    ['non-tool finish', { choices: [toolChoice(0, 'length')] }]
+  ])('rejects invalid non-streaming choice metadata: %s', async (_name, body) => {
     const client = createOpenAICompatibleClient({
       fetch: vi.fn().mockResolvedValue(new Response(JSON.stringify(body), {
         status: 200, headers: { 'content-type': 'application/json' }

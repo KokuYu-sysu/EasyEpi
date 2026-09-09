@@ -3,8 +3,7 @@ import type { AIProviderId } from '@shared/ai-assistant-contract'
 import { validateAIConfigUpdate } from './ai-config.service'
 import {
   getAIProviderRequestPolicy,
-  resolveOpenAICompatibleEndpoint,
-  type AIResponseFormatLevel
+  resolveOpenAICompatibleEndpoint
 } from './ai-provider-policy'
 import {
   OpenAIStreamParseError,
@@ -370,33 +369,6 @@ function strictCompletionContent(evidence: CompleteChoiceEvidence): string {
   return evidence.content
 }
 
-function completeJsonEvidence(parsed: unknown): CompleteChoiceEvidence {
-  const root = asRecord(parsed)
-  if (!Array.isArray(root.choices)) throw new AIClientError('AI_INVALID_RESPONSE')
-  if (root.choices.length !== 1) {
-    return {
-      choiceCount: root.choices.length,
-      index: undefined,
-      finishReason: undefined,
-      content: undefined,
-      role: undefined,
-      refusalPresent: false,
-      toolCallPresent: false
-    }
-  }
-  const choice = asRecord(root.choices[0])
-  const message = asRecord(choice.message)
-  return {
-    choiceCount: root.choices.length,
-    index: choice.index,
-    finishReason: choice.finish_reason,
-    content: message.content,
-    role: message.role,
-    refusalPresent: hasPayload(message, 'refusal'),
-    toolCallPresent: hasPayload(message, 'tool_calls') || hasPayload(message, 'function_call')
-  }
-}
-
 function strictToolCallContent(parsed: unknown): string {
   const root = asRecord(parsed)
   if (!Array.isArray(root.choices) || root.choices.length !== 1) {
@@ -424,12 +396,10 @@ function strictToolCallContent(parsed: unknown): string {
   return fn.arguments
 }
 
-function completionContent(text: string, useToolCalling: boolean): string {
+function completionContent(text: string): string {
   try {
     const parsed: unknown = JSON.parse(text)
-    return useToolCalling
-      ? strictToolCallContent(parsed)
-      : strictCompletionContent(completeJsonEvidence(parsed))
+    return strictToolCallContent(parsed)
   } catch (error) {
     if (error instanceof AIClientError) throw error
     throw new AIClientError('AI_INVALID_RESPONSE')
@@ -460,9 +430,7 @@ export function createOpenAICompatibleClient(
 
   async function requestOnce(
     request: AIChatCompletionRequest,
-    useStreaming: boolean,
-    responseFormat: AIResponseFormatLevel,
-    useToolCalling: boolean
+    useStreaming: boolean
   ): Promise<
     | { kind: 'error'; status: number; text: string }
     | { kind: 'complete'; content: string; usedSse: boolean }
@@ -497,35 +465,18 @@ export function createOpenAICompatibleClient(
           messages: request.messages,
           ...policy.chatBody,
           ...(useStreaming ? { stream: true } : {}),
-          ...(useToolCalling
-            ? {
-                response_format: { type: 'json_object' },
-                tools: [{
-                  type: 'function',
-                  function: {
-                    name: 'submit_questionnaire',
-                    parameters: providerSchema(request.schemaVersion)
-                  }
-                }],
-                tool_choice: {
-                  type: 'function',
-                  function: { name: 'submit_questionnaire' }
-                }
-              }
-            : responseFormat === 'json_schema'
-            ? {
-                response_format: {
-                  type: 'json_schema',
-                  json_schema: {
-                    name: 'easyepi_questionnaire_envelope',
-                    strict: true,
-                    schema: providerSchema(request.schemaVersion)
-                  }
-                }
-              }
-            : responseFormat === 'json_object'
-              ? { response_format: { type: 'json_object' } }
-              : {})
+          response_format: { type: 'json_object' },
+          tools: [{
+            type: 'function',
+            function: {
+              name: 'submit_questionnaire',
+              parameters: providerSchema(request.schemaVersion)
+            }
+          }],
+          tool_choice: {
+            type: 'function',
+            function: { name: 'submit_questionnaire' }
+          }
         }),
         signal: controller.signal
       })
@@ -546,7 +497,7 @@ export function createOpenAICompatibleClient(
       }
       if (!useStreaming || contentTypeIsJson(response)) {
         const text = await boundedText(response, maxResponseBytes, controller.signal)
-        return { kind: 'complete', content: completionContent(text, useToolCalling), usedSse: false }
+        return { kind: 'complete', content: completionContent(text), usedSse: false }
       }
       const length = response.headers.get('content-length')
       if (length !== null && Number(length) > maxResponseBytes) {
@@ -659,17 +610,10 @@ export function createOpenAICompatibleClient(
         model: validated.model,
         apiKey: typeof validated.apiKey === 'string' ? validated.apiKey : undefined
       }
-      const policy = getAIProviderRequestPolicy(
-        safeRequest.providerId ?? 'custom', safeRequest.baseUrl
-      )
-      let responseFormat: AIResponseFormatLevel = safeRequest.responseFormatSupported === false
-        ? 'text'
-        : policy.responseFormat
-      const useToolCalling = safeRequest.toolCallingSupported !== false
-      if (useToolCalling || responseFormat === 'json_schema') providerSchema(request.schemaVersion)
+      providerSchema(request.schemaVersion)
       let useStreaming = safeRequest.streamingSupported !== false
       for (let negotiation = 0; negotiation < 4; negotiation += 1) {
-        const result = await requestOnce(safeRequest, useStreaming, responseFormat, useToolCalling)
+        const result = await requestOnce(safeRequest, useStreaming)
         if (result.kind === 'complete') {
           if (useStreaming && !result.usedSse) {
             useStreaming = false
@@ -678,18 +622,9 @@ export function createOpenAICompatibleClient(
           return {
             content: result.content,
             streamingSupported: useStreaming && result.usedSse,
-            responseFormatSupported: useToolCalling || responseFormat !== 'text',
-            toolCallingSupported: useToolCalling
+            responseFormatSupported: true,
+            toolCallingSupported: true
           }
-        }
-        if (!useToolCalling && responseFormat !== 'text' && unsupportedCapability(result.status, result.text, 'response_format')) {
-          if (responseFormat === 'json_schema' && result.text.toLowerCase().includes('json_schema')) {
-            responseFormat = 'json_object'
-          } else {
-            responseFormat = 'text'
-            safeRequest.onCapabilityFallback?.('response_format')
-          }
-          continue
         }
         if (useStreaming && unsupportedCapability(result.status, result.text, 'streaming')) {
           useStreaming = false
