@@ -181,6 +181,7 @@ export interface AIPublicRunSnapshot {
   startedAt: string
   updatedAt: string
   streamFallback: boolean
+  toolCallingFallback: boolean
 }
 
 export interface AIRunProgress {
@@ -188,6 +189,7 @@ export interface AIRunProgress {
   attempt: 1 | 2 | 3
   updatedAt: string
   streamFallback: boolean
+  toolCallingFallback: boolean
 }
 
 export interface AIRunFailure {
@@ -1123,7 +1125,10 @@ function assertPublicFailureDetails(value: unknown): void {
 function assertPublicRunSnapshot(value: unknown): void {
   const input = responseKeys(
     value,
-    ['requestId', 'runId', 'stage', 'attempt', 'startedAt', 'updatedAt', 'streamFallback']
+    [
+      'requestId', 'runId', 'stage', 'attempt', 'startedAt', 'updatedAt',
+      'streamFallback', 'toolCallingFallback'
+    ]
   )
   responseId(input.requestId)
   responseId(input.runId)
@@ -1134,6 +1139,7 @@ function assertPublicRunSnapshot(value: unknown): void {
   responseTimestamp(input.startedAt)
   responseTimestamp(input.updatedAt)
   if (typeof input.streamFallback !== 'boolean') invalidResponse()
+  if (typeof input.toolCallingFallback !== 'boolean') invalidResponse()
 }
 
 function assertManifest(value: unknown): void {

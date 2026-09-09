@@ -666,7 +666,7 @@ describe('AI streaming and clarification public contract', () => {
   it('parses an exact public run snapshot and rejects unsafe stage, IDs, and extras', () => {
     const snapshot = {
       requestId: 'request-1', runId: 'run-1', stage: 'streaming', attempt: 2,
-      startedAt: at, updatedAt: at, streamFallback: false
+      startedAt: at, updatedAt: at, streamFallback: false, toolCallingFallback: true
     }
     expect(parseAIPublicRunSnapshot(snapshot)).toEqual(snapshot)
     expect(() => parseAIPublicRunSnapshot({ ...snapshot, stage: 'thinking' }))
@@ -724,6 +724,10 @@ describe('AI streaming and clarification public contract', () => {
     })).toThrow('INVALID_AI_RESPONSE')
     expect(() => parseAIProgressEvent({
       ...base, type: 'repairing', attempt: 2, nextAttempt: 2
+    })).toThrow('INVALID_AI_RESPONSE')
+    expect(() => parseAIProgressEvent({
+      ...base, type: 'capability_fallback', attempt: 1,
+      capability: 'arbitrary', reason: 'unsupported'
     })).toThrow('INVALID_AI_RESPONSE')
     expect(() => parseAIProgressEvent({
       ...base, type: 'cancelled', attempt: 1, errorCode: 'AI_PROVIDER_ERROR'
@@ -933,7 +937,10 @@ describe('AI IPC privacy boundary', () => {
         runId: 'run-failed', status: 'failed', startedAt: at, completedAt: at,
         versionStamp, requestId: 'failed-request', operationId: 'failed-operation',
         userMessageId: 'user-failed', errorCode: 'AI_HARNESS_VALIDATION_FAILED',
-        progress: { stage: 'failed', attempt: 3, updatedAt: at, streamFallback: false },
+        progress: {
+          stage: 'failed', attempt: 3, updatedAt: at,
+          streamFallback: false, toolCallingFallback: false
+        },
         failure: {
           errorCode: 'AI_HARNESS_VALIDATION_FAILED', completedAt: at,
           details: { attempts: [{
@@ -946,7 +953,10 @@ describe('AI IPC privacy boundary', () => {
       'run-active': {
         runId: 'run-active', status: 'running', startedAt: at, versionStamp,
         requestId: 'active-request', operationId: 'active-operation', userMessageId: 'user-active',
-        progress: { stage: 'streaming', attempt: 2, updatedAt: at, streamFallback: true }
+        progress: {
+          stage: 'streaming', attempt: 2, updatedAt: at,
+          streamFallback: true, toolCallingFallback: true
+        }
       }
     }
     const configService = {
@@ -975,7 +985,7 @@ describe('AI IPC privacy boundary', () => {
       ],
       activeRun: {
         requestId: 'active-request', runId: 'run-active', stage: 'streaming', attempt: 2,
-        startedAt: at, updatedAt: at, streamFallback: true
+        startedAt: at, updatedAt: at, streamFallback: true, toolCallingFallback: true
       },
       failures: [{
         runId: 'run-failed', userMessageId: 'user-failed',
@@ -1853,7 +1863,8 @@ describe('AI Session version and artifact idempotency', () => {
       userMessageId: 'user-message-1',
       progress: {
         stage: 'starting', attempt: 1, updatedAt: '2026-08-25T01:00:00.000Z',
-        streamFallback: false
+        streamFallback: false,
+        toolCallingFallback: false
       }
     })
     repository.setRunTemp(sessionId, {

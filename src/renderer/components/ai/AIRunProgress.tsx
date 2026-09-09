@@ -15,6 +15,7 @@ export interface AIRunProgressState {
   updatedAt: string
   streamFallback: boolean
   responseFormatFallback: boolean
+  toolCallingFallback: boolean
   provisionalText: string
   rejectedAttempts: AIPublicAttemptFailure[]
 }
@@ -73,6 +74,11 @@ export function AIRunProgress({ run }: AIRunProgressProps) {
         {run.responseFormatFallback ? (
           <p className="m-0 rounded-[var(--radius-1)] bg-[var(--color-info-soft)] p-[var(--space-2)] text-[var(--color-text-secondary)]">
             当前服务不支持结构化响应格式，已自动改用兼容模式并保留本地校验。
+          </p>
+        ) : null}
+        {run.toolCallingFallback ? (
+          <p className="m-0 rounded-[var(--radius-1)] bg-[var(--color-info-soft)] p-[var(--space-2)] text-[var(--color-text-secondary)]">
+            当前服务不支持函数调用，已自动改用兼容的 JSON 响应；结果仍会在本地校验。
           </p>
         ) : null}
         {run.rejectedAttempts.length > 0 ? (

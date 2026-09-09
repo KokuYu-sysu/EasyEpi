@@ -569,7 +569,8 @@ describe('AIQuestionnairePage boundaries', () => {
       attempt: 1 as const,
       startedAt: '2026-08-25T01:00:00.000Z',
       updatedAt: '2026-08-25T01:00:01.000Z',
-      streamFallback: false
+      streamFallback: false,
+      toolCallingFallback: true
     }
     const userMessage = {
       id: 'message-recovered-user',
@@ -607,8 +608,14 @@ describe('AIQuestionnairePage boundaries', () => {
       }],
       total: 1
     }
+    let releaseReconciliation!: () => void
+    const reconciliationPending = new Promise<void>((resolve) => { releaseReconciliation = resolve })
     api.ai.session.get
       .mockResolvedValueOnce({ ok: true, session: runningPage })
+      .mockImplementationOnce(async () => {
+        await reconciliationPending
+        return { ok: true, session: terminalPage }
+      })
       .mockResolvedValue({ ok: true, session: terminalPage })
 
     renderPage()
@@ -617,6 +624,8 @@ describe('AIQuestionnairePage boundaries', () => {
       requestId: recoveredRun.requestId,
       sessionId: session.sessionId
     }, expect.any(Function)))
+    expect(await screen.findByText(/当前服务不支持函数调用/)).toBeVisible()
+    releaseReconciliation()
     await waitFor(() => expect(api.ai.session.get).toHaveBeenCalledTimes(3))
     expect(api.ai.onProgress.mock.invocationCallOrder[0]).toBeLessThan(api.ai.session.get.mock.invocationCallOrder[1]!)
     expect(unsubscribe).toHaveBeenCalledTimes(1)

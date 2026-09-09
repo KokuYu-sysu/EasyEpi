@@ -389,7 +389,7 @@ function validateTimestamp(value: unknown): asserts value is string {
 
 function validateProgress(value: unknown): AIRunProgress {
   if (!isPlainObject(value)) throw new Error('INVALID_AI_RUN_PROGRESS')
-  exactKeys(value, ['stage', 'attempt', 'updatedAt', 'streamFallback'])
+  exactKeys(value, ['stage', 'attempt', 'updatedAt', 'streamFallback'], ['toolCallingFallback'])
   if (
     typeof value.stage !== 'string' ||
     typeof value.attempt !== 'number' ||
@@ -397,11 +397,15 @@ function validateProgress(value: unknown): AIRunProgress {
     'starting', 'connecting', 'streaming', 'validating', 'repairing', 'clarification',
     'completed', 'failed', 'cancelled'
   ].includes(value.stage) || !Number.isInteger(value.attempt) || ![1, 2, 3].includes(value.attempt) ||
-    typeof value.streamFallback !== 'boolean') {
+    typeof value.streamFallback !== 'boolean' ||
+    (value.toolCallingFallback !== undefined && typeof value.toolCallingFallback !== 'boolean')) {
     throw new Error('INVALID_AI_RUN_PROGRESS')
   }
   validateTimestamp(value.updatedAt)
-  return clone(value) as unknown as AIRunProgress
+  return {
+    ...clone(value),
+    toolCallingFallback: value.toolCallingFallback ?? false
+  } as AIRunProgress
 }
 
 function validateRunResult(value: unknown): AIRunResult {
@@ -533,7 +537,8 @@ const RUNNING_PROGRESS_STAGES = new Set([
 
 function assertProgressTransition(current: AIRunProgress, next: AIRunProgress): void {
   if (timestampEpoch(next.updatedAt) < timestampEpoch(current.updatedAt) ||
-    current.streamFallback && !next.streamFallback) {
+    (current.streamFallback && !next.streamFallback) ||
+    (current.toolCallingFallback && !next.toolCallingFallback)) {
     throw new Error('INVALID_AI_RUN_PROGRESS_TRANSITION')
   }
   if (next.attempt === current.attempt) {
@@ -1046,7 +1051,8 @@ export class AISessionRepository {
         stage: 'completed',
         attempt: run.progress?.attempt ?? 1,
         updatedAt: completedAt,
-        streamFallback: run.progress?.streamFallback ?? false
+        streamFallback: run.progress?.streamFallback ?? false,
+        toolCallingFallback: run.progress?.toolCallingFallback ?? false
       }
     }
     session.state.runs[runId] = updated
@@ -1077,7 +1083,8 @@ export class AISessionRepository {
         stage: 'failed',
         attempt: run.progress?.attempt ?? 1,
         updatedAt: completedAt,
-        streamFallback: run.progress?.streamFallback ?? false
+        streamFallback: run.progress?.streamFallback ?? false,
+        toolCallingFallback: run.progress?.toolCallingFallback ?? false
       }
     }
     session.state.runs[runId] = updated
@@ -1101,7 +1108,8 @@ export class AISessionRepository {
         stage: 'cancelled',
         attempt: run.progress?.attempt ?? 1,
         updatedAt: completedAt,
-        streamFallback: run.progress?.streamFallback ?? false
+        streamFallback: run.progress?.streamFallback ?? false,
+        toolCallingFallback: run.progress?.toolCallingFallback ?? false
       }
     }
     session.state.runs[runId] = updated
@@ -1274,7 +1282,8 @@ export class AISessionRepository {
                     stage: 'failed',
                     attempt: run.progress?.attempt ?? 1,
                     updatedAt: completedAt,
-                    streamFallback: run.progress?.streamFallback ?? false
+                    streamFallback: run.progress?.streamFallback ?? false,
+                    toolCallingFallback: run.progress?.toolCallingFallback ?? false
                   }
                 }
               : { ...run, status: 'failed', completedAt, errorCode: failure.errorCode }

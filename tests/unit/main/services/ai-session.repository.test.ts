@@ -57,7 +57,8 @@ function runningRun(overrides: Partial<AIRun> = {}): AIRun {
     userMessageId: USER_MESSAGE_ID,
     progress: {
       stage: 'starting', attempt: 1,
-      updatedAt: '2026-08-29T00:00:01.000Z', streamFallback: false
+      updatedAt: '2026-08-29T00:00:01.000Z', streamFallback: false,
+      toolCallingFallback: false
     },
     ...overrides
   }
@@ -239,7 +240,10 @@ describe('AI session repository v2 persistence', () => {
     const failedRun = runningRun({
       runId: 'run-2', requestId: 'request-2', operationId: 'operation-2', userMessageId: 'user-run-2',
       startedAt: '2026-08-29T00:00:03.000Z',
-      progress: { stage: 'starting', attempt: 1, updatedAt: '2026-08-29T00:00:03.000Z', streamFallback: false }
+      progress: {
+        stage: 'starting', attempt: 1, updatedAt: '2026-08-29T00:00:03.000Z',
+        streamFallback: false, toolCallingFallback: false
+      }
     })
     repo.upsertRun(sessionId, failedRun)
     repo.updateState(sessionId, { status: 'running', activeRunId: 'run-2' })
@@ -257,7 +261,10 @@ describe('AI session repository v2 persistence', () => {
     expect(() => repo.upsertRun(sessionId, runningRun({
       runId: 'run-3', requestId: 'request-3', operationId: 'operation-2', userMessageId: 'user-run-3',
       startedAt: '2026-08-29T00:00:04.000Z',
-      progress: { stage: 'starting', attempt: 1, updatedAt: '2026-08-29T00:00:04.000Z', streamFallback: false }
+      progress: {
+        stage: 'starting', attempt: 1, updatedAt: '2026-08-29T00:00:04.000Z',
+        streamFallback: false, toolCallingFallback: false
+      }
     }))).toThrow('AI_RUN_OPERATION_CONFLICT')
   })
 
@@ -270,7 +277,8 @@ describe('AI session repository v2 persistence', () => {
     })
     repo.updateRunProgress(sessionId, RUN_ID, {
       stage: 'streaming', attempt: 1,
-      updatedAt: '2026-08-29T00:00:03.000Z', streamFallback: true
+      updatedAt: '2026-08-29T00:00:03.000Z', streamFallback: true,
+      toolCallingFallback: true
     })
     expect(() => repo.updateRunProgress(sessionId, RUN_ID, {
       stage: 'connecting', attempt: 1,
@@ -282,19 +290,28 @@ describe('AI session repository v2 persistence', () => {
     })).toThrow('INVALID_AI_RUN_PROGRESS_TRANSITION')
     expect(() => repo.updateRunProgress(sessionId, RUN_ID, {
       stage: 'validating', attempt: 1,
-      updatedAt: '2026-08-29T00:00:04.000Z', streamFallback: false
+      updatedAt: '2026-08-29T00:00:04.000Z', streamFallback: false,
+      toolCallingFallback: true
+    })).toThrow('INVALID_AI_RUN_PROGRESS_TRANSITION')
+    expect(() => repo.updateRunProgress(sessionId, RUN_ID, {
+      stage: 'validating', attempt: 1,
+      updatedAt: '2026-08-29T00:00:04.000Z', streamFallback: true,
+      toolCallingFallback: false
     })).toThrow('INVALID_AI_RUN_PROGRESS_TRANSITION')
     repo.updateRunProgress(sessionId, RUN_ID, {
       stage: 'validating', attempt: 1,
-      updatedAt: '2026-08-29T00:00:04.000Z', streamFallback: true
+      updatedAt: '2026-08-29T00:00:04.000Z', streamFallback: true,
+      toolCallingFallback: true
     })
     repo.updateRunProgress(sessionId, RUN_ID, {
       stage: 'repairing', attempt: 1,
-      updatedAt: '2026-08-29T00:00:05.000Z', streamFallback: true
+      updatedAt: '2026-08-29T00:00:05.000Z', streamFallback: true,
+      toolCallingFallback: true
     })
     repo.updateRunProgress(sessionId, RUN_ID, {
       stage: 'connecting', attempt: 2,
-      updatedAt: '2026-08-29T00:00:06.000Z', streamFallback: true
+      updatedAt: '2026-08-29T00:00:06.000Z', streamFallback: true,
+      toolCallingFallback: true
     })
     expect(() => repo.updateRunProgress(sessionId, RUN_ID, {
       stage: 'connecting', attempt: 1,
@@ -335,7 +352,10 @@ describe('AI session repository v2 persistence', () => {
       createdAt: '2026-08-29T00:00:01.000Z'
     })
     expect(() => initial.repository.upsertRun(initial.sessionId, runningRun({
-      progress: { stage: 'starting', attempt: 1, updatedAt: '2026-08-29T00:00:00.000Z', streamFallback: false }
+      progress: {
+        stage: 'starting', attempt: 1, updatedAt: '2026-08-29T00:00:00.000Z',
+        streamFallback: false, toolCallingFallback: false
+      }
     }))).toThrow('INVALID_AI_RUN_CHRONOLOGY')
 
     const current = repository()
@@ -413,7 +433,10 @@ describe('AI session repository v2 persistence', () => {
     repo.upsertRun(sessionId, runningRun({
       runId: 'run-2', requestId: 'request-2', operationId: 'operation-2', userMessageId: 'user-2',
       startedAt: '2026-08-29T00:00:02.000Z',
-      progress: { stage: 'starting', attempt: 1, updatedAt: '2026-08-29T00:00:02.000Z', streamFallback: false }
+      progress: {
+        stage: 'starting', attempt: 1, updatedAt: '2026-08-29T00:00:02.000Z',
+        streamFallback: false, toolCallingFallback: false
+      }
     }))
     expect(() => repo.updateState(sessionId, { activeRunId: 'run-2' }))
       .toThrow('AI_RUN_ALREADY_ACTIVE')
@@ -522,16 +545,33 @@ describe('AI session repository v2 persistence', () => {
   })
 
   it('parses progress without coercion and only permits running stages for running runs', () => {
+    const legacy = repository()
+    legacy.repository.appendMessage(legacy.sessionId, {
+      id: USER_MESSAGE_ID, role: 'user', content: 'Create', runId: RUN_ID,
+      createdAt: '2026-08-29T00:00:01.000Z'
+    })
+    const legacyRun = runningRun()
+    delete (legacyRun.progress as { toolCallingFallback?: boolean }).toolCallingFallback
+    expect(legacy.repository.upsertRun(legacy.sessionId, legacyRun).value.progress)
+      .toMatchObject({ toolCallingFallback: false })
+
     const { repository: repo, sessionId } = repository()
     repo.appendMessage(sessionId, {
       id: USER_MESSAGE_ID, role: 'user', content: 'Create', runId: RUN_ID,
       createdAt: '2026-08-29T00:00:01.000Z'
     })
     expect(() => repo.upsertRun(sessionId, runningRun({
-      progress: { stage: 'starting', attempt: '1' as unknown as 1, updatedAt: '2026-08-29T00:00:01.000Z', streamFallback: false }
+      progress: {
+        stage: 'starting', attempt: '1' as unknown as 1,
+        updatedAt: '2026-08-29T00:00:01.000Z', streamFallback: false,
+        toolCallingFallback: false
+      }
     }))).toThrow('INVALID_AI_RUN_PROGRESS')
     expect(() => repo.upsertRun(sessionId, runningRun({
-      progress: { stage: 'clarification', attempt: 1, updatedAt: '2026-08-29T00:00:01.000Z', streamFallback: false }
+      progress: {
+        stage: 'clarification', attempt: 1, updatedAt: '2026-08-29T00:00:01.000Z',
+        streamFallback: false, toolCallingFallback: false
+      }
     }))).toThrow('INVALID_AI_RUN_PROGRESS')
   })
 
@@ -551,7 +591,8 @@ describe('AI session repository v2 persistence', () => {
       .toThrow('INVALID_AI_TIMESTAMP')
     repo.upsertRun(sessionId, runningRun({
       progress: {
-        stage: 'starting', attempt: 1, updatedAt: '2026-08-29T08:00:03.000+08:00', streamFallback: false
+        stage: 'starting', attempt: 1, updatedAt: '2026-08-29T08:00:03.000+08:00',
+        streamFallback: false, toolCallingFallback: false
       }
     }))
     repo.updateState(sessionId, { status: 'running', activeRunId: RUN_ID })
@@ -604,7 +645,10 @@ describe('AI session repository v2 persistence', () => {
     expect(() => repo.upsertRun(sessionId, runningRun({
       runId: 'run-duplicate-request', operationId: 'operation-other', userMessageId: 'duplicate-request-user',
       startedAt: '2026-08-29T00:00:02.000Z',
-      progress: { stage: 'starting', attempt: 1, updatedAt: '2026-08-29T00:00:02.000Z', streamFallback: false }
+      progress: {
+        stage: 'starting', attempt: 1, updatedAt: '2026-08-29T00:00:02.000Z',
+        streamFallback: false, toolCallingFallback: false
+      }
     }))).toThrow('AI_RUN_REQUEST_CONFLICT')
     expect(() => repo.upsertRun(sessionId, runningRun({
       runId: 'run-terminal-bypass', requestId: 'request-terminal', operationId: 'operation-terminal',

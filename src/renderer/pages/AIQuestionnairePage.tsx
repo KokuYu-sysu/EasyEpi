@@ -94,7 +94,6 @@ interface LiveRunState extends AIRunProgressState {
   runId: string | null
   attemptText: Partial<Record<1 | 2 | 3, string>>
   sequences: Partial<Record<1 | 2 | 3, number>>
-  toolCallingFallback: boolean
 }
 
 interface ProgressSubscription {
@@ -239,7 +238,8 @@ function createLiveRun(
   attempt: 1 | 2 | 3 = 1,
   stage: LiveRunState['stage'] = 'starting',
   runId: string | null = null,
-  streamFallback = false
+  streamFallback = false,
+  toolCallingFallback = false
 ): LiveRunState {
   return {
     requestId,
@@ -251,7 +251,7 @@ function createLiveRun(
     updatedAt: startedAt,
     streamFallback,
     responseFormatFallback: false,
-    toolCallingFallback: false,
+    toolCallingFallback,
     provisionalText: '',
     rejectedAttempts: [],
     attemptText: {},
@@ -903,7 +903,8 @@ export function AIQuestionnairePage() {
         snapshot.attempt,
         snapshot.stage,
         snapshot.runId,
-        snapshot.streamFallback
+        snapshot.streamFallback,
+        snapshot.toolCallingFallback
       )
     )
     if (subscribed) void loadLatestSession(activeSessionId, generation)
@@ -1580,16 +1581,7 @@ export function AIQuestionnairePage() {
                         </Fragment>
                       ))}
                     </ol>
-                    {activeLiveRun !== null ? (
-                      <>
-                        <AIRunProgress run={activeLiveRun} />
-                        {activeLiveRun.toolCallingFallback ? (
-                          <p className="m-0 rounded-[var(--radius-1)] bg-[var(--color-info-soft)] p-[var(--space-2)] text-[var(--color-text-secondary)]">
-                            当前服务不支持函数调用，已自动改用兼容的 JSON 响应；结果仍会在本地校验。
-                          </p>
-                        ) : null}
-                      </>
-                    ) : null}
+                    {activeLiveRun !== null ? <AIRunProgress run={activeLiveRun} /> : null}
                     {liveFailure !== null && !liveFailureIsPersisted ? (
                       <AIValidationFailure
                         errorCode={liveFailure.errorCode}

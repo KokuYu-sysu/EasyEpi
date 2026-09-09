@@ -541,6 +541,9 @@ export function createAIQuestionnaireOrchestrator(
               updatedAt: startedAt,
               streamFallback: responseCapability(
                 lockedSession.cache.values[streamingCapabilityKey]
+              ) === false,
+              toolCallingFallback: responseCapability(
+                lockedSession.cache.values[toolCallingCapabilityKey]
               ) === false
             }
           })
@@ -601,6 +604,7 @@ export function createAIQuestionnaireOrchestrator(
         options: AIQuickReplyOption[]
       } | undefined
       let streamFallback = streamingCapability === false
+      let toolCallingFallback = toolCallingCapability === false
       const researchMessage = researchContext(researchResult)
       const persistProgress = async (stage: AIProgressStage, attempt: 1 | 2 | 3): Promise<void> => {
         await mutateAndPersist(request.project, dependencies.persistProject, 'run-progress', () => {
@@ -608,7 +612,8 @@ export function createAIQuestionnaireOrchestrator(
             stage,
             attempt,
             updatedAt: now(),
-            streamFallback
+            streamFallback,
+            toolCallingFallback
           })
         })
       }
@@ -657,7 +662,7 @@ export function createAIQuestionnaireOrchestrator(
             { supported: false },
             request.sessionId
           )
-          if (capability === 'streaming') {
+          if (capability === 'streaming' || capability === 'function_call') {
             const run = repository.findRunByOperationId(request.sessionId, operationId)
             if (run?.status !== 'running' || run.progress === undefined || run.progress.attempt !== attempt) {
               throw new Error('AI_RUN_NOT_ACTIVE')
@@ -665,7 +670,8 @@ export function createAIQuestionnaireOrchestrator(
             repository.updateRunProgress(request.sessionId, runId, {
               ...run.progress,
               updatedAt: now(),
-              streamFallback: true
+              streamFallback: run.progress.streamFallback || capability === 'streaming',
+              toolCallingFallback: run.progress.toolCallingFallback || capability === 'function_call'
             })
           }
         })
@@ -722,6 +728,7 @@ export function createAIQuestionnaireOrchestrator(
               },
               onCapabilityFallback: (capability) => {
                 if (capability === 'streaming') streamFallback = true
+                if (capability === 'function_call') toolCallingFallback = true
                 callbackPersistence = callbackPersistence.then(
                   () => persistCapabilityFallback(capability, attempt)
                 )
@@ -739,6 +746,7 @@ export function createAIQuestionnaireOrchestrator(
           responseFormatCapability = completion.responseFormatSupported
           toolCallingCapability = completion.toolCallingSupported
           streamFallback ||= !completion.streamingSupported
+          toolCallingFallback ||= !completion.toolCallingSupported
           await persistCapabilities(
             streamingCapability,
             responseFormatCapability,
@@ -790,7 +798,8 @@ export function createAIQuestionnaireOrchestrator(
               stage: 'repairing',
               attempt,
               updatedAt: now(),
-              streamFallback
+              streamFallback,
+              toolCallingFallback
             })
           })
           emit({ type: 'repairing', attempt: attempt as 1 | 2, nextAttempt: (attempt + 1) as 2 | 3 })

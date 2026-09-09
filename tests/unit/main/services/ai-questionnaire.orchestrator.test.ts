@@ -373,7 +373,7 @@ describe('AI questionnaire orchestrator', () => {
     await expect(send).resolves.toMatchObject({ ok: true, attempts: 1 })
   })
 
-  it('starts a new run with stream fallback already true when cached streaming is unsupported', async () => {
+  it('starts a new run with cached capability fallbacks already visible', async () => {
     const value = project()
     let release!: () => void
     const pending = new Promise<void>((resolve) => { release = resolve })
@@ -381,20 +381,29 @@ describe('AI questionnaire orchestrator', () => {
     const observed = new Promise<void>((resolve) => { observedRunStart = resolve })
     let runStarts = 0
     let runStartedFallback: boolean | undefined
+    let runStartedToolFallback: boolean | undefined
     const persistProject = vi.fn((_project, reason) => {
       if (reason !== 'run-started') return
       runStarts += 1
       if (runStarts === 2) {
         runStartedFallback = new AISessionRepository(value)
           .findRunByOperationId(sessionId, 'operation-2')?.progress?.streamFallback
+        runStartedToolFallback = new AISessionRepository(value)
+          .findRunByOperationId(sessionId, 'operation-2')?.progress?.toolCallingFallback
         observedRunStart()
       }
     })
     const complete = vi.fn()
-      .mockResolvedValueOnce({ content: validCompletion(), streamingSupported: false, responseFormatSupported: true })
+      .mockResolvedValueOnce({
+        content: validCompletion(), streamingSupported: false,
+        responseFormatSupported: true, toolCallingSupported: false
+      })
       .mockImplementationOnce(async () => {
         await pending
-        return { content: validCompletion(), streamingSupported: false, responseFormatSupported: true }
+        return {
+          content: validCompletion(), streamingSupported: false,
+          responseFormatSupported: true, toolCallingSupported: false
+        }
       })
     const orchestrator = createAIQuestionnaireOrchestrator({ persistProject, client: { complete } })
     await orchestrator.sendTurn(sendRequest(value))
@@ -404,6 +413,7 @@ describe('AI questionnaire orchestrator', () => {
 
     await observed
     expect(runStartedFallback).toBe(true)
+    expect(runStartedToolFallback).toBe(true)
     release()
     await expect(second).resolves.toMatchObject({ ok: true, attempts: 1 })
   })
@@ -1109,7 +1119,8 @@ describe('AI questionnaire orchestrator', () => {
       runId: 'orphan', status: 'running', startedAt: '2026-08-25T00:00:00.000Z',
       versionStamp: getAiVersionStamp(), requestId: 'orphan-request', operationId: 'orphan-operation',
       userMessageId: 'orphan-user', progress: {
-        stage: 'starting', attempt: 1, updatedAt: '2026-08-25T00:00:00.000Z', streamFallback: false
+        stage: 'starting', attempt: 1, updatedAt: '2026-08-25T00:00:00.000Z',
+        streamFallback: false, toolCallingFallback: false
       }
     })
     repository.updateState(sessionId, { status: 'running', activeRunId: 'orphan' })

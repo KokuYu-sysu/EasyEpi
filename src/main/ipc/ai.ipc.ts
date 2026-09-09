@@ -244,7 +244,8 @@ function toPublicSessionPage(session: AISessionData, offset: number, limit: numb
         attempt: activeRunRecord.progress.attempt,
         startedAt: activeRunRecord.startedAt,
         updatedAt: activeRunRecord.progress.updatedAt,
-        streamFallback: activeRunRecord.progress.streamFallback
+        streamFallback: activeRunRecord.progress.streamFallback,
+        toolCallingFallback: activeRunRecord.progress.toolCallingFallback ?? false
       }
     : null
   const page: AISessionPage = {
