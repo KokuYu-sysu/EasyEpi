@@ -285,16 +285,28 @@ async function boundedText(response: Response, maxBytes: number, signal?: AbortS
 
 type NegotiatedCapability = 'streaming' | 'response_format' | 'function_call'
 
-function providerErrorMetadata(text: string): { param?: string; signal: string } {
+function providerErrorMetadata(text: string): {
+  param?: string
+  code?: string
+  type?: string
+  message?: string
+  signal: string
+} {
   try {
     const root = asRecord(JSON.parse(text))
     const error = asRecord(root.error)
     const param = typeof error.param === 'string' ? error.param.toLowerCase() : undefined
-    const signal = [error.code, error.type, error.message]
-      .filter((value): value is string => typeof value === 'string')
-      .join(' ')
-      .toLowerCase()
-    return { ...(param === undefined ? {} : { param }), signal }
+    const code = typeof error.code === 'string' ? error.code.toLowerCase() : undefined
+    const type = typeof error.type === 'string' ? error.type.toLowerCase() : undefined
+    const message = typeof error.message === 'string' ? error.message.toLowerCase() : undefined
+    const signal = [code, type, message].filter((value) => value !== undefined).join(' ')
+    return {
+      ...(param === undefined ? {} : { param }),
+      ...(code === undefined ? {} : { code }),
+      ...(type === undefined ? {} : { type }),
+      ...(message === undefined ? {} : { message }),
+      signal
+    }
   } catch {
     return { signal: text.toLowerCase() }
   }
@@ -312,7 +324,10 @@ function narrowlyNamesUnsupportedCapability(signal: string, capability: Negotiat
     ? [
         /(?:unsupported|unknown|unrecognized)\s+(?:parameter\s*[:=]?\s*)?["'`]?(?:tools|tool_choice|function_call)\b/,
         /\b(?:tools|tool_choice|function_call)\s+(?:parameter\s+|capability\s+)?(?:is\s+)?(?:unsupported|not supported|unknown|unrecognized)\b/,
-        /\b(?:does not|doesn't)\s+support\s+(?:the\s+)?(?:tools|tool_choice|function_call)\b/
+        /\b(?:does not|doesn't)\s+support\s+(?:the\s+)?(?:tools|tool_choice|function_call)\b/,
+        /\bresponse_format\s+(?:cannot|can't)\s+be\s+used\s+with\s+(?:tools|tool_choice|function_call)\b/,
+        /\b(?:tools|tool_choice|function_call)\s+(?:cannot|can't)\s+be\s+used\s+with\s+response_format\b/,
+        /\b(?:response_format\s+and\s+(?:tools|tool_choice|function_call)|(?:tools|tool_choice|function_call)\s+and\s+response_format)\s+are\s+mutually\s+exclusive\b/
       ]
     : capability === 'response_format'
     ? [
@@ -338,9 +353,18 @@ function unsupportedCapability(
   const expectedParams = capability === 'function_call'
     ? ['tools', 'tool_choice', 'function_call']
     : [capability === 'streaming' ? 'stream' : 'response_format']
+  if (
+    capability === 'function_call' &&
+    narrowlyNamesUnsupportedCapability(metadata.message ?? '', capability)
+  ) return true
   if (metadata.param !== undefined) {
-    return expectedParams.includes(metadata.param) &&
-      unsupportedSignal(metadata.signal, capability !== 'function_call')
+    if (!expectedParams.includes(metadata.param)) return false
+    if (capability === 'function_call') {
+      const explicitParameterCode = /^(?:unsupported|unknown|unrecognized) parameter$/
+      return [metadata.code, metadata.type]
+        .some((value) => value !== undefined && explicitParameterCode.test(value.replaceAll('_', ' ')))
+    }
+    return unsupportedSignal(metadata.signal, true)
   }
   return narrowlyNamesUnsupportedCapability(metadata.signal, capability)
 }
@@ -433,10 +457,10 @@ function strictToolCallContent(parsed: unknown): string {
   return fn.arguments
 }
 
-function completionContent(text: string, questionnaireMode: boolean): string {
+function completionContent(text: string, toolCallingMode: boolean): string {
   try {
     const parsed: unknown = JSON.parse(text)
-    return questionnaireMode
+    return toolCallingMode
       ? strictToolCallContent(parsed)
       : strictCompletionContent(completeJsonEvidence(parsed))
   } catch (error) {

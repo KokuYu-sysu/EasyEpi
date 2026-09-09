@@ -475,7 +475,14 @@ describe('OpenAI-compatible bounded streaming transport', () => {
         code: 'unknown_parameter'
       }
     })],
-    [422, 'tool_choice is not supported']
+    [422, 'tool_choice is not supported'],
+    [400, JSON.stringify({
+      error: {
+        message: 'response_format cannot be used with tools',
+        param: 'response_format',
+        code: 'invalid_request_error'
+      }
+    })]
   ])('retries an explicit %i unsupported-tools response once in strict JSON content mode', async (status, errorBody) => {
     const fallback = vi.fn()
     const fetcher = vi.fn()
@@ -754,6 +761,13 @@ describe('OpenAI-compatible bounded streaming transport', () => {
     ['quota failure', () => Promise.resolve(errorResponse(429, 'rate limited')), 'AI_RATE_LIMITED'],
     ['provider failure', () => Promise.resolve(errorResponse(500, 'server error')), 'AI_PROVIDER_ERROR'],
     ['network failure', () => Promise.reject(new Error('offline')), 'AI_NETWORK_ERROR'],
+    ['nested tools schema error', () => Promise.resolve(errorResponse(400, JSON.stringify({
+      error: {
+        message: 'Unknown schema keyword in function parameters',
+        param: 'tools',
+        code: 'invalid_request_error'
+      }
+    }))), 'AI_PROVIDER_ERROR'],
     ['malformed SSE', () => Promise.resolve(streamingResponse([sse('{bad')])), 'AI_INVALID_RESPONSE'],
     ['empty EOF', () => Promise.resolve(streamingResponse([''])), 'AI_INVALID_RESPONSE']
   ])('does not retry or downgrade %s', async (_name, respond, expectedCode) => {
