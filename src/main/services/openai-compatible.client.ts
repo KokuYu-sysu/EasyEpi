@@ -611,6 +611,18 @@ export function createOpenAICompatibleClient(
           }
         }
         const streamCompletion = parser.finish()
+        if (streamCompletion.toolArguments !== undefined) {
+          const evidence = streamCompletion.choice
+          if (
+            !questionnaireMode || evidence.choiceCount !== 1 || evidence.index !== 0 ||
+            evidence.finishReason !== 'tool_calls' || evidence.refusalPresent ||
+            !evidence.toolCallPresent || evidence.role !== undefined && evidence.role !== 'assistant' ||
+            streamCompletion.content.length > 0
+          ) {
+            throw new AIClientError('AI_INVALID_RESPONSE')
+          }
+          return { kind: 'complete', content: streamCompletion.toolArguments, usedSse: true }
+        }
         const streamed = streamCompletion.content
         const extracted = extractor.finish()
         let parsedEnvelope: unknown

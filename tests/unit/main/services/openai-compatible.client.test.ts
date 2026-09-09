@@ -28,6 +28,12 @@ function chunk(content?: string, finishReason: string | null = null, extra: obje
   })
 }
 
+function toolChunk(toolCalls: unknown, finishReason: string | null = null): string {
+  return JSON.stringify({
+    choices: [{ index: 0, delta: { tool_calls: toolCalls }, finish_reason: finishReason }]
+  })
+}
+
 function sse(...events: string[]): string {
   return events.map((event) => `data: ${event}\n\n`).join('')
 }
@@ -206,6 +212,95 @@ describe('OpenAI-compatible bounded streaming transport', () => {
     expect(started).toHaveBeenCalledOnce()
     expect(deltas.join('')).toBe('Hello 世界 😀')
     expect(deltas.every((value) => !value.includes('rollingSummary'))).toBe(true)
+  })
+
+  it('assembles one streamed questionnaire function call without emitting partial content', async () => {
+    const splitAt = 31
+    const started = vi.fn()
+    const deltas = vi.fn()
+    const response = streamingResponse([sse(
+      JSON.stringify({ choices: [{ index: 0, delta: { role: 'assistant' }, finish_reason: null }] }),
+      toolChunk([{
+        index: 0,
+        id: 'call_1',
+        type: 'function',
+        function: { name: 'submit_questionnaire', arguments: envelope.slice(0, splitAt) }
+      }]),
+      toolChunk([{
+        index: 0,
+        function: { arguments: envelope.slice(splitAt) }
+      }]),
+      chunk(undefined, 'tool_calls'),
+      '[DONE]'
+    )])
+    const client = createOpenAICompatibleClient({ fetch: vi.fn().mockResolvedValue(response) })
+
+    await expect(client.complete(request({
+      onModelStreaming: started,
+      onContentDelta: deltas
+    }))).resolves.toEqual({
+      content: envelope,
+      streamingSupported: true,
+      responseFormatSupported: true,
+      toolCallingSupported: true
+    })
+    expect(started).toHaveBeenCalledOnce()
+    expect(deltas).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    ['nonzero first call index', [toolChunk([{ index: 1, type: 'function', function: { name: 'submit_questionnaire', arguments: envelope } }])]],
+    ['changing call index', [
+      toolChunk([{ index: 0, type: 'function', function: { name: 'submit_questionnaire', arguments: envelope.slice(0, 10) } }]),
+      toolChunk([{ index: 1, function: { arguments: envelope.slice(10) } }])
+    ]],
+    ['multiple calls', [toolChunk([
+      { index: 0, type: 'function', function: { name: 'submit_questionnaire', arguments: envelope } },
+      { index: 1, type: 'function', function: { name: 'submit_questionnaire', arguments: '{}' } }
+    ])]],
+    ['wrong function name', [toolChunk([{ index: 0, type: 'function', function: { name: 'other', arguments: envelope } }])]],
+    ['legacy function call', [JSON.stringify({
+      choices: [{ index: 0, delta: { function_call: { name: 'submit_questionnaire', arguments: envelope } }, finish_reason: null }]
+    })]],
+    ['content mixed with arguments', [
+      toolChunk([{ index: 0, type: 'function', function: { name: 'submit_questionnaire', arguments: envelope } }]),
+      chunk('late')
+    ]],
+    ['refusal mixed with arguments', [
+      toolChunk([{ index: 0, type: 'function', function: { name: 'submit_questionnaire', arguments: envelope } }]),
+      JSON.stringify({ choices: [{ index: 0, delta: { refusal: 'no' }, finish_reason: null }] })
+    ]],
+    ['non-string argument fragment', [toolChunk([{
+      index: 0, type: 'function', function: { name: 'submit_questionnaire', arguments: {} }
+    }])]],
+    ['wrong terminal reason', [toolChunk([{
+      index: 0, type: 'function', function: { name: 'submit_questionnaire', arguments: envelope }
+    }])], 'stop'],
+    ['data after terminal', [
+      toolChunk([{ index: 0, type: 'function', function: { name: 'submit_questionnaire', arguments: envelope } }], 'tool_calls'),
+      toolChunk([{ index: 0, function: { arguments: 'late' } }])
+    ]]
+  ])('rejects invalid streamed questionnaire tool calls: %s', async (_name, events, finishReason = 'tool_calls') => {
+    const body = sse(...events, chunk(undefined, finishReason), '[DONE]')
+    const client = createOpenAICompatibleClient({
+      fetch: vi.fn().mockResolvedValue(streamingResponse([body]))
+    })
+
+    await expect(client.complete(request())).rejects.toMatchObject({ code: 'AI_INVALID_RESPONSE' })
+  })
+
+  it('bounds streamed questionnaire arguments by the stream content character limit', async () => {
+    const body = sse(
+      toolChunk([{ index: 0, type: 'function', function: { name: 'submit_questionnaire', arguments: envelope } }]),
+      chunk(undefined, 'tool_calls'),
+      '[DONE]'
+    )
+    const client = createOpenAICompatibleClient({
+      maxStreamContentCharacters: envelope.length - 1,
+      fetch: vi.fn().mockResolvedValue(streamingResponse([body]))
+    })
+
+    await expect(client.complete(request())).rejects.toMatchObject({ code: 'AI_RESPONSE_TOO_LARGE' })
   })
 
   it('rejects invalid UTF-8 fatally', async () => {

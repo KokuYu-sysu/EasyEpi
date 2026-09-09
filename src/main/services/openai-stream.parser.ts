@@ -35,6 +35,7 @@ export interface CompleteChoiceEvidence {
 
 export interface StreamCompletionEvidence {
   content: string
+  toolArguments?: string
   choice: CompleteChoiceEvidence
 }
 
@@ -68,6 +69,11 @@ export function createSseChatCompletionParser(limits: StreamLimits): SseChatComp
   let eventCount = 0
   let sequence = 0
   let content = ''
+  let contentPresent = false
+  let toolArguments = ''
+  let toolCallStarted = false
+  let toolNameSeen = false
+  let toolTypeSeen = false
   let terminal = false
   let terminalIndex: unknown
   let terminalFinishReason: unknown
@@ -110,6 +116,7 @@ export function createSseChatCompletionParser(limits: StreamLimits): SseChatComp
     } catch {
       invalid()
     }
+    if (terminal) invalid()
     const root = record(parsed)
     if (!Array.isArray(root.choices)) invalid()
     if (root.choices.length === 0) {
@@ -121,7 +128,29 @@ export function createSseChatCompletionParser(limits: StreamLimits): SseChatComp
     if (choice.index !== 0) invalid()
     if (!has(choice, 'delta')) invalid()
     const delta = record(choice.delta)
-    if (hasPayload(delta, 'tool_calls') || hasPayload(delta, 'function_call')) toolCallPresent = true
+    if (hasPayload(delta, 'function_call')) invalid()
+    if (hasPayload(delta, 'tool_calls')) {
+      if (!Array.isArray(delta.tool_calls) || delta.tool_calls.length !== 1 || contentPresent) invalid()
+      const toolCall = record(delta.tool_calls[0])
+      if (toolCall.index !== 0) invalid()
+      if (has(toolCall, 'type')) {
+        if (toolCall.type !== 'function') invalid()
+        toolTypeSeen = true
+      }
+      if (!has(toolCall, 'function')) invalid()
+      const fn = record(toolCall.function)
+      if (has(fn, 'name')) {
+        if (fn.name !== 'submit_questionnaire') invalid()
+        toolNameSeen = true
+      }
+      if (has(fn, 'arguments')) {
+        if (typeof fn.arguments !== 'string') invalid()
+        if (toolArguments.length + fn.arguments.length > limits.maxContentCharacters) limit()
+        toolArguments += fn.arguments
+      }
+      toolCallStarted = true
+      toolCallPresent = true
+    }
     if (hasPayload(delta, 'refusal')) refusalPresent = true
     if (has(delta, 'role')) role = delta.role
 
@@ -129,8 +158,9 @@ export function createSseChatCompletionParser(limits: StreamLimits): SseChatComp
     const emitted: StreamContentDelta[] = []
     if (hasPayload(delta, 'content')) {
       if (typeof delta.content !== 'string') invalid()
+      if (toolCallStarted) invalid()
+      contentPresent = true
       if (delta.content.length > 0) {
-        if (terminal) invalid()
         if (content.length + delta.content.length > limits.maxContentCharacters) limit()
         content += delta.content
         emitted.push({ content: delta.content, sequence: ++sequence })
@@ -200,8 +230,10 @@ export function createSseChatCompletionParser(limits: StreamLimits): SseChatComp
       }
       consumeDecoded(tail)
       if (currentLine.length > 0 || eventPresent || eventBytes > 0 || !terminal || !done) invalid()
+      if (toolCallStarted && (!toolTypeSeen || !toolNameSeen || toolArguments.length === 0)) invalid()
       return {
         content,
+        ...(toolCallStarted ? { toolArguments } : {}),
         choice: {
           choiceCount: 1,
           index: terminalIndex,
