@@ -218,27 +218,30 @@ function repairInstruction(
   const lock = branchLock === undefined
     ? ''
     : ` The response kind is locked to the ${branchLock} branch and must not change.`
-  const errorCodes = new Set(errors.map(({ code }) => code))
-  const guidance = [
-    errorCodes.has('INVALID_QUESTION_TYPE')
-      ? 'Allowed question.type values: single_choice, multiple_choice, fixed_length, free_text, numeric_range, date.'
-      : '',
-    errorCodes.has('INVALID_TYPE')
-      ? 'Use JSON strings for id/content/variableName/defaultValue/skipValue and option value/label; JSON booleans for isKey/allowSkip; JSON numbers for order and numeric constraint fields.'
-      : '',
-    errorCodes.has('FORBIDDEN_FIELD')
-      ? 'Remove every field not declared by submit_questionnaire.'
-      : ''
-  ].filter(Boolean).join(' ')
-  const prefix = `The candidate was rejected by the local harness.${lock} Return a corrected full JSON envelope.${guidance.length > 0 ? ` ${guidance}` : ''} Validation errors:\n`
   const selected: Array<{ code: string; path: string; message: string }> = []
   const encoder = new TextEncoder()
-  for (const error of errors) {
-    const next = [...selected, { code: error.code, path: error.path, message: error.message.slice(0, 200) }]
-    if (encoder.encode(`${prefix}${JSON.stringify(next)}`).byteLength > MAX_REPAIR_INSTRUCTION_BYTES) break
-    selected.push(next.at(-1)!)
+  const formatInstruction = (): string => {
+    const errorCodes = new Set(selected.map(({ code }) => code))
+    const guidance = [
+      errorCodes.has('INVALID_QUESTION_TYPE')
+        ? 'Allowed question.type values: single_choice, multiple_choice, fixed_length, free_text, numeric_range, date.'
+        : '',
+      errorCodes.has('INVALID_TYPE')
+        ? 'Use JSON strings for id/content/variableName/defaultValue/skipValue and option value/label; JSON booleans for isKey/allowSkip; JSON numbers for order and numeric constraint fields.'
+        : '',
+      errorCodes.has('FORBIDDEN_FIELD')
+        ? 'Remove every field not declared by submit_questionnaire.'
+        : ''
+    ].filter(Boolean).join(' ')
+    return `The candidate was rejected by the local harness.${lock} Return a corrected full JSON envelope.${guidance.length > 0 ? ` ${guidance}` : ''} Validation errors:\n${JSON.stringify(selected)}`
   }
-  return `${prefix}${JSON.stringify(selected)}`
+  for (const error of errors) {
+    selected.push({ code: error.code, path: error.path, message: error.message.slice(0, 200) })
+    if (encoder.encode(formatInstruction()).byteLength <= MAX_REPAIR_INSTRUCTION_BYTES) continue
+    selected.pop()
+    break
+  }
+  return formatInstruction()
 }
 
 function publicClarification(

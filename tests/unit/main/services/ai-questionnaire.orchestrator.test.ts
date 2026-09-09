@@ -703,23 +703,50 @@ describe('AI questionnaire orchestrator', () => {
     expect(new AISessionRepository(firstProject).get(sessionId)?.temp.runs).toEqual({})
 
     const retryProject = project()
+    const requestLengths: number[] = []
     const repairInstructions: string[] = []
+    const seenToolCallingSupport: Array<boolean | undefined> = []
     const invalidContent = JSON.stringify({
       kind: 'questionnaire', assistantMessage: 'invalid', rollingSummary: '', options: [],
       questionnaire: {
         name: 'Study', conditionRules: [], keyQuestionIds: [],
+        questions: Array.from({ length: 500 }, (_, order) => ({
+          id: order === 0 ? 7 : `q${order}`,
+          content: `Question ${order}`,
+          variableName: `variable_${order}`,
+          type: order === 0 ? 'radio' : 'free_text',
+          options: [], constraint: { type: 'none' }, defaultValue: null,
+          isKey: false, allowSkip: false, skipValue: null, order,
+          ...(order === 0 ? { internalNote: 'remove me' } : {})
+        }))
+      }
+    })
+    const lateQuestionTypeContent = JSON.stringify({
+      kind: 'questionnaire', assistantMessage: 'invalid', rollingSummary: '', options: [],
+      questionnaire: {
+        name: 'Study',
+        ...Object.fromEntries(Array.from({ length: 50 }, (_, index) => [
+          `forbidden_${index}_${'x'.repeat(180)}`, true
+        ])),
+        conditionRules: [], keyQuestionIds: [],
         questions: [{
-          id: 7, content: 'Age', variableName: 'age', type: 'radio', options: [],
+          id: 'q0', content: 'Age', variableName: 'age', type: 'radio', options: [],
           constraint: { type: 'none' }, defaultValue: null, isKey: false,
-          allowSkip: false, skipValue: null, order: 0, internalNote: 'remove me'
+          allowSkip: false, skipValue: null, order: 0
         }]
       }
     })
-    const alwaysInvalid = vi.fn().mockImplementation((request: { messages: Array<{ content: string }> }) => {
+    const alwaysInvalid = vi.fn().mockImplementation((request: {
+      messages: Array<{ content: string }>
+      toolCallingSupported?: boolean
+    }) => {
+      requestLengths.push(request.messages.reduce((sum, message) => sum + message.content.length, 0))
+      seenToolCallingSupport.push(request.toolCallingSupported)
       const repair = request.messages.at(-1)?.content
       if (repair?.startsWith('The candidate was rejected')) repairInstructions.push(repair)
       return Promise.resolve({
-        content: invalidContent, streamingSupported: true,
+        content: alwaysInvalid.mock.calls.length === 2 ? lateQuestionTypeContent : invalidContent,
+        streamingSupported: true,
         responseFormatSupported: true, toolCallingSupported: true
       })
     })
@@ -734,14 +761,21 @@ describe('AI questionnaire orchestrator', () => {
     })
     expect(retried).toMatchObject({ ok: false, errorCode: 'AI_HARNESS_VALIDATION_FAILED' })
     expect(alwaysInvalid).toHaveBeenCalledTimes(3)
+    expect(Math.max(...requestLengths)).toBeLessThanOrEqual(60_000)
+    expect(seenToolCallingSupport).toEqual([undefined, true, true])
     expect(repairInstructions).toHaveLength(2)
+    const [completeGuidance, truncatedGuidance] = repairInstructions
+    expect(completeGuidance).toContain('"code":"INVALID_QUESTION_TYPE","path":"$.questionnaire.questions[0].type"')
+    expect(completeGuidance).toContain('"code":"INVALID_TYPE","path":"$.questionnaire.questions[0].id"')
+    expect(completeGuidance).toContain('"code":"FORBIDDEN_FIELD","path":"$.questionnaire.questions[0].internalNote"')
+    expect(completeGuidance).toContain('Allowed question.type values: single_choice, multiple_choice, fixed_length, free_text, numeric_range, date.')
+    expect(completeGuidance).toContain('Use JSON strings for id/content/variableName/defaultValue/skipValue and option value/label; JSON booleans for isKey/allowSkip; JSON numbers for order and numeric constraint fields.')
+    expect(completeGuidance).toContain('Remove every field not declared by submit_questionnaire.')
+    expect(truncatedGuidance).toContain('"code":"FORBIDDEN_FIELD"')
+    expect(truncatedGuidance).not.toContain('"code":"INVALID_QUESTION_TYPE"')
+    expect(truncatedGuidance).not.toContain('Allowed question.type values:')
+    expect(truncatedGuidance).toContain('Remove every field not declared by submit_questionnaire.')
     for (const repair of repairInstructions) {
-      expect(repair).toContain('"code":"INVALID_QUESTION_TYPE","path":"$.questionnaire.questions[0].type"')
-      expect(repair).toContain('"code":"INVALID_TYPE","path":"$.questionnaire.questions[0].id"')
-      expect(repair).toContain('"code":"FORBIDDEN_FIELD","path":"$.questionnaire.questions[0].internalNote"')
-      expect(repair).toContain('Allowed question.type values: single_choice, multiple_choice, fixed_length, free_text, numeric_range, date.')
-      expect(repair).toContain('Use JSON strings for id/content/variableName/defaultValue/skipValue and option value/label; JSON booleans for isKey/allowSkip; JSON numbers for order and numeric constraint fields.')
-      expect(repair).toContain('Remove every field not declared by submit_questionnaire.')
       expect(new TextEncoder().encode(repair).byteLength).toBeLessThanOrEqual(8_000)
     }
     if (!retried.ok) expect(retried.details?.attempts).toHaveLength(3)
