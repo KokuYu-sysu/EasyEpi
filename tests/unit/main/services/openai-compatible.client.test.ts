@@ -59,6 +59,12 @@ function toolResponse(argumentsValue: unknown = envelope): Response {
   }), { status: 200, headers: { 'content-type': 'application/json' } })
 }
 
+function contentResponse(content: string): Response {
+  return new Response(JSON.stringify({
+    choices: [{ index: 0, finish_reason: 'stop', message: { role: 'assistant', content } }]
+  }), { status: 200, headers: { 'content-type': 'application/json' } })
+}
+
 function toolChoice(index?: number, finishReason = 'tool_calls'): object {
   return {
     ...(index === undefined ? {} : { index }),
@@ -83,6 +89,28 @@ function errorCode(error: unknown): string | undefined {
 }
 
 describe('OpenAI-compatible bounded streaming transport', () => {
+  it('accepts ordinary content for a generic connection check without a schema version', async () => {
+    const fetcher = vi.fn().mockResolvedValue(contentResponse('OK'))
+    const client = createOpenAICompatibleClient({ fetch: fetcher })
+
+    await expect(client.complete({
+      baseUrl: 'https://example.test/v1',
+      model: 'model',
+      messages: [{ role: 'user', content: 'Reply with OK.' }],
+      streamingSupported: false,
+      responseFormatSupported: false
+    })).resolves.toEqual({
+      content: 'OK',
+      streamingSupported: false,
+      responseFormatSupported: false,
+      toolCallingSupported: false
+    })
+    const body = JSON.parse(String(fetcher.mock.calls[0]?.[1]?.body))
+    expect(body).not.toHaveProperty('response_format')
+    expect(body).not.toHaveProperty('tools')
+    expect(body).not.toHaveProperty('tool_choice')
+  })
+
   it('forces and extracts one non-streaming questionnaire function call', async () => {
     const fetcher = vi.fn().mockResolvedValue(toolResponse())
     const client = createOpenAICompatibleClient({ fetch: fetcher })
