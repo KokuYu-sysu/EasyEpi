@@ -48,9 +48,11 @@ export interface AIChatCompletionRequest {
   responseFormatSupported?: boolean
   /** False means this provider/model was already proven not to support SSE streaming. */
   streamingSupported?: boolean
+  /** False means this provider/model was already proven not to support function calling. */
+  toolCallingSupported?: boolean
   onModelStreaming?: () => void
   onContentDelta?: (delta: StreamContentDelta) => void
-  onCapabilityFallback?: (capability: 'streaming' | 'response_format') => void
+  onCapabilityFallback?: (capability: 'streaming' | 'response_format' | 'function_call') => void
   schemaVersion?: number
 }
 
@@ -58,6 +60,7 @@ export interface AIChatCompletionResult {
   content: string
   streamingSupported: boolean
   responseFormatSupported: boolean
+  toolCallingSupported: boolean
 }
 
 export interface OpenAICompatibleClientOptions {
@@ -394,9 +397,39 @@ function completeJsonEvidence(parsed: unknown): CompleteChoiceEvidence {
   }
 }
 
-function completionContent(text: string): string {
+function strictToolCallContent(parsed: unknown): string {
+  const root = asRecord(parsed)
+  if (!Array.isArray(root.choices) || root.choices.length !== 1) {
+    throw new AIClientError('AI_INVALID_RESPONSE')
+  }
+  const choice = asRecord(root.choices[0])
+  const message = asRecord(choice.message)
+  if (
+    choice.index !== 0 || choice.finish_reason !== 'tool_calls' ||
+    message.role !== undefined && message.role !== 'assistant' ||
+    hasPayload(message, 'content') || hasPayload(message, 'refusal') ||
+    hasPayload(message, 'function_call') || !Array.isArray(message.tool_calls) ||
+    message.tool_calls.length !== 1
+  ) {
+    throw new AIClientError('AI_INVALID_RESPONSE')
+  }
+  const toolCall = asRecord(message.tool_calls[0])
+  const fn = asRecord(toolCall.function)
+  if (
+    toolCall.type !== 'function' || fn.name !== 'submit_questionnaire' ||
+    typeof fn.arguments !== 'string' || fn.arguments.length === 0
+  ) {
+    throw new AIClientError('AI_INVALID_RESPONSE')
+  }
+  return fn.arguments
+}
+
+function completionContent(text: string, useToolCalling: boolean): string {
   try {
-    return strictCompletionContent(completeJsonEvidence(JSON.parse(text)))
+    const parsed: unknown = JSON.parse(text)
+    return useToolCalling
+      ? strictToolCallContent(parsed)
+      : strictCompletionContent(completeJsonEvidence(parsed))
   } catch (error) {
     if (error instanceof AIClientError) throw error
     throw new AIClientError('AI_INVALID_RESPONSE')
@@ -428,7 +461,8 @@ export function createOpenAICompatibleClient(
   async function requestOnce(
     request: AIChatCompletionRequest,
     useStreaming: boolean,
-    responseFormat: AIResponseFormatLevel
+    responseFormat: AIResponseFormatLevel,
+    useToolCalling: boolean
   ): Promise<
     | { kind: 'error'; status: number; text: string }
     | { kind: 'complete'; content: string; usedSse: boolean }
@@ -463,7 +497,22 @@ export function createOpenAICompatibleClient(
           messages: request.messages,
           ...policy.chatBody,
           ...(useStreaming ? { stream: true } : {}),
-          ...(responseFormat === 'json_schema'
+          ...(useToolCalling
+            ? {
+                response_format: { type: 'json_object' },
+                tools: [{
+                  type: 'function',
+                  function: {
+                    name: 'submit_questionnaire',
+                    parameters: providerSchema(request.schemaVersion)
+                  }
+                }],
+                tool_choice: {
+                  type: 'function',
+                  function: { name: 'submit_questionnaire' }
+                }
+              }
+            : responseFormat === 'json_schema'
             ? {
                 response_format: {
                   type: 'json_schema',
@@ -497,7 +546,7 @@ export function createOpenAICompatibleClient(
       }
       if (!useStreaming || contentTypeIsJson(response)) {
         const text = await boundedText(response, maxResponseBytes, controller.signal)
-        return { kind: 'complete', content: completionContent(text), usedSse: false }
+        return { kind: 'complete', content: completionContent(text, useToolCalling), usedSse: false }
       }
       const length = response.headers.get('content-length')
       if (length !== null && Number(length) > maxResponseBytes) {
@@ -616,10 +665,11 @@ export function createOpenAICompatibleClient(
       let responseFormat: AIResponseFormatLevel = safeRequest.responseFormatSupported === false
         ? 'text'
         : policy.responseFormat
-      if (responseFormat === 'json_schema') providerSchema(request.schemaVersion)
+      const useToolCalling = safeRequest.toolCallingSupported !== false
+      if (useToolCalling || responseFormat === 'json_schema') providerSchema(request.schemaVersion)
       let useStreaming = safeRequest.streamingSupported !== false
       for (let negotiation = 0; negotiation < 4; negotiation += 1) {
-        const result = await requestOnce(safeRequest, useStreaming, responseFormat)
+        const result = await requestOnce(safeRequest, useStreaming, responseFormat, useToolCalling)
         if (result.kind === 'complete') {
           if (useStreaming && !result.usedSse) {
             useStreaming = false
@@ -628,10 +678,11 @@ export function createOpenAICompatibleClient(
           return {
             content: result.content,
             streamingSupported: useStreaming && result.usedSse,
-            responseFormatSupported: responseFormat !== 'text'
+            responseFormatSupported: useToolCalling || responseFormat !== 'text',
+            toolCallingSupported: useToolCalling
           }
         }
-        if (responseFormat !== 'text' && unsupportedCapability(result.status, result.text, 'response_format')) {
+        if (!useToolCalling && responseFormat !== 'text' && unsupportedCapability(result.status, result.text, 'response_format')) {
           if (responseFormat === 'json_schema' && result.text.toLowerCase().includes('json_schema')) {
             responseFormat = 'json_object'
           } else {

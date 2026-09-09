@@ -213,9 +213,9 @@ describe('questionnaire harness trust boundary', () => {
 
   it('selects the registered v2 provider schema with five required nullable-superset fields', async () => {
     let requestBody: {
-      response_format: {
-        json_schema: {
-          schema: {
+      tools: Array<{
+        function: {
+          parameters: {
             type: string
             additionalProperties: boolean
             required: string[]
@@ -223,21 +223,32 @@ describe('questionnaire harness trust boundary', () => {
             properties: { questionnaire: { type: string[] } }
           }
         }
-      }
+      }>
     } | undefined
     const client = createOpenAICompatibleClient({
       fetch: async (_input, init) => {
         requestBody = JSON.parse(String(init?.body)) as typeof requestBody
         return new Response(JSON.stringify({
-          choices: [{ index: 0, finish_reason: 'stop', message: { role: 'assistant', content: clarification() } }]
+          choices: [{
+            index: 0,
+            finish_reason: 'tool_calls',
+            message: {
+              role: 'assistant',
+              content: null,
+              tool_calls: [{
+                type: 'function',
+                function: { name: 'submit_questionnaire', arguments: clarification() }
+              }]
+            }
+          }]
         }), { status: 200, headers: { 'content-type': 'application/json' } })
       }
     })
     await expect(client.complete({
       baseUrl: 'https://example.test/v1', model: 'model', messages: [], schemaVersion: 2,
       streamingSupported: false
-    })).resolves.toMatchObject({ responseFormatSupported: true })
-    const schema = requestBody?.response_format.json_schema.schema
+    })).resolves.toMatchObject({ responseFormatSupported: true, toolCallingSupported: true })
+    const schema = requestBody?.tools[0]?.function.parameters
     if (schema === undefined) throw new Error('expected response schema')
     expect(schema).toMatchObject({
       type: 'object',
