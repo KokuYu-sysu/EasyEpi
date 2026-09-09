@@ -322,7 +322,7 @@ function unsupportedSignal(signal: string, allowInvalidParameter: boolean): bool
 function narrowlyNamesUnsupportedCapability(signal: string, capability: NegotiatedCapability): boolean {
   const patterns = capability === 'function_call'
     ? [
-        /(?:unsupported|unknown|unrecognized)\s+(?:parameter\s*[:=]?\s*)?["'`]?(?:tools|tool_choice|function_call)\b/,
+        /(?:unsupported|unknown|unrecognized)\s+parameter\s*[:=]?\s*["'`]?(?:tools|tool_choice|function_call)\b/,
         /\b(?:tools|tool_choice|function_call)\s+(?:parameter\s+|capability\s+)?(?:is\s+)?(?:unsupported|not supported|unknown|unrecognized)\b/,
         /\b(?:does not|doesn't)\s+support\s+(?:the\s+)?(?:tools|tool_choice|function_call)\b/,
         /\bresponse_format\s+(?:cannot|can't)\s+be\s+used\s+with\s+(?:tools|tool_choice|function_call)\b/,

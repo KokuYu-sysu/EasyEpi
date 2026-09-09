@@ -763,7 +763,7 @@ describe('OpenAI-compatible bounded streaming transport', () => {
     ['network failure', () => Promise.reject(new Error('offline')), 'AI_NETWORK_ERROR'],
     ['nested tools schema error', () => Promise.resolve(errorResponse(400, JSON.stringify({
       error: {
-        message: 'Unknown schema keyword in function parameters',
+        message: 'Unknown tools schema keyword: additionalProperties',
         param: 'tools',
         code: 'invalid_request_error'
       }
