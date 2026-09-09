@@ -186,9 +186,9 @@ describe('OpenAI-compatible bounded streaming transport', () => {
       JSON.stringify({ choices: [{ index: 0, delta: { role: 'assistant' }, finish_reason: null }] }),
       chunk(envelope.slice(0, 27)),
       chunk(envelope.slice(27)),
-      JSON.stringify({ choices: [], usage: { total_tokens: 12 } }),
       chunk(undefined),
       chunk(undefined, 'stop'),
+      JSON.stringify({ choices: [], usage: { total_tokens: 12 } }),
       '[DONE]'
     ).replace('data: {"choices":[]', ': ping\r\n\r\ndata: {"choices":[]').replaceAll('\n\n', '\r\n\r\n'))
     const splitAt = bytes.findIndex((value, index) => value >= 0x80 && index > 0) + 1
@@ -199,6 +199,7 @@ describe('OpenAI-compatible bounded streaming transport', () => {
     })
 
     const result = await client.complete(request({
+      schemaVersion: undefined,
       onModelStreaming: started,
       onContentDelta: (delta) => deltas.push(delta.content)
     }))
@@ -207,11 +208,25 @@ describe('OpenAI-compatible bounded streaming transport', () => {
       content: envelope,
       streamingSupported: true,
       responseFormatSupported: true,
-      toolCallingSupported: true
+      toolCallingSupported: false
     })
     expect(started).toHaveBeenCalledOnce()
     expect(deltas.join('')).toBe('Hello 世界 😀')
     expect(deltas.every((value) => !value.includes('rollingSummary'))).toBe(true)
+  })
+
+  it('rejects questionnaire content before emitting an assistant delta', async () => {
+    const deltas = vi.fn()
+    const response = streamingResponse([sse(
+      chunk(envelope),
+      chunk(undefined, 'stop'),
+      '[DONE]'
+    )])
+    const client = createOpenAICompatibleClient({ fetch: vi.fn().mockResolvedValue(response) })
+
+    await expect(client.complete(request({ onContentDelta: deltas })))
+      .rejects.toMatchObject({ code: 'AI_INVALID_RESPONSE' })
+    expect(deltas).not.toHaveBeenCalled()
   })
 
   it('assembles one streamed questionnaire function call without emitting partial content', async () => {
@@ -418,7 +433,10 @@ describe('OpenAI-compatible bounded streaming transport', () => {
     const client = createOpenAICompatibleClient({
       fetch: vi.fn().mockResolvedValue(streamingResponse([sse(chunk(content), chunk(undefined, 'stop'), '[DONE]')]))
     })
-    await client.complete(request({ onContentDelta: (delta) => deltas.push(delta.content) }))
+    await client.complete(request({
+      schemaVersion: undefined,
+      onContentDelta: (delta) => deltas.push(delta.content)
+    }))
     expect(deltas.join('')).toBe(message)
     expect(deltas.every((delta) => delta.length <= 4096)).toBe(true)
     expect(deltas.every((delta) => {
@@ -537,7 +555,8 @@ describe('OpenAI-compatible bounded streaming transport', () => {
     })
 
     await expect(client.complete(request({ streamingSupported: false }))).resolves.toMatchObject({ content: envelope })
-    await expect(client.complete(request())).resolves.toMatchObject({ content: envelope })
+    await expect(client.complete(request({ schemaVersion: undefined })))
+      .resolves.toMatchObject({ content: envelope })
   })
 
   it('ignores null SSE content while a reasoning model emits hidden reasoning deltas', async () => {
@@ -568,11 +587,11 @@ describe('OpenAI-compatible bounded streaming transport', () => {
     )])
     const client = createOpenAICompatibleClient({ fetch: vi.fn().mockResolvedValue(stream) })
 
-    await expect(client.complete(request())).resolves.toEqual({
+    await expect(client.complete(request({ schemaVersion: undefined }))).resolves.toEqual({
       content: envelope,
       streamingSupported: true,
       responseFormatSupported: true,
-      toolCallingSupported: true
+      toolCallingSupported: false
     })
   })
 

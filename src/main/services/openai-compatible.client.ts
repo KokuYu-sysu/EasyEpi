@@ -592,6 +592,7 @@ export function createOpenAICompatibleClient(
             throw new AIClientError('AI_RESPONSE_TOO_LARGE')
           }
           for (const modelDelta of parser.push(result.value)) {
+            if (questionnaireMode) throw new AIClientError('AI_INVALID_RESPONSE')
             const safeDelta = extractor.push(modelDelta.content).join('')
             for (let offset = 0; offset < safeDelta.length;) {
               let end = Math.min(offset + maxCallbackDeltaCharacters, safeDelta.length)

@@ -116,13 +116,14 @@ export function createSseChatCompletionParser(limits: StreamLimits): SseChatComp
     } catch {
       invalid()
     }
-    if (terminal) invalid()
     const root = record(parsed)
     if (!Array.isArray(root.choices)) invalid()
     if (root.choices.length === 0) {
-      if (!has(root, 'usage')) invalid()
+      if (!hasPayload(root, 'usage')) invalid()
+      record(root.usage)
       return []
     }
+    if (terminal) invalid()
     if (root.choices.length !== 1) invalid()
     const choice = record(root.choices[0])
     if (choice.index !== 0) invalid()
