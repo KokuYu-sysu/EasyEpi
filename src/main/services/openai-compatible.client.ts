@@ -208,6 +208,12 @@ function providerSchema(schemaVersion: number | undefined): typeof MODEL_ENVELOP
   return schema
 }
 
+export function questionnaireJsonOnlyInstruction(schemaVersion: number | undefined): string {
+  return 'Return only one JSON object matching this exact questionnaire envelope JSON Schema. ' +
+    'Obey every required, type, enum, and additionalProperties rule; null is allowed only where the schema says so. ' +
+    `No extra fields. JSON Schema:${JSON.stringify(providerSchema(schemaVersion))}`
+}
+
 async function cancelResponseBody(response: Response): Promise<void> {
   try {
     await response.body?.cancel()
@@ -440,7 +446,9 @@ function strictToolCallContent(parsed: unknown): string {
   if (
     choice.index !== 0 || choice.finish_reason !== 'tool_calls' ||
     message.role !== undefined && message.role !== 'assistant' ||
-    hasPayload(message, 'content') || hasPayload(message, 'refusal') ||
+    hasPayload(message, 'content') &&
+      (typeof message.content !== 'string' || message.content.length > 0) ||
+    hasPayload(message, 'refusal') ||
     hasPayload(message, 'function_call') || !Array.isArray(message.tool_calls) ||
     message.tool_calls.length !== 1
   ) {
@@ -518,6 +526,12 @@ export function createOpenAICompatibleClient(
       const policy = getAIProviderRequestPolicy(
         request.providerId ?? 'custom', request.baseUrl
       )
+      const messages = questionnaireMode && !toolCallingMode
+        ? [...request.messages, {
+            role: 'system' as const,
+            content: questionnaireJsonOnlyInstruction(request.schemaVersion)
+          }]
+        : request.messages
       const response = await fetcher(resolveOpenAICompatibleEndpoint(request.baseUrl, 'chat'), {
         method: 'POST',
         headers: {
@@ -528,7 +542,7 @@ export function createOpenAICompatibleClient(
         },
         body: JSON.stringify({
           model: request.model,
-          messages: request.messages,
+          messages,
           ...policy.chatBody,
           ...(useStreaming ? { stream: true } : {}),
           ...(questionnaireMode

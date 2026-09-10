@@ -47,14 +47,14 @@ function streamingResponse(parts: Array<string | Uint8Array>, contentType = 'tex
   }), { status: 200, headers: { 'content-type': contentType } })
 }
 
-function toolResponse(argumentsValue: unknown = envelope): Response {
+function toolResponse(argumentsValue: unknown = envelope, content: unknown = null): Response {
   return new Response(JSON.stringify({
     choices: [{
       index: 0,
       finish_reason: 'tool_calls',
       message: {
         role: 'assistant',
-        content: null,
+        content,
         tool_calls: [{
           id: 'call_1',
           type: 'function',
@@ -117,8 +117,8 @@ describe('OpenAI-compatible bounded streaming transport', () => {
     expect(body).not.toHaveProperty('tool_choice')
   })
 
-  it('forces and extracts one non-streaming questionnaire function call', async () => {
-    const fetcher = vi.fn().mockResolvedValue(toolResponse())
+  it('forces and extracts one non-streaming questionnaire function call with empty assistant content', async () => {
+    const fetcher = vi.fn().mockResolvedValue(toolResponse(envelope, ''))
     const client = createOpenAICompatibleClient({ fetch: fetcher })
 
     await expect(client.complete(request({ streamingSupported: false }))).resolves.toEqual({
@@ -144,6 +144,7 @@ describe('OpenAI-compatible bounded streaming transport', () => {
       tool_choice: { type: 'function', function: { name: 'submit_questionnaire' } }
     })
     expect(body.tools[0].function).not.toHaveProperty('strict')
+    expect(body.messages).toEqual([{ role: 'user', content: 'build it' }])
   })
 
   it.each([
@@ -229,12 +230,13 @@ describe('OpenAI-compatible bounded streaming transport', () => {
     expect(deltas).not.toHaveBeenCalled()
   })
 
-  it('assembles one streamed questionnaire function call without emitting partial content', async () => {
+  it('assembles one streamed questionnaire function call after an empty content delta without emitting partial content', async () => {
     const splitAt = 31
     const started = vi.fn()
     const deltas = vi.fn()
     const response = streamingResponse([sse(
       JSON.stringify({ choices: [{ index: 0, delta: { role: 'assistant' }, finish_reason: null }] }),
+      chunk(''),
       toolChunk([{
         index: 0,
         id: 'call_1',
@@ -507,9 +509,49 @@ describe('OpenAI-compatible bounded streaming transport', () => {
       tools: [{ type: 'function', function: { name: 'submit_questionnaire' } }],
       tool_choice: { type: 'function', function: { name: 'submit_questionnaire' } }
     })
+    expect(bodies[0].messages).toEqual([{ role: 'user', content: 'build it' }])
     expect(bodies[1]).toMatchObject({ response_format: { type: 'json_object' } })
     expect(bodies[1]).not.toHaveProperty('tools')
     expect(bodies[1]).not.toHaveProperty('tool_choice')
+    const fallbackInstruction = bodies[1].messages.at(-1)
+    expect(fallbackInstruction).toMatchObject({ role: 'system' })
+    expect(fallbackInstruction.content).toContain('No extra fields')
+    const fallbackSchema = JSON.parse(fallbackInstruction.content.slice(
+      fallbackInstruction.content.indexOf('{')
+    ))
+    expect(fallbackSchema).toMatchObject({
+      additionalProperties: false,
+      required: ['kind', 'assistantMessage', 'rollingSummary', 'options', 'questionnaire'],
+      properties: {
+        kind: { enum: ['clarification', 'questionnaire'] },
+        questionnaire: {
+          type: ['object', 'null'],
+          additionalProperties: false,
+          properties: {
+            questions: { items: { additionalProperties: false, properties: {
+              type: { enum: ['single_choice', 'multiple_choice', 'fixed_length', 'free_text', 'numeric_range', 'date'] },
+              constraint: { additionalProperties: false, properties: {
+                type: { enum: ['none', 'integer', 'decimal', 'chinese', 'english', 'alphanumeric', 'date', 'regex'] },
+                fixedLength: { type: ['integer', 'null'] },
+                minValue: { type: ['number', 'null'] },
+                maxValue: { type: ['number', 'null'] },
+                step: { type: ['number', 'null'] }
+              } },
+              defaultValue: { type: ['string', 'null'] },
+              skipValue: { type: ['string', 'null'] },
+              order: { type: 'integer' }
+            } } },
+            conditionRules: { items: { additionalProperties: false, properties: {
+              conditions: { items: { additionalProperties: false, properties: {
+                operator: { enum: ['equals', 'not_equals', 'greater_than', 'less_than', 'contains', 'not_contains', 'is_empty', 'is_not_empty'] }
+              } } },
+              logic: { enum: ['AND', 'OR'] },
+              action: { enum: ['skip', 'show', 'require'] }
+            } } }
+          }
+        }
+      }
+    })
   })
 
   it('starts cached unsupported function calling directly in strict JSON content mode', async () => {
@@ -532,6 +574,9 @@ describe('OpenAI-compatible bounded streaming transport', () => {
     expect(body).toMatchObject({ response_format: { type: 'json_object' } })
     expect(body).not.toHaveProperty('tools')
     expect(body).not.toHaveProperty('tool_choice')
+    expect(body.messages.at(-1)).toMatchObject({
+      role: 'system', content: expect.stringContaining('No extra fields')
+    })
   })
 
   it('streams cached unsupported function calling through strict bounded JSON content mode', async () => {

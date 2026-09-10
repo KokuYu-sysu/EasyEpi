@@ -779,7 +779,7 @@ describe('AI questionnaire orchestrator', () => {
     expect(completeGuidance).toContain('"code":"INVALID_TYPE","path":"$.questionnaire.questions[0].id"')
     expect(completeGuidance).toContain('"code":"FORBIDDEN_FIELD","path":"$.questionnaire.questions[0].internalNote"')
     expect(completeGuidance).toContain('Allowed question.type values: single_choice, multiple_choice, fixed_length, free_text, numeric_range, date.')
-    expect(completeGuidance).toContain('Use JSON strings for id/content/variableName/defaultValue/skipValue and option value/label; JSON booleans for isKey/allowSkip; JSON numbers for order and numeric constraint fields.')
+    expect(completeGuidance).toContain('Use JSON strings for id/content/variableName and option value/label; string or null for defaultValue/skipValue; JSON booleans for isKey/allowSkip; an integer for order; integer or null for fixedLength; number or null for minValue/maxValue/step.')
     expect(completeGuidance).toContain('Remove every field not declared by submit_questionnaire.')
     expect(truncatedGuidance).toContain('"code":"FORBIDDEN_FIELD"')
     expect(truncatedGuidance).not.toContain('"code":"INVALID_QUESTION_TYPE"')

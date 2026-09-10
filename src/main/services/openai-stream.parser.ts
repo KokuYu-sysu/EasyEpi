@@ -159,9 +159,9 @@ export function createSseChatCompletionParser(limits: StreamLimits): SseChatComp
     const emitted: StreamContentDelta[] = []
     if (hasPayload(delta, 'content')) {
       if (typeof delta.content !== 'string') invalid()
-      if (toolCallStarted) invalid()
-      contentPresent = true
       if (delta.content.length > 0) {
+        if (toolCallStarted) invalid()
+        contentPresent = true
         if (content.length + delta.content.length > limits.maxContentCharacters) limit()
         content += delta.content
         emitted.push({ content: delta.content, sequence: ++sequence })

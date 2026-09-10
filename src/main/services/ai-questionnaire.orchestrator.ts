@@ -40,6 +40,7 @@ import { DerivedService } from './derived/derived.service'
 import {
   AIClientError,
   createOpenAICompatibleClient,
+  questionnaireJsonOnlyInstruction,
   type AIChatCompletionRequest,
   type AIChatCompletionResult
 } from './openai-compatible.client'
@@ -227,7 +228,7 @@ function repairInstruction(
         ? 'Allowed question.type values: single_choice, multiple_choice, fixed_length, free_text, numeric_range, date.'
         : '',
       errorCodes.has('INVALID_TYPE')
-        ? 'Use JSON strings for id/content/variableName/defaultValue/skipValue and option value/label; JSON booleans for isKey/allowSkip; JSON numbers for order and numeric constraint fields.'
+        ? 'Use JSON strings for id/content/variableName and option value/label; string or null for defaultValue/skipValue; JSON booleans for isKey/allowSkip; an integer for order; integer or null for fixedLength; number or null for minValue/maxValue/step.'
         : '',
       errorCodes.has('FORBIDDEN_FIELD')
         ? 'Remove every field not declared by submit_questionnaire.'
@@ -685,7 +686,8 @@ export function createAIQuestionnaireOrchestrator(
             runningSession,
             activeDraft,
             explicitAttachment,
-            MAX_CONTEXT_CHARACTERS - researchMessage.content.length - (repair?.length ?? 0),
+            MAX_CONTEXT_CHARACTERS - researchMessage.content.length - (repair?.length ?? 0) -
+              questionnaireJsonOnlyInstruction(registryEntry.schemaVersion).length,
             registryEntry
           )
           messages.push(researchMessage)
