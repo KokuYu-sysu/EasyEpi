@@ -487,12 +487,15 @@ export function createOpenAICompatibleClient(
 ): { complete(request: AIChatCompletionRequest): Promise<AIChatCompletionResult> } {
   const fetcher = options.fetch ?? fetch
   const timeoutMs = options.timeoutMs ?? 60_000
-  const maxResponseBytes = options.maxResponseBytes ?? 2_000_000
+  // The questionnaire harness accepts up to 2,000,000 JSON characters. OpenAI-compatible
+  // transports wrap function arguments in another JSON/SSE layer and UTF-8 Chinese text can
+  // require three bytes per character, so the wire-size bound must leave room for both.
+  const maxResponseBytes = options.maxResponseBytes ?? 16_000_000
   const maxErrorResponseBytes = options.maxErrorResponseBytes ?? 32_000
   const maxEventCount = options.maxEventCount ?? 10_000
-  const maxEventBytes = Math.min(options.maxEventBytes ?? 128_000, maxResponseBytes)
-  const maxPartialEventBytes = Math.min(options.maxPartialEventBytes ?? 128_000, maxResponseBytes)
-  const maxStreamContentCharacters = options.maxStreamContentCharacters ?? 1_000_000
+  const maxEventBytes = Math.min(options.maxEventBytes ?? maxResponseBytes, maxResponseBytes)
+  const maxPartialEventBytes = Math.min(options.maxPartialEventBytes ?? maxResponseBytes, maxResponseBytes)
+  const maxStreamContentCharacters = options.maxStreamContentCharacters ?? 2_000_000
   const maxAssistantMessageCharacters = options.maxAssistantMessageCharacters ?? 20_000
   const maxCallbackDeltaCharacters = Math.min(options.maxCallbackDeltaCharacters ?? 4_096, 4_096)
   if (!Number.isSafeInteger(maxCallbackDeltaCharacters) || maxCallbackDeltaCharacters < 2) {

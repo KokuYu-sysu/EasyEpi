@@ -265,6 +265,27 @@ describe('OpenAI-compatible bounded streaming transport', () => {
     expect(deltas).not.toHaveBeenCalled()
   })
 
+  it('accepts a large UTF-8 questionnaire function call within the harness character limit', async () => {
+    const largeEnvelope = JSON.stringify({ questionnaire: '问'.repeat(1_100_000) })
+    const response = streamingResponse([sse(
+      toolChunk([{
+        index: 0,
+        id: 'call_large',
+        type: 'function',
+        function: { name: 'submit_questionnaire', arguments: largeEnvelope }
+      }]),
+      chunk(undefined, 'tool_calls'),
+      '[DONE]'
+    )])
+    const client = createOpenAICompatibleClient({ fetch: vi.fn().mockResolvedValue(response) })
+
+    await expect(client.complete(request())).resolves.toMatchObject({
+      content: largeEnvelope,
+      streamingSupported: true,
+      toolCallingSupported: true
+    })
+  })
+
   it.each([
     ['nonzero first call index', [toolChunk([{ index: 1, type: 'function', function: { name: 'submit_questionnaire', arguments: envelope } }])]],
     ['changing call index', [
