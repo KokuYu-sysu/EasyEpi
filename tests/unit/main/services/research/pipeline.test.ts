@@ -5,7 +5,6 @@ import {
   createAIResearchPipeline,
   noEvidenceDisclaimer,
   researchContextMessage,
-  researchDisclosure,
   type ResearchPipelineResult
 } from '@main/services/research/pipeline'
 import type { ResearchPlan } from '@main/services/research/contracts'
@@ -197,7 +196,6 @@ describe('createAIResearchPipeline', () => {
     expect(result.citations).toEqual([])
     expect(result.evidence).toBeUndefined()
     expect(extract).not.toHaveBeenCalled()
-    expect(researchDisclosure(result)).toBe('')
     expect(noEvidenceDisclaimer()).toContain('本次未联网')
   })
 
@@ -262,14 +260,5 @@ describe('researchContextMessage', () => {
     expect(message.content).toContain('untrusted quoted data')
     expect(message.content).not.toContain('</untrusted>')
     expect(message.content).toContain('\\u003c')
-  })
-})
-
-describe('researchDisclosure', () => {
-  it('describes each evidence composition truthfully', () => {
-    expect(researchDisclosure({ mode: 'medical', status: 'literature_and_web' })).toContain('医学文献')
-    expect(researchDisclosure({ mode: 'medical', status: 'literature_only' })).toContain('联网检索未返回')
-    expect(researchDisclosure({ mode: 'non_medical', status: 'web_only' })).toContain('联网来源')
-    expect(researchDisclosure({ mode: 'non_medical', status: 'none' })).toBe('')
   })
 })

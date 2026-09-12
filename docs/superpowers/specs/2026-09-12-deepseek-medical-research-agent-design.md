@@ -320,7 +320,7 @@ guarantee "the questionnaire is recognised by the app" observable in the rendere
 | --- | --- | --- |
 | `MAX_CONTEXT_CHARACTERS` | 60,000 | 400,000 |
 | completion token limit | 16,384 | 65,536 |
-| max response bytes | 2,000,000 | 6,000,000 |
+| max response bytes | 2,000,000 | 16,000,000 |
 | max model text length | 2,000,000 | 6,000,000 |
 | max questions | 500 | 500 (unchanged) |
 | max sources per stage | n/a | 20 PubMed, 20 preprints, 20 web |
@@ -351,10 +351,13 @@ evidence was used, the fixed disclaimer is emitted:
 
 ## Progress and Public Surface
 
-`AIProgressStage` gains `planning`, `literature`, `web_search`, `extracting`, and `generating`.
-`researchStatus` becomes `literature_and_web | literature_only | web_only | none`. New public error
-codes: `AI_RESEARCH_PLAN_INVALID`, `AI_PUBMED_UNAVAILABLE`, `AI_RESEARCH_NO_EVIDENCE`,
-`AI_EVIDENCE_INVALID`, `AI_MODEL_OUTPUT_TRUNCATED`, `AI_RESEARCH_UNSUPPORTED`.
+`AIProgressStage` gains `planning`, `literature`, `web_search`, and `extracting`. A new
+`stage_changed` progress event carries the current stage so the live UI reflects the real pipeline
+instead of a stalled "connecting". `researchStatus` becomes
+`literature_and_web | literature_only | web_only | none`. New public error codes:
+`AI_RESEARCH_PLAN_INVALID`, `AI_PUBMED_UNAVAILABLE`, `AI_RESEARCH_NO_EVIDENCE`,
+`AI_RESEARCH_SOURCE_INVALID`, `AI_EVIDENCE_INVALID`, `AI_RESEARCH_UNSUPPORTED`,
+`AI_RESPONSE_TRUNCATED`, and `AI_MODEL_OUTPUT_TRUNCATED`.
 
 Diagnostics are sanitized: stage, protocol, provider, model, HTTP status, content type, finish
 reason, choice count, presence flags, byte/character counts, JSON parse outcome, retry count, and the

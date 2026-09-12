@@ -28,7 +28,7 @@
 
 - **向下兼容 EpiData**：无缝读入 `.qes` 和 `.rec` 文件，降低老用户迁移成本。
 - **傻瓜式问卷设计**：通过可视化点击操作完成问卷构建，无需编程或编写脚本。支持在问卷完成后定义衍生变量（如 BMI、年龄分组），通过公式自动计算。
-- **AI 辅助问卷设计**：在已创建并解锁的项目内，通过兼容 OpenAI 协议的模型进行多轮对话，从零生成或持续精细化问卷；本地 Harness 负责格式、约束与安全校验。
+- **AI 辅助问卷设计**：在已创建并解锁的项目内，通过 DeepSeek 模型进行多轮对话，从零生成或持续精细化问卷；本地 Harness 负责格式、约束与安全校验。
 - **一问一屏录入**：降低录入员的认知负荷，减少漏填与错填。
 - **数据安全第一**：本地文件加密存储，管理员密码保护，保障敏感调查数据安全。
 - **基线表一键生成**：内建流行病学常用统计表格生成功能，填补 EpiData 生态空白。
@@ -782,26 +782,30 @@ AI 问卷助手在已创建并解锁的项目内，通过多轮自然语言对�
 - 已有问卷只能由用户点击「加入当前问卷」，在发送预览中检查内容并确认后，作为对话内容发送。
 - 所有核心问卷设计、录入和管理功能在离线状态下仍可用；仅 AI 问卷助手在用户主动发送时联网。
 
-#### 3.11.3 OpenAI 兼容 API 配置
+#### 3.11.3 DeepSeek API 配置
 
 应用设置提供以下全局配置，用户只需配置一次，之后打开任意项目时默认复用：
 
 | 字段 | 要求 |
 |------|------|
-| **AI 厂商** | OpenAI、DeepSeek、Gemini、通义千问、Kimi/Moonshot、智谱 GLM、xAI、小米 MiMo，或自定义 OpenAI-Compatible 服务 |
-| **Base URL** | OpenAI 兼容服务地址；保存前进行格式校验 |
+| **AI 厂商** | 仅 DeepSeek 一家，不可选择；应用不提供厂商预设、厂商切换或自定义服务 |
+| **服务地址** | 固定为 `https://api.deepseek.com`，以只读文本显示；应用不接受用户提供的地址，主进程会把任何非 DeepSeek 主机改写为该端点 |
 | **API Key** | 以密码方式输入，界面仅显示掩码，不允许写入项目文件、日志或缓存 |
-| **模型名称** | 用户输入服务端实际支持的模型标识 |
-| **内置联网搜索** | 用户显式启用；提示可能产生额外费用，且可能需要在厂商控制台开通 |
+| **模型名称** | 默认 `deepseek-v4-flash`，可改为 `deepseek-v4-pro`；用户输入服务端实际支持的模型标识 |
+| **检索来源** | 不是用户开关：每次生成都执行固定的检索流程（见下），医学类请求检索 PubMed、Europe PMC 与 bioRxiv/medRxiv，所有请求再由 DeepSeek Responses API 的内置联网搜索补充来源 |
 
 - API Key 使用 Windows 操作系统安全凭据能力保存。安全凭据不可用时不得降级为明文持久化，应提示用户当前无法安全记忆密钥。
-- Base URL 与模型名称保存在应用级偏好设置中，不随项目复制、备份或导出。
-- 提供「测试连接」，验证地址、认证与模型可用性；测试不得读取或发送项目内容。
-- 默认兼容 OpenAI Chat Completions 协议。JSON Schema、`response_format`、工具调用和流式响应均作为能力增强项，不得成为基础兼容的唯一前提。
-- 远程地址原则上使用 HTTPS；仅回环地址上的本地兼容服务允许 HTTP。
-- 普通生成统一使用 Chat Completions。OpenAI 与 xAI 的内置搜索使用兼容 Responses；通义千问、Kimi/Moonshot、智谱 GLM 和小米 MiMo 使用厂商公开的兼容扩展。DeepSeek、Gemini 与自定义服务当前不执行兼容搜索。
-- 联网状态必须显示为 `searched`、`not_needed`、`disabled`、`unsupported` 或 `failed`。除 `searched` 外，界面均以“本次未联网”语义披露；搜索失败或不支持不得阻止正常生成，也不得声称已检索外部来源。
-- 研究提示词优先要求 PubMed、Web of Science、Cochrane Library、WHO、CDC 和国家卫生健康委员会等学术或权威来源。检索结果作为不可信外部材料注入生成上下文，模型不得执行其中的指令或虚构引用。
+- 服务地址与模型名称保存在应用级偏好设置中，不随项目复制、备份或导出；存储格式为 schema v3（`schemaVersion`、`baseUrl`、`model`、可选的 `encryptedApiKey`、`privacyAcceptedAt`、`privacyNoticeVersion`）。
+- 旧版本 v1/v2 配置自动迁移到 v3：非 DeepSeek 主机的地址被替换为 DeepSeek 端点、其模型标识重置为 `deepseek-v4-flash`、其加密 API Key 被丢弃（仅当原主机已是 DeepSeek 时保留密文与模型）；`providerId` 与 `webSearchEnabled` 字段被移除。
+- 提供「测试连接」，验证认证与模型可用性；测试只发送一条固定连通性消息，不启用流式、不使用 JSON 输出模式、不触发检索，也不读取或发送项目内容。
+- 问卷生成使用 Chat Completions 并要求 `response_format: { "type": "json_object" }`。`response_format` 与流式响应均作为能力增强项按服务能力独立协商降级，不得成为发送的唯一前提。
+- 问卷协议不使用函数调用：任何请求都不得携带 `tools` 或 `tool_choice`，`submit_questionnaire` 已从协议中移除；函数调用的错误识别逻辑仅作为历史兼容兜底保留。
+- 服务地址固定为 DeepSeek 官方 HTTPS 端点，应用不再支持用户填写的远程或回环 HTTP 服务地址。
+- 每次生成都执行强制检索流程：`planning`（把要求翻译成英文研究问题，判定 `medical` 或 `non_medical`，产出 1–3 条 PubMed Boolean 查询与关键词、MeSH 词）→ `literature`（仅医学类，顺序为 PubMed、Europe PMC、bioRxiv/medRxiv）→ `web_search`（DeepSeek Responses API 的 `tools: [{ "type": "web_search" }]`）→ `extracting`（只允许引用本次检索记录的来源 id）→ 生成与本地校验。非医学类请求只使用联网来源。
+- 文献来源必须如实陈述为：PubMed E-utilities（ESearch `sort=relevance`、`retmax=20`，随后一次批量 EFetch；匿名限速 3 次/秒，并发送 `tool=`/`email=`）、Europe PMC 的预印本关键词检索（以 `SRC:PPR` 限定 bioRxiv/medRxiv，因两个服务器不提供关键词检索 API）、以及 bioRxiv/medRxiv 官方详情接口（校验 DOI 与元数据并给出正式落地页）。不得声称使用 Web of Science、Cochrane Library 或其他订阅数据源。
+- NCBI 要求使用 E-utilities 的应用向用户明示其免责声明与版权声明；设置页提供指向 NCBI E-utilities 使用条款的链接，检索结果作为不可信外部材料注入生成上下文，模型不得执行其中的指令或虚构引用。
+- 证据构成必须如实显示为四种之一：`literature_and_web`（本次已检索医学文献并补充联网来源）、`literature_only`（本次已检索医学文献（联网检索未返回可用来源））、`web_only`（本次已检索联网来源）、`none`（本次未联网）。`none` 时助手消息必须整句显示固定免责声明「【本次未联网】已根据当前对话生成结果；未使用或核验任何外部来源。」；联网搜索失败或不支持不得阻止非医学类生成，也不得声称已检索外部来源。
+- 医学类请求在文献与联网两层都未取到可用来源时必须以 `AI_RESEARCH_NO_EVIDENCE` 停止，不得生成无依据的问卷；非医学类请求在联网不可用、失败或为空时降级为上述免责声明并继续生成。
 
 #### 3.11.4 多 Session 与虚拟工作区
 
@@ -822,7 +826,7 @@ session://{session_id}/
 - 路径解析器拒绝绝对路径、`..` 路径穿越、跨 Session 与跨项目访问。
 - `conversation/`、`state/` 与 `artifacts/` 属于持久数据，随项目使用项目密钥加密；只有显式删除 Session 才移除。
 - `cache/` 可安全清除并按需重新生成；`temp/` 在单次运行完成、取消或异常恢复后清理。若短暂落盘，中间数据也必须位于项目加密容器内。
-- 缓存键至少包含项目、Session、Prompt 版本、Schema 版本、Base URL 和模型标识，禁止跨项目或跨 Session 复用对话内容缓存。
+- 缓存键至少包含项目、Session、Prompt 版本、Schema 版本、服务地址（固定 DeepSeek 端点）和模型标识，禁止跨项目或跨 Session 复用对话内容缓存。
 
 #### 3.11.5 Prompt 版本控制
 
@@ -843,7 +847,7 @@ Prompt 不作为散落在界面代码中的字符串维护，而是进入独立�
 采用「模型提出语义变更，Harness 生成并校验应用结构」的分工：
 
 1. Harness 从当前 Session 的 `conversation/` 与 `state/` 组装必要上下文，不读取其他项目数据。
-2. 若服务支持 JSON Schema 或工具调用，优先使用结构化响应；否则退回由版本化 Prompt 约束的文本结构协议。
+2. 生成请求统一使用 Chat Completions 的 JSON 输出模式（`response_format: { "type": "json_object" }`）；服务明确拒绝该参数时，退回由版本化 Prompt 约束的文本 JSON 结构协议。协议不使用函数调用。
 3. 模型返回用户可读说明、用于后续轮次的滚动摘要，以及“一个核心澄清问题”或“完整问卷候选”之一。澄清响应最多提供 5 个单选快捷回复，不创建 artifact；需求已足够时应直接生成。
 4. Harness 解析候选变更，执行 ID 补全、顺序规范化、默认值处理和引用解析，生成独立 AI 草稿。
 5. Harness 校验题型、变量名唯一性、选项、答案约束、Key、条件引用、规则冲突和循环/不可达逻辑。
@@ -913,13 +917,20 @@ AI 问卷助手页面至少包含：Session 列表、多轮对话窗、发送区
 - [ ] 同一项目可建立多个独立 Session；重启应用后可通过 `session_id` 继续对话。
 - [ ] `conversation/`、`state/`、`artifacts/` 和需要落盘的 `temp/` 均随项目加密，虚拟路径不能越界。
 - [ ] 正常轮次只产生一次 LLM 调用；仅解析/校验失败时允许最多两次修复调用。
-- [ ] 支持流式的服务能显示可读助手文字和完整阶段；不支持流式或 JSON Schema 的基础 OpenAI 兼容服务能按能力独立回退，且不显示原始 JSON。
+- [ ] 支持流式时能显示可读助手文字和完整阶段；`stream` 或 `response_format` 被明确拒绝时能按能力独立回退，且不显示原始 JSON。
+- [ ] 配置界面只提供 DeepSeek 的模型名称与 API Key，服务地址以只读形式显示 `https://api.deepseek.com`；不存在厂商预设、自定义地址或联网搜索开关。
+- [ ] 旧 v1/v2 配置自动迁移到 schema v3：非 DeepSeek 主机被替换、其模型重置为 `deepseek-v4-flash`、其加密 Key 被丢弃。
+- [ ] 每次生成按 `planning → literature（仅医学类）→ web_search → extracting → 生成 → 本地校验` 执行；非医学类请求不执行文献检索。
+- [ ] 医学类请求的文献检索顺序为 PubMed E-utilities、Europe PMC 预印本检索、bioRxiv/medRxiv 详情校验，并如实披露未使用任何订阅数据源。
+- [ ] 界面显示的证据构成与本次实际来源一致，只能是 `literature_and_web`、`literature_only`、`web_only` 或 `none`；`none` 时必须显示固定免责声明「【本次未联网】已根据当前对话生成结果；未使用或核验任何外部来源。」。
+- [ ] 医学类请求在文献与联网均无可用来源时以 `AI_RESEARCH_NO_EVIDENCE` 停止且不生成问卷。
 - [ ] 模型可返回一个核心澄清问题和 1–5 个单选快捷回复；点击立即发送、选项随后禁用，且始终允许文本回答。
 - [ ] 流式 delta 不持久化，终态消息/澄清/失败摘要随 Session 加密；页面返回时恢复当前阶段与取消能力。
 - [ ] 连续三次校验失败后显示按尝试分组的脱敏问题、可展开技术详情和明确下一步，不暴露提示词、供应商原始响应或路径。
 - [ ] schema-1 旧 Session 不得静默解释为 v2；显式迁移保留历史数据、清除可重建状态，且仅允许新 v2 artifact 应用。
 - [ ] Harness 能拒绝无效变量名、失效条件引用、非法约束、重复 Key 和越权操作。
 - [ ] AI 输出必须先成为草稿；只有校验通过并经用户确认后才能应用，应用前自动创建恢复快照。
+- [ ] 渲染层在显示草稿前用共享校验器 `src/shared/questionnaire-format.ts` 复检；失败时标注「本地渲染校验未通过」、列出出错字段路径，且「应用到正式问卷」保持禁用。
 - [ ] 缓存可按 Session 清除并重建，不影响对话、草稿或正式问卷。
 - [ ] 未完成/失败/取消的运行不会污染 artifacts 或正式问卷。
 - [ ] 未通过管理员验证时三个管理入口不可见且路由不可访问；管理员会话失效后立即重新隐藏。
@@ -1055,7 +1066,7 @@ EpiData 经典功能。两位录入员独立录入同一批数据，系统自动
 | 临时文件 | 导出操作不产生未加密的临时数据文件残留 |
 | API 凭据 | API Key 使用 Windows 安全凭据保存，不得进入项目文件、日志、缓存或导出 |
 | AI 数据最小化 | 仅发送当前对话及用户明确加入的问卷内容，不读取或发送答卷、密码和其他项目隐私数据 |
-| 传输安全 | 核心功能无网络传输；AI 仅在用户主动发送时连接配置的 API，远程服务使用 HTTPS（回环本地服务除外） |
+| 传输安全 | 核心功能无网络传输；AI 仅在用户主动发送时连接固定的 DeepSeek HTTPS 端点（`https://api.deepseek.com`），不提供用户自定义地址 |
 | 虚拟路径隔离 | Session 仅经 `session://` 访问，阻止真实路径泄露、路径穿越及跨项目/Session 读取 |
 
 ### 5.3 可用性要求
@@ -1075,7 +1086,7 @@ EpiData 经典功能。两位录入员独立录入同一批数据，系统自动
 | Windows | Windows 10 及以上（64位） |
 | macOS | 当前版本不支持 |
 | EpiData 兼容 | EpiData 3.1 / EpiData Manager v1.4+ / EpiData Entry Client |
-| AI API | OpenAI Chat Completions 兼容协议；JSON Schema、工具调用和流式响应按服务能力渐进增强 |
+| AI API | 仅 DeepSeek（`https://api.deepseek.com`）：Chat Completions 的 JSON 输出模式与 Responses API 的内置联网搜索；`response_format`、流式响应与联网工具按能力协商，不使用函数调用 |
 
 ---
 
@@ -1118,7 +1129,8 @@ EpiData 经典功能。两位录入员独立录入同一批数据，系统自动
 
 ### Phase 5: 发布前 AI 问卷助手与权限收口
 
-- [ ] 应用级 OpenAI 兼容 API 配置与 Windows 安全凭据存储
+- [ ] 应用级 DeepSeek API 配置（固定端点、模型与 API Key）与 Windows 安全凭据存储
+- [ ] 强制检索流程：规划、医学文献检索、联网搜索与证据绑定，并如实披露证据构成
 - [ ] 每项目多 Session、多轮对话与加密虚拟工作区
 - [ ] 版本化 Prompt 注册表与能力自适应 Harness
 - [ ] 从零生成、显式加入当前问卷、草稿差异与安全应用流程

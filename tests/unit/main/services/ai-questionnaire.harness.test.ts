@@ -211,19 +211,12 @@ describe('questionnaire harness trust boundary', () => {
     })
   })
 
-  it('selects the registered v2 provider schema with five required nullable-superset fields', async () => {
+  it('requests JSON object output with no tools for a questionnaire completion', async () => {
     let requestBody: {
-      tools: Array<{
-        function: {
-          parameters: {
-            type: string
-            additionalProperties: boolean
-            required: string[]
-            anyOf?: unknown
-            properties: { questionnaire: { type: string[] } }
-          }
-        }
-      }>
+      response_format?: { type: string }
+      tools?: unknown
+      tool_choice?: unknown
+      max_completion_tokens?: number
     } | undefined
     const client = createOpenAICompatibleClient({
       fetch: async (_input, init) => {
@@ -231,15 +224,8 @@ describe('questionnaire harness trust boundary', () => {
         return new Response(JSON.stringify({
           choices: [{
             index: 0,
-            finish_reason: 'tool_calls',
-            message: {
-              role: 'assistant',
-              content: null,
-              tool_calls: [{
-                type: 'function',
-                function: { name: 'submit_questionnaire', arguments: clarification() }
-              }]
-            }
+            finish_reason: 'stop',
+            message: { role: 'assistant', content: clarification() }
           }]
         }), { status: 200, headers: { 'content-type': 'application/json' } })
       }
@@ -247,16 +233,11 @@ describe('questionnaire harness trust boundary', () => {
     await expect(client.complete({
       baseUrl: 'https://example.test/v1', model: 'model', messages: [], schemaVersion: 2,
       streamingSupported: false
-    })).resolves.toMatchObject({ responseFormatSupported: true, toolCallingSupported: true })
-    const schema = requestBody?.tools[0]?.function.parameters
-    if (schema === undefined) throw new Error('expected response schema')
-    expect(schema).toMatchObject({
-      type: 'object',
-      additionalProperties: false,
-      required: ['kind', 'assistantMessage', 'rollingSummary', 'options', 'questionnaire']
-    })
-    expect(schema.anyOf).toBeUndefined()
-    expect(schema.properties.questionnaire.type).toEqual(['object', 'null'])
+    })).resolves.toMatchObject({ responseFormatSupported: true })
+    expect(requestBody?.response_format).toEqual({ type: 'json_object' })
+    expect(requestBody?.tools).toBeUndefined()
+    expect(requestBody?.tool_choice).toBeUndefined()
+    expect(requestBody?.max_completion_tokens).toBe(65_536)
     await expect(client.complete({
       baseUrl: 'https://example.test/v1', model: 'model', messages: [], schemaVersion: 1
     })).rejects.toThrow('AI_SCHEMA_NOT_REGISTERED')

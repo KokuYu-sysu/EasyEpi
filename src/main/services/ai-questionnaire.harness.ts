@@ -1476,7 +1476,7 @@ export function buildQuestionnaireContext(
   session: AISessionData,
   activeArtifactDraft?: QuestionnaireDef,
   explicitAttachedQuestionnaire?: QuestionnaireDef,
-  maxCharacters = 60_000,
+  maxCharacters = 400_000,
   registryEntry: AIRegistryEntry = resolveAIRegistryEntry(session.manifest.versionStamp)
 ): Array<{ role: 'system' | 'user' | 'assistant'; content: string }> {
   const summary = typeof session.state.values.rollingSummary === 'string'

@@ -268,6 +268,82 @@ describe('AI session repository v2 persistence', () => {
     }))).toThrow('AI_RUN_OPERATION_CONFLICT')
   })
 
+  it('encodes the research stage order and rejects every out-of-order stage change', () => {
+    const { repository: repo, sessionId } = repository()
+    seedRunning(repo, sessionId)
+    const step = (stage: string, second: number) => repo.updateRunProgress(sessionId, RUN_ID, {
+      stage, attempt: 1,
+      updatedAt: `2026-08-29T00:00:${String(second).padStart(2, '0')}.000Z`,
+      streamFallback: false
+    })
+
+    // A run starts at `starting` and may only enter research planning from there.
+    expect(() => step('literature', 2)).toThrow('INVALID_AI_RUN_PROGRESS_TRANSITION')
+    expect(() => step('web_search', 2)).toThrow('INVALID_AI_RUN_PROGRESS_TRANSITION')
+    expect(() => step('extracting', 2)).toThrow('INVALID_AI_RUN_PROGRESS_TRANSITION')
+    expect(() => step('validating', 2)).toThrow('INVALID_AI_RUN_PROGRESS_TRANSITION')
+    expect(step('planning', 2).value.progress?.stage).toBe('planning')
+
+    // Each research stage may only advance to the next one, never jump or move backwards.
+    // `planning` may skip `literature` because a non-medical plan has no literature stage.
+    expect(() => step('extracting', 3)).toThrow('INVALID_AI_RUN_PROGRESS_TRANSITION')
+    expect(() => step('validating', 3)).toThrow('INVALID_AI_RUN_PROGRESS_TRANSITION')
+    expect(step('literature', 3).value.progress?.stage).toBe('literature')
+    expect(() => step('planning', 4)).toThrow('INVALID_AI_RUN_PROGRESS_TRANSITION')
+    expect(() => step('extracting', 4)).toThrow('INVALID_AI_RUN_PROGRESS_TRANSITION')
+    expect(step('web_search', 4).value.progress?.stage).toBe('web_search')
+    expect(() => step('literature', 5)).toThrow('INVALID_AI_RUN_PROGRESS_TRANSITION')
+    expect(step('extracting', 5).value.progress?.stage).toBe('extracting')
+    expect(() => step('web_search', 6)).toThrow('INVALID_AI_RUN_PROGRESS_TRANSITION')
+    expect(step('connecting', 6).value.progress?.stage).toBe('connecting')
+
+    // Generation keeps its existing order, and the research stages are still running stages.
+    expect(step('streaming', 7).value.progress?.stage).toBe('streaming')
+    expect(step('validating', 8).value.progress?.stage).toBe('validating')
+    expect(() => repo.updateRunProgress(sessionId, RUN_ID, {
+      stage: 'connecting', attempt: 2,
+      updatedAt: '2026-08-29T00:00:09.000Z', streamFallback: false
+    })).toThrow('INVALID_AI_RUN_PROGRESS_TRANSITION')
+    expect(step('repairing', 9).value.progress?.stage).toBe('repairing')
+    expect(() => repo.updateRunProgress(sessionId, RUN_ID, {
+      stage: 'validating', attempt: 2,
+      updatedAt: '2026-08-29T00:00:10.000Z', streamFallback: false
+    })).toThrow('INVALID_AI_RUN_PROGRESS_TRANSITION')
+    expect(repo.updateRunProgress(sessionId, RUN_ID, {
+      stage: 'connecting', attempt: 2,
+      updatedAt: '2026-08-29T00:00:10.000Z', streamFallback: false
+    }).value.progress).toMatchObject({ stage: 'connecting', attempt: 2 })
+  })
+
+  it('accepts a research stage as the initial running stage and keeps stream fallback sticky', () => {
+    const { repository: repo, sessionId } = repository()
+    repo.appendMessage(sessionId, {
+      id: USER_MESSAGE_ID, role: 'user', content: 'Create', runId: RUN_ID,
+      createdAt: '2026-08-29T00:00:01.000Z'
+    })
+    // A run may be created while the research pipeline is already inside literature/web search.
+    expect(repo.upsertRun(sessionId, runningRun({
+      progress: {
+        stage: 'web_search', attempt: 1, updatedAt: '2026-08-29T00:00:01.000Z',
+        streamFallback: false
+      }
+    })).value.progress).toMatchObject({ stage: 'web_search', attempt: 1 })
+    repo.updateState(sessionId, { status: 'running', activeRunId: RUN_ID })
+    expect(repo.updateRunProgress(sessionId, RUN_ID, {
+      stage: 'extracting', attempt: 1, updatedAt: '2026-08-29T00:00:02.000Z',
+      streamFallback: true
+    }).value.progress).toMatchObject({ stage: 'extracting', streamFallback: true })
+    // A negotiated streaming fallback is sticky: it may never return to false.
+    expect(() => repo.updateRunProgress(sessionId, RUN_ID, {
+      stage: 'connecting', attempt: 1, updatedAt: '2026-08-29T00:00:03.000Z',
+      streamFallback: false
+    })).toThrow('INVALID_AI_RUN_PROGRESS_TRANSITION')
+    expect(repo.updateRunProgress(sessionId, RUN_ID, {
+      stage: 'connecting', attempt: 1, updatedAt: '2026-08-29T00:00:03.000Z',
+      streamFallback: true
+    }).value.progress).toMatchObject({ stage: 'connecting', streamFallback: true })
+  })
+
   it('requires the active run and monotonic progress transitions', () => {
     const { repository: repo, sessionId } = repository()
     seedRunning(repo, sessionId)
@@ -498,6 +574,80 @@ describe('AI session repository v2 persistence', () => {
     expect(() => repo.completeRunWithResult(sessionId, RUN_ID, {
       kind: 'questionnaire', artifactId: 'artifact-legacy-stamp'
     })).toThrow('AI_ARTIFACT_NOT_APPLICABLE')
+  })
+
+  it('accepts research metadata on completed runs and rejects malformed research metadata', () => {
+    const { repository: repo, sessionId } = repository()
+    seedRunning(repo, sessionId)
+    repo.upsertArtifact(sessionId, {
+      artifactId: 'artifact-research', operationId: 'operation-1', kind: 'questionnaire-draft',
+      status: 'completed', versionStamp: getAiVersionStamp(), value: { draft: true }
+    })
+    const citations = [{ url: 'https://pubmed.ncbi.nlm.nih.gov/1/', title: 'Study' }]
+
+    expect(() => repo.completeRunWithResult(sessionId, RUN_ID, {
+      kind: 'questionnaire', artifactId: 'artifact-research', researchStatus: 'searched'
+    })).toThrow('INVALID_AI_RUN_RESULT')
+    expect(() => repo.completeRunWithResult(sessionId, RUN_ID, {
+      kind: 'questionnaire', artifactId: 'artifact-research', researchMode: 'dental'
+    })).toThrow('INVALID_AI_RUN_RESULT')
+    // An undeclared key is refused by the shared exact-key helper, which reports its own code.
+    expect(() => repo.completeRunWithResult(sessionId, RUN_ID, {
+      kind: 'questionnaire', artifactId: 'artifact-research',
+      researchStatus: 'literature_and_web', extra: true
+    })).toThrow('INVALID_AI_PERSISTED_VALUE')
+    expect(() => repo.completeRunWithResult(sessionId, RUN_ID, {
+      kind: 'questionnaire', artifactId: 'artifact-research',
+      citations: [{ url: 'http://insecure.test/1', title: 'Study' }]
+    })).toThrow('INVALID_AI_RUN_RESULT')
+    expect(() => repo.completeRunWithResult(sessionId, RUN_ID, {
+      kind: 'questionnaire', artifactId: 'artifact-research',
+      citations: [{ url: 'https://pubmed.ncbi.nlm.nih.gov/1/', title: 'Study', pmid: '1' }]
+    })).toThrow('INVALID_AI_PERSISTED_VALUE')
+    expect(() => repo.completeRunWithResult(sessionId, RUN_ID, {
+      kind: 'questionnaire', artifactId: 'artifact-research',
+      citations: [{ url: 'https://pubmed.ncbi.nlm.nih.gov/1/', title: '' }]
+    })).toThrow('INVALID_AI_RUN_RESULT')
+    expect(() => repo.completeRunWithResult(sessionId, RUN_ID, {
+      kind: 'questionnaire', artifactId: 'artifact-research',
+      citations: Array.from({ length: 21 }, (_, index) => ({
+        url: `https://pubmed.ncbi.nlm.nih.gov/${index}/`, title: 'Study'
+      }))
+    })).toThrow('INVALID_AI_RUN_RESULT')
+    // Every rejected candidate leaves the run untouched and still active.
+    expect(repo.get(sessionId)?.state.runs[RUN_ID]).toMatchObject({ status: 'running' })
+
+    expect(repo.completeRunWithResult(sessionId, RUN_ID, {
+      kind: 'questionnaire', artifactId: 'artifact-research',
+      researchStatus: 'literature_and_web', researchMode: 'medical', citations
+    }).value).toMatchObject({
+      status: 'completed',
+      result: {
+        kind: 'questionnaire', artifactId: 'artifact-research',
+        researchStatus: 'literature_and_web', researchMode: 'medical', citations
+      }
+    })
+
+    const clarification = repository()
+    seedRunning(clarification.repository, clarification.sessionId)
+    clarification.repository.appendMessage(clarification.sessionId, {
+      id: ASSISTANT_MESSAGE_ID, role: 'assistant', content: 'Choose one', runId: RUN_ID,
+      createdAt: '2026-08-29T00:00:02.000Z'
+    })
+    clarification.repository.addClarification(clarification.sessionId, {
+      clarificationId: 'clarification-1', messageId: ASSISTANT_MESSAGE_ID, runId: RUN_ID,
+      options: [{ id: 'a', label: 'Option A' }], status: 'unresolved',
+      createdAt: '2026-08-29T00:00:02.000Z'
+    })
+    expect(clarification.repository.completeRunWithResult(clarification.sessionId, RUN_ID, {
+      kind: 'clarification', messageId: ASSISTANT_MESSAGE_ID, clarificationId: 'clarification-1',
+      researchStatus: 'none', researchMode: 'non_medical', citations: []
+    }).value).toMatchObject({
+      status: 'completed',
+      result: {
+        kind: 'clarification', researchStatus: 'none', researchMode: 'non_medical', citations: []
+      }
+    })
   })
 
   it('normalizes persisted validation details through the shared public allowlist', () => {

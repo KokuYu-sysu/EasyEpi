@@ -124,7 +124,12 @@ type AIProgressPayload = AIProgressEvent extends infer Event
   : never
 
 const OPERATION_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/
-const MAX_CONTEXT_CHARACTERS = 60_000
+/**
+ * Character budget for the assembled model context. DeepSeek's current catalogue serves a
+ * 1,000,000-token context, so this is sized for large questionnaires, long attachments, and the
+ * runtime research context together rather than for a single short turn.
+ */
+const MAX_CONTEXT_CHARACTERS = 400_000
 const MAX_REPAIR_INSTRUCTION_BYTES = 8_000
 const PROJECT_AI_QUEUES = new WeakMap<ProjectData, Promise<void>>()
 
@@ -407,8 +412,14 @@ export function createAIQuestionnaireOrchestrator(
       let streamingCapabilityKey: string
       let responseFormatCapabilityKey: string
       let webSearchCapabilityKey: string
-      const protectedDerivedNames = (request.explicitAttachment?.derivedVariables ?? [])
-        .map((item) => item.variableName)
+      // Derived variable names are protected in both the attached questionnaire and the project's
+      // current questionnaire. The harness and the post-generation format gate must protect the same
+      // set: if they differ, a name collision passes every repair attempt and then fails after the
+      // model has already succeeded, which the user cannot act on.
+      const protectedDerivedNames = [...new Set([
+        ...(request.explicitAttachment?.derivedVariables ?? []),
+        ...(request.project.questionnaire.derivedVariables ?? [])
+      ].map((item) => item.variableName))]
       try {
         const resolvedEntry = resolveAIRegistryEntry(versionStamp)
         if (resolvedEntry.compatibility !== 'supported') throw new Error('AI_VERSION_MIGRATION_REQUIRED')

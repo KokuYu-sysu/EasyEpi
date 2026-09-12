@@ -187,17 +187,6 @@ export function researchContextMessage(result: ResearchPipelineResult): { role: 
   }
 }
 
-export function researchDisclosure(result: Pick<ResearchPipelineResult, 'mode' | 'status'>): string {
-  if (result.status === 'literature_and_web') {
-    return result.mode === 'medical'
-      ? '本次已检索医学文献并补充联网来源。'
-      : '本次已检索联网来源。'
-  }
-  if (result.status === 'literature_only') return '本次已检索医学文献（联网检索未返回可用来源）。'
-  if (result.status === 'web_only') return '本次已检索联网来源（未使用医学文献）。'
-  return ''
-}
-
 export function noEvidenceDisclaimer(): string {
   return '【本次未联网】已根据当前对话生成结果；未使用或核验任何外部来源。'
 }

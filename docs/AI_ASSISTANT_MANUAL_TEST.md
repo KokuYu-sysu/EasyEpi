@@ -1,39 +1,45 @@
 # AI 问卷助手手动测试
 
-本文用于 Windows 发布前手动验收。建议每轮记录应用版本、Windows 版本、项目路径、服务 Base URL、模型名、代理/服务端请求计数和实际结果；API Key 只记录为“已配置”，不要粘贴到测试记录。
+本文用于 Windows 发布前手动验收。建议每轮记录应用版本、Windows 版本、项目路径、实际服务地址（固定为 DeepSeek 端点）、模型名、代理/服务端请求计数和实际结果；API Key 只记录为“已配置”，不要粘贴到测试记录。
 
 ## 1. 前置条件与测试服务
 
 - Windows 10/11 x64；准备两个使用不同密码的测试项目 A、B，并能正常创建、打开和解锁。
-- 准备一个 OpenAI-compatible 服务，配置 Base URL、API Key 和模型。基线协议是 Chat Completions：应用向 `POST <Base URL>/chat/completions` 发送请求，并读取 `choices[0].message.content` 字符串。
-- 厂商预设包括 OpenAI、DeepSeek、Google Gemini、通义千问、Kimi/Moonshot、智谱 GLM、xAI 和小米 MiMo；也可选择自定义 OpenAI-Compatible。连接测试始终不启用联网搜索。
-- 兼容 URL 示例：`https://ai.example.org/v1`、`https://gateway.example.org/openai/v1`、`http://127.0.0.1:8000/v1`。HTTP 只允许 `localhost`、`127.0.0.1` 或 `[::1]` 回环地址；不要使用带账号、密码、查询串或片段的 URL。Base URL 已以 `/chat/completions` 结尾时不会重复追加。
-- 推荐模型至少能遵循多轮指令、输出单个 JSON 对象、返回完整问卷候选并在收到本地校验错误后修正。v2 响应根必须包含 `kind`、`assistantMessage`、`rollingSummary`、`options`、`questionnaire`；工具调用、流式响应和原生 JSON Schema 都不是基础兼容的必要条件。
-- 准备可查看并计数请求的本地兼容服务或 HTTPS 调试代理，以及可按脚本返回 400/401/403/404/429、延迟、断连和指定响应内容的 stub。代理必须脱敏 `Authorization`，测试捕获文件不得进入提交或正式日志。
-- 使用独立测试项目目录和独立 Electron userData。打包版默认 userData 通常位于 `%APPDATA%\EasyEpi`，最终以实际启动参数/环境为准；全局 AI 配置文件名为 `ai-provider-config.json`。
-- 编译、typecheck 或 build 只能证明类型和产物可生成，不能证明真实服务的认证、模型能力、错误体格式、超时、限流或 JSON Schema 降级行为；以下联网项目必须观察真实请求或受控 stub。
+- 准备一个可用的 DeepSeek API Key，并确认账号与所选模型已开通 Responses API 的内置联网搜索能力。应用只使用 DeepSeek：服务地址固定为 `https://api.deepseek.com`，问卷生成与检索规划走 Chat Completions（读取 `choices[0].message.content` 字符串），联网搜索走 Responses API。
+- 设置页只有模型名称、API Key 和只读的服务地址；没有厂商预设、没有自定义地址输入框、也没有“内置联网搜索”开关。模型默认为 `deepseek-v4-flash`，也可填写 `deepseek-v4-pro`。连接测试固定发送一条连通性消息，始终不启用联网搜索。
+- 应用不接受用户提供的服务地址：主进程会把任何非 DeepSeek 主机改写为 `https://api.deepseek.com`。全局配置文件 `ai-provider-config.json` 使用 schema v3（`schemaVersion: 3`、`baseUrl`、`model`、可选的 `encryptedApiKey`、`privacyAcceptedAt`、`privacyNoticeVersion`）；旧 v1/v2 文件自动迁移：非 DeepSeek 主机被替换为 DeepSeek 端点、模型重置为 `deepseek-v4-flash`、`encryptedApiKey` 仅在原主机已是 DeepSeek 时保留，`providerId` 与 `webSearchEnabled` 不再写入。
+- 推荐模型至少能遵循多轮指令、输出单个 JSON 对象、返回完整问卷候选并在收到本地校验错误后修正。响应根必须包含 `kind`、`assistantMessage`、`rollingSummary`、`options`、`questionnaire`。问卷协议不使用函数调用：请求不携带 `tools` 或 `tool_choice`，`submit_questionnaire` 已移除；`response_format` 和流式响应仍按能力协商降级。
+- 准备可查看并计数请求的 HTTPS 调试代理或受控故障注入测试构建，以及可按脚本返回 400/401/403/404/429、延迟、断连和指定响应内容的 stub。由于服务地址固定，生产构建无法指向本地服务，故障注入只能通过注入 transport 的测试构建，或经系统信任、可拦截 `api.deepseek.com` 的 HTTPS 代理完成。代理必须脱敏 `Authorization`，测试捕获文件不得进入提交或正式日志。
+- 使用独立测试项目目录和独立 Electron userData。打包版默认 userData 通常位于 `%APPDATA%\EasyEpi`，最终以实际启动参数/环境为准。
+- NCBI 要求使用 E-utilities 的应用向用户明示其免责声明与版权声明；设置页“AI 服务”区域提供指向 NCBI E-utilities 使用条款的链接，验收时确认该链接可见且可打开。
+- 编译、typecheck 或 build 只能证明类型和产物可生成，不能证明真实服务的认证、模型能力、错误体格式、超时、限流或 `response_format` 降级行为；以下联网项目必须观察真实请求或受控 stub。
 
 建议给测试 API Key、消息和问卷分别使用唯一标记，例如 `AI_KEY_SENTINEL_...`、`AI_CHAT_SENTINEL_...`、`AI_QNAIRE_SENTINEL_...`，便于结束后扫描明文旁路。
 
-### MT-AI-00 厂商预设与联网状态
+### MT-AI-00 DeepSeek 配置、只读端点与旧配置迁移
 
-- **操作**：依次选择八个厂商预设，核对自动填入的 Base URL；再选择自定义服务并填写兼容地址。对每个厂商分别关闭和启用“内置联网搜索”，保存后重开设置。
-- **预期**：厂商、地址、模型和联网偏好均正确恢复；切换厂商或地址后要求重新输入 API Key；开关旁显示“可能产生额外费用，且可能需在厂商控制台开通”。DeepSeek、Gemini 和自定义服务的搜索不可用，但普通生成可继续并显示“本次未联网”。
-- **联网传输**：OpenAI、xAI 使用兼容 `/responses`；通义千问、Kimi/Moonshot、智谱 GLM、小米 MiMo 使用各自公开的 Chat Completions 扩展。检查研究提示词包含 PubMed、Web of Science、Cochrane Library、WHO、CDC 和国家卫生健康委员会，且检索正文被标记为不可信材料。
-- **状态**：实际执行搜索为 `searched`；服务商决定无需搜索为 `not_needed`；开关关闭为 `disabled`；无兼容能力为 `unsupported`；搜索失败但继续生成为 `failed`。除 `searched` 外，界面均须明确“本次未联网”。
+- **操作**：用全新 userData 打开右上角“设置 → AI 服务”，逐项记录界面元素，确认不存在厂商选择、地址输入框和联网搜索开关；填写 DeepSeek API Key（模型保留默认 `deepseek-v4-flash`），保存后关闭重开设置，点击“测试连接”；再把模型改为 `deepseek-v4-pro`，保存并再次测试连接。随后用另两个隔离 userData 启动：一份存放 `schemaVersion: 2` 且 `baseUrl` 已是 DeepSeek 的配置，一份存放 `schemaVersion: 2` 且 `baseUrl` 指向其他主机（并带 `providerId`、`webSearchEnabled`、`encryptedApiKey`），分别在设置页核对并直接打开 `ai-provider-config.json`。
+- **预期**：设置页只有模型名称与 API Key 两个输入项，服务地址以只读形式显示 `https://api.deepseek.com`（固定为 DeepSeek 官方接口），没有厂商预设、没有自定义地址、没有“内置联网搜索”开关；保存后模型与“已保存 Key”状态正确恢复，API Key 从不回显。测试连接只发送固定连通性消息，不启用流式、不启用 JSON 输出模式、不触发任何检索，也不读取项目内容。迁移后配置一律为 schema v3：原主机已是 DeepSeek 时保留模型与 `encryptedApiKey` 密文；原主机不是 DeepSeek 时 `baseUrl` 被替换为 DeepSeek 端点、模型重置为 `deepseek-v4-flash`、`encryptedApiKey` 被丢弃；`providerId` 与 `webSearchEnabled` 不再出现。
+- **注意点**：测试连接只接受“已保存且未改动”的配置；输入框有未保存改动时点击“测试连接”应先提示保存，而不是发出请求。迁移是被动且自动的，不要手工编辑既有密文；记录迁移前后文件内容时只保留字段名与结构，不要粘贴 Key。
+
+### MT-AI-00A 检索阶段与证据构成（医学 / 非医学）
+
+- **操作**：在项目 A 的空问卷项目中新建对话，发送明确的医学类要求（例如「现在需要建立一份肺癌筛查问卷，包括身份证号、年龄、吸烟史、包年数、身高体重、家族史和职业暴露史」），逐条记录进度区出现的阶段文字、终态证据标签和助手消息下方的引用链接。再新建对话发送明确的非医学类要求（例如「生成一份社区居民图书阅读习惯问卷」），同样记录阶段与标签。若受控 stub/代理可控制 Responses 联网搜索，再分别模拟“联网不可用/失败”与“联网返回空结果”，对医学类和非医学类各重复一次。
+- **预期**：阶段顺序为「正在翻译并规划检索」→ 医学类额外出现「正在检索医学文献」→「正在补充权威来源」→「正在提取研究证据」→「正在连接模型」→「正在接收模型回答」→「正在进行本地校验」；非医学类请求不出现文献阶段。终态证据构成必须与四个标签之一一致：医学类同时取到文献与联网来源显示「本次已检索医学文献并补充联网来源」；只有文献显示「本次已检索医学文献（联网检索未返回可用来源）」；只有联网来源显示「本次已检索联网来源」；两者都没有显示「本次未联网」。标签为「本次未联网」时，助手消息必须整句显示「【本次未联网】已根据当前对话生成结果；未使用或核验任何外部来源。」
+- **注意点**：医学类请求在文献与联网两层都取不到可用来源时必须以 `AI_RESEARCH_NO_EVIDENCE`（“没有检索到可核验的文献或联网来源，为避免生成无依据的问卷，本次已停止。”）停止，不得生成问卷草稿；非医学类请求在联网不可用、失败或为空时降级为上述免责声明并继续生成。界面不得出现“已检索外部来源”一类与证据构成不符的说法。逐项确认证据标签与引用链接确实来自本次运行，而不是上一轮的残留。
 
 ## 2. 配置、安全存储与隐私
 
 ### MT-AI-01 全局配置跨项目复用
 
-- **操作**：解锁项目 A，在右上角“设置 → AI 服务”填写 Base URL、模型和 API Key，保存并测试连接；关闭 A，创建或打开项目 B，再打开设置和 AI 问卷助手。
-- **预期**：B 自动复用相同 Base URL、模型和“已保存 Key”状态；无需再次录入。测试连接只发送固定连通性消息，不发送任何项目内容。
-- **注意点**：配置属于应用级 userData，不应写进 A/B 的 `.easyepi`、`.easyepi_data` 或 `.backups`。页面要求三项完整保存后才能发送。
+- **操作**：解锁项目 A，在右上角“设置 → AI 服务”填写模型名称和 API Key（服务地址只读），保存并测试连接；关闭 A，创建或打开项目 B，再打开设置和 AI 问卷助手。
+- **预期**：B 自动复用相同模型和“已保存 Key”状态，服务地址仍为固定的 `https://api.deepseek.com`；无需再次录入。测试连接只发送固定连通性消息，不发送任何项目内容。
+- **注意点**：配置属于应用级 userData，不应写进 A/B 的 `.easyepi`、`.easyepi_data` 或 `.backups`。页面要求模型与 API Key 均已保存后才能发送。
 
 ### MT-AI-02 Key 不回显、保留与清除
 
 - **操作**：保存 Key 后关闭并重开设置；只修改模型并让 Key 输入框保持空白后保存；再点击“清除 API 配置”。
-- **预期**：已保存 Key 从不以明文回填，只显示“已安全保存”语义/掩码；空白保存保留原 Key；清除后 Base URL 回到默认值、模型为空、Key 状态为空，AI 页面阻止发送。
+- **预期**：已保存 Key 从不以明文回填，只显示“已安全保存”语义/掩码；空白保存保留原 Key；清除后模型输入框回到默认值 `deepseek-v4-flash`（未保存状态）、Key 状态为空、服务地址仍为固定的 `https://api.deepseek.com`，AI 页面阻止发送。
 - **注意点**：清除 API 配置会保留已经接受的隐私确认，因此配置文件可能仍存在。不要把掩码误认为真实 Key。
 
 ### MT-AI-03 safeStorage 不可用
@@ -51,7 +57,7 @@
 ### MT-AI-05 未附加问卷的数据最小化
 
 - **操作**：在 A 中预先准备带唯一标记的项目路径、项目密码、答卷、基线结果、管理员数据、衍生变量和正式问卷；新建 AI Session，只发送带 `AI_CHAT_SENTINEL` 的消息，不点击“加入当前问卷”。查看脱敏后的代理/服务请求体。
-- **预期**：请求只含版本化系统指令、当前 Session 的用户/助手消息、滚动摘要等 Session 上下文；若 Session 已有 AI 草稿，可含该 Session 的 active draft。请求不得含真实 Windows 路径、密码/恢复材料、答卷、基线、管理员数据、衍生变量或未明确加入的正式问卷标记。
+- **预期**：请求只含版本化系统指令、当前 Session 的用户/助手消息、滚动摘要等 Session 上下文，以及本轮检索产生的运行时研究上下文（外部来源标题、URL 与引用，标记为不可信引用数据）；若 Session 已有 AI 草稿，可含该 Session 的 active draft。请求不得含真实 Windows 路径、密码/恢复材料、答卷、基线、管理员数据、衍生变量或未明确加入的正式问卷标记。
 - **注意点**：系统 Prompt、Schema、修复错误属于协议控制内容，不是项目隐私。代理日志本身会看到允许发送的对话，必须隔离、脱敏并在验收后删除，不能把代理捕获误判为应用旁路日志。
 
 ## 3. 问卷生成、附加与 Session
@@ -82,8 +88,8 @@
 
 ### MT-AI-09A 当前 Session 清除 cache
 
-- **操作**：在 Session 1 完成多轮对话并保留 active artifact，再创建 Session 2 并完成一轮；记录两边消息、状态、草稿和正式问卷。回到 Session 1，在未生成/应用时点击“清除缓存”并确认，关闭重开项目后再次核对。若使用不支持 `json_schema` 的 stub，清理前先让 Session 1 缓存“不支持”能力，再清理并发送下一轮观察请求。
-- **预期**：成功提示明确只删除当前 Session 的可重建缓存；Session 1 的 conversation、state、active artifact/草稿和正式问卷不变，Session 2 全部不变，重开后两边均可续接。不支持 Schema 的能力 cache 被清后，Session 1 下一轮会重新尝试 `response_format` 并再次协商回退；Session 2 的能力 cache 不受影响。
+- **操作**：在 Session 1 完成多轮对话并保留 active artifact，再创建 Session 2 并完成一轮；记录两边消息、状态、草稿和正式问卷。回到 Session 1，在未生成/应用时点击“清除缓存”并确认，关闭重开项目后再次核对。若使用拒绝 `response_format` 的 stub，清理前先让 Session 1 缓存“不支持”能力，再清理并发送下一轮观察请求。
+- **预期**：成功提示明确只删除当前 Session 的可重建缓存；Session 1 的 conversation、state、active artifact/草稿和正式问卷不变，Session 2 全部不变，重开后两边均可续接。`response_format` 的能力 cache 被清后，Session 1 下一轮会重新尝试 JSON 输出模式并再次协商回退；Session 2 的能力 cache 不受影响。
 - **注意点**：发送或应用进行中按钮禁用。`removed=0` 仍是成功且不触发项目写入；cache 不通过 bridge 暴露虚拟路径或内容，只返回删除项数。
 
 ### MT-AI-09B schema-1 旧 Session 显式迁移
@@ -98,12 +104,12 @@
 
 - **操作**：清零代理计数，让 stub 第一次返回可通过 Harness 的完整候选；再分别运行“第 1 次无效、第 2 次有效”和“连续 3 次无效”的脚本。
 - **预期**：正常轮次只有 1 次模型调用。第一次无效时最多增加 2 次修复，总调用数不超过 3；第 2 次有效即停止；连续 3 次无效时显示中文摘要、按第 1/2/3 次分组的脱敏问题及可展开技术详情，并提供「根据错误重新生成」和「修改要求」。不形成可应用 artifact，正式问卷不变。
-- **注意点**：`json_schema` 不支持所引起的同轮协议降级是传输兼容重试，应单独按 MT-AI-12 计数，不要混作 Harness 修复。
+- **注意点**：`response_format` 不支持所引起的同轮协议降级是传输兼容重试，应单独按 MT-AI-12 计数，不要混作 Harness 修复。
 
 ### MT-AI-10A 流式可读文字与阶段反馈
 
-- **操作**：让 SSE stub 将合法的 v2 问卷响应分多个 delta 慢速返回，使 `assistantMessage` 可观察地逐步完成；记录页面阶段、辅助文字和终态。
-- **预期**：界面按顺序显示准备、连接模型、模型生成、本地校验及完成（如果校验失败则显示失败和自动修复阶段）；临时助手文字随 delta 增长，但不出现原始 JSON、`questionnaire`、Prompt 或修复指令。终态后以完整已保存助手消息取代临时文字。
+- **操作**：让 SSE stub 将合法的问卷响应分多个 delta 慢速返回，使 `assistantMessage` 可观察地逐步完成；记录页面阶段、辅助文字和终态。
+- **预期**：界面按顺序显示检索阶段（翻译并规划检索、医学类的检索医学文献、补充权威来源、提取研究证据）、连接模型、接收模型回答、本地校验及完成（如果校验失败则显示失败和自动修复阶段）；临时助手文字随 delta 增长，但不出现原始 JSON、`questionnaire`、Prompt 或修复指令。终态后以完整已保存助手消息取代临时文字。
 - **注意点**：屏幕阅读器的 `aria-live` 区只应播报简短阶段，不应因计时器或每个 delta 持续重播。
 
 ### MT-AI-10B 模型澄清与快捷选项
@@ -112,23 +118,23 @@
 - **预期**：问题和 1–5 个单选按钮在助手消息下显示，澄清本身不产生 artifact。点击后立即显示和发送「我选择：<选项文字>」，该问题所有按钮禁用，不可重复回答；自由文本回答也能解决最新的未回答澄清。新一轮仅带当前 Session 上下文。
 - **注意点**：用代理确认选项文字由本地已保存记录生成；陈旧、未知、不属于最新澄清或已解决的选项必须在调模型前拒绝。
 
-### MT-AI-11 取消、断网和稳定错误映射
+### MT-AI-11 取消、断网、检索错误与稳定错误映射
 
-- **操作**：逐项使用 stub/网络控制制造长响应后取消、断网/拒绝连接、401、403、404、429 和超过 60 秒的响应；每项前记录现有消息、草稿和正式问卷。
-- **预期**：取消显示“AI 请求已取消”，丢弃未完成流式内容并清理本次运行的 temp；断网显示网络错误；401/403 显示认证失败；404 显示模型不存在；429 显示服务繁忙/限流；超时显示响应超时。所有场景均不产生不完整 artifact、不修改正式问卷，已保存历史和旧草稿仍可读取，可安全重试。
-- **注意点**：404 在当前协议中统一映射为模型未找到；用代理确认取消确实中止连接。超时以应用默认 60 秒为准，测试环境若注入其他 timeout 要记录实际值。
+- **操作**：逐项使用 stub/网络控制制造长响应后取消、断网/拒绝连接、401、403、404、429 和超过 60 秒的响应；另外分别制造规划输出无法解析、PubMed 不可达、两层检索都无可用来源、来源标识不合法、证据身份不匹配、Responses 联网搜索被拒绝；每项前记录现有消息、草稿和正式问卷。
+- **预期**：取消显示“AI 请求已取消”，丢弃未完成流式内容并清理本次运行的 temp；断网显示网络错误；401/403 显示认证失败；404 显示模型不存在；429 显示服务繁忙/限流；超时显示响应超时。检索类失败必须映射为对应的公开错误码文案：规划失败 `AI_RESEARCH_PLAN_INVALID`（无法把你的要求转换为可检索的英文研究问题…）、PubMed 不可达 `AI_PUBMED_UNAVAILABLE`（PubMed 暂时无法访问…）、医学类无来源 `AI_RESEARCH_NO_EVIDENCE`（没有检索到可核验的文献或联网来源…）、来源信息不完整 `AI_RESEARCH_SOURCE_INVALID`、证据无法提取 `AI_EVIDENCE_INVALID`、联网搜索不被支持 `AI_RESEARCH_UNSUPPORTED`。所有场景均不产生不完整 artifact、不修改正式问卷，已保存历史和旧草稿仍可读取，可安全重试。
+- **注意点**：404 在当前协议中统一映射为模型未找到；`AI_RESEARCH_UNSUPPORTED` 只在 Responses 联网工具确实不可用时出现，且不得被描述成“已检索来源”。用代理确认取消确实中止连接。超时以应用默认 60 秒为准，测试环境若注入其他 timeout 要记录实际值。
 
 ### MT-AI-11A 运行中离开页面再返回
 
-- **操作**：使用慢速 SSE stub 开始一轮生成，在「模型生成」或「本地校验」阶段离开 AI 页，不切换项目；随后在运行结束前返回同一 Session，并尝试取消。另一轮不取消，等待自然完成。
+- **操作**：使用慢速 SSE stub 开始一轮生成，在「正在补充权威来源」「正在提取研究证据」或「正在进行本地校验」阶段离开 AI 页，不切换项目；随后在运行结束前返回同一 Session，并尝试取消。另一轮不取消，等待自然完成。
 - **预期**：返回后无需刷新即显示加密保存的当前阶段、尝试次数和流式回退状态，并可用原 request ID 取消；已错过的临时 delta 不重建。自然完成时终态消息/artifact 正常出现，不重复调模型。
 - **注意点**：“离开 AI 页”不等于关闭/切换项目；后者按项目生命周期规则取消运行。
 
-### MT-AI-12 `json_schema` 不支持时回退文本协议
+### MT-AI-12 `response_format` 不支持时回退文本协议
 
-- **操作**：让 stub 首次对带 `response_format.type=json_schema` 的请求返回 400 或 422，错误体同时明确包含 `response_format`/`json_schema` 和 `unsupported`/`not support`/`unknown`/`unrecognized`/`invalid parameter` 之一；第二次对不带 `response_format` 的同内容请求返回有效 Chat Completions。再在同一 Session 发下一轮。
+- **操作**：让 stub 首次对带 `response_format: { "type": "json_object" }` 的请求返回 400 或 422，错误体同时明确包含 `response_format` 和 `unsupported`/`not support`/`unknown`/`unrecognized`/`invalid parameter` 之一；第二次对不带 `response_format` 的同内容请求返回有效 Chat Completions。再在同一 Session 发下一轮。
 - **预期**：当前轮自动重试且第二次请求移除 `response_format`，仍生成合格草稿；兼容能力写入当前项目/Session 的加密 cache，下一轮直接使用文本协议。
-- **注意点**：只有 400/422 且错误体能明确识别“不支持 response format”才降级；其他错误不得静默降级。文本响应的 `message.content` 仍必须是 Harness 可解析的 JSON 文本。
+- **注意点**：只有 400/422 且错误体能明确识别“不支持 response format”才降级；其他错误不得静默降级。问卷请求本身不携带 `tools`/`tool_choice`，因此不存在函数调用降级；文本响应的 `message.content` 仍必须是 Harness 可解析的 JSON 文本。
 
 ### MT-AI-12A `stream` 不支持时回退非流式
 
@@ -140,7 +146,7 @@
 
 - **操作**：在空问卷项目新建 Session，原样发送：「现在需要建立一份肺癌筛查问卷，其中需要包括身份证号作为唯一ID识别码，其他因素包括年龄，吸烟，吸烟包年数，身高体重，肺癌家族史，以及职业暴露史，如果吸烟或者曾经吸烟，则需要问吸烟年数，以及每天的吸烟支数。」
 - **预期**：需求无关键歧义时直接生成；身份证号是唯一 Key；包含年龄、吸烟状态、包年数、身高、体重、肺癌家族史和职业暴露史。「吸烟年数」和「每日吸烟支数」的 `allowSkip=false`，两题由同一条 `show` 规则控制，条件为「当前吸烟 OR 曾经吸烟」的等值判断；不应再创建单独 `require` 规则。流式阶段正常，artifact 校验通过后可预览。
-- **注意点**：不要只核对界面文案；展开草稿的 Key、目标题 ID、规则 action、OR 条件和 `allowSkip` 结构。若返回澄清，先确认它仅询问一个必要问题，回答后再按同一标准验收。
+- **注意点**：不要只核对界面文案；展开草稿的 Key、目标题 ID、规则 action、OR 条件和 `allowSkip` 结构。若返回澄清，先确认它仅询问一个必要问题，回答后再按同一标准验收。本项是医学类请求，终态证据标签应为「本次已检索医学文献并补充联网来源」或「本次已检索医学文献（联网检索未返回可用来源）」；若显示「本次未联网」，说明文献检索层未生效，应按 FAIL 记录并附代理请求证据。
 
 ## 5. Artifact、应用与恢复
 
@@ -149,6 +155,12 @@
 - **操作**：连续生成至少两个包含新增、修改、删除和规则变更的草稿，在“生成记录”中分别选择“当前草稿”和“历史草稿（只读）”核对完整预览和 diff；再到设计页修改正式问卷，返回尝试查看/应用旧草稿。
 - **预期**：diff 的元数据、题目新增/修改/删除和规则计数与完整草稿一致；历史 artifact 可选择和预览，但明确显示“历史记录 · 需重新生成”，其应用按钮始终禁用。只有当前 active 且 Harness 成功、未过期的 artifact 可应用。正式问卷修订后，当前旧 artifact 显示“需重新生成”或 stale 错误，应用按钮不可用/请求被拒绝。
 - **注意点**：stale 依据 `questionnaireRevision` 与基线哈希，不以页面是否刷新作为判断；artifact 生成后新增、修改、删除或重排衍生变量也会刷新 revision，使旧 artifact stale。另一独立场景是衍生变量在生成前已存在且之后未变化，但其公式引用的题目被新 draft 删除/改名：revision 可仍匹配，apply 必须在写入前以衍生变量冲突拒绝并保持原状。
+
+### MT-AI-13A 本地渲染校验未通过的草稿不能应用
+
+- **操作**：让受控 stub（或注入的 orchestrator 依赖）产出一个能通过主进程 Harness、但结构不符合共享格式校验的草稿（例如把选项的 `value`/`label` 换位、缺失 `conditionRules` 必需字段或加入未声明的额外字段），在页面上查看该草稿卡片；再尝试点击“应用到正式问卷”。
+- **预期**：草稿卡片显示红色徽标「本地渲染校验未通过」和一个 `role="alert"` 区块，区块标题为「本地渲染校验未通过」，正文声明“此草稿无法被问卷设计器识别，已禁止应用。请根据下列字段路径重新生成：”，并逐条列出出错字段路径（`<路径>` 加错误码，最多 12 条，超出时提示“另有 N 个问题未显示”）。同一张卡片上的“应用到正式问卷”始终禁用，正式问卷不变。
+- **注意点**：共享校验器 `src/shared/questionnaire-format.ts` 是主进程 Harness 规则的严格子集，因此“Harness 通过但校验失败”只能通过受控注入复现，不能用真实 DeepSeek 请求制造；正常轮次的草稿应显示「本地校验通过」而不是该徽标。该项验证的是渲染器自身的第二道门，不要用 stale 或历史草稿的禁用状态替代。
 
 ### MT-AI-14 应用前备份、衍生保留与幂等
 
@@ -181,9 +193,9 @@
 ### MT-AI-18 项目、备份、日志和配置文件扫描
 
 - **操作**：完成以上测试并正常退出应用。用唯一标记扫描项目目录（含 `.easyepi`、`.easyepi_data`、`.backups`）、userData、应用本地日志和系统临时目录；单独打开 `ai-provider-config.json`。可在 PowerShell 使用 `rg -a -n --fixed-strings 'AI_KEY_SENTINEL' <目录>` 和对话/问卷标记重复扫描。
-- **预期**：API Key 明文不出现在项目、备份、缓存、临时文件或应用日志；真实对话/问卷只存在于加密项目载荷，不在项目旁路文件、userData 或应用日志出现明文。配置文件只含 schema 版本、Base URL、模型、Electron safeStorage 产生的 `encryptedApiKey` 密文，以及可选的隐私接受时间和 `privacyNoticeVersion`，不含 `apiKey` 明文或真实对话。
+- **预期**：API Key 明文不出现在项目、备份、缓存、临时文件或应用日志；真实对话/问卷只存在于加密项目载荷，不在项目旁路文件、userData 或应用日志出现明文。配置文件使用 schema v3，只含 `schemaVersion`（=3）、固定为 DeepSeek 端点的 `baseUrl`、`model`、Electron safeStorage 产生的 `encryptedApiKey` 密文，以及可选的隐私接受时间和 `privacyNoticeVersion`，不含 `apiKey` 明文、`providerId`、`webSearchEnabled` 或真实对话。
 - **注意点**：代理/服务捕获是本测试有意创建的远端可见副本，应先核对允许字段，再安全删除后执行本地终检。加密项目/备份中可以有密文命中随机字节的极低概率；真正失败证据应是可读的完整唯一标记。Electron safeStorage/Windows OS-backed encryption 是准确表述，不要声称固定使用某个 Windows 凭据管理产品。
 
 ## 8. 结果记录
 
-每项记录 `PASS / FAIL / BLOCKED`、实际请求次数、错误码/界面文案、代理请求编号和必要截图。任何 FAIL 至少附：复现步骤、项目是否已解锁、Session ID（可记录）、artifact/operation ID（可记录）、模型名、是否启用 JSON Schema、正式问卷是否变化；不得附 API Key、密码、恢复密钥、真实答卷或未脱敏请求头。
+每项记录 `PASS / FAIL / BLOCKED`、实际请求次数、错误码/界面文案、代理请求编号和必要截图。任何 FAIL 至少附：复现步骤、项目是否已解锁、Session ID（可记录）、artifact/operation ID（可记录）、模型名、本次证据构成标签、是否发生 `response_format` 或流式降级、正式问卷是否变化；不得附 API Key、密码、恢复密钥、真实答卷或未脱敏请求头。

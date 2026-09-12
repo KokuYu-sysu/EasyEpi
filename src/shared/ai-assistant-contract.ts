@@ -192,7 +192,12 @@ export interface AIRunProgress {
   attempt: 1 | 2 | 3
   updatedAt: string
   streamFallback: boolean
-  toolCallingFallback: boolean
+  /**
+   * Vestigial: the questionnaire protocol no longer uses function calling, so this is always false.
+   * It stays optional because stored sessions predating that removal may omit it, and the repository
+   * normalizes a missing value to false.
+   */
+  toolCallingFallback?: boolean
 }
 
 export interface AIRunFailure {

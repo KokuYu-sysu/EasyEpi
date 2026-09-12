@@ -28,7 +28,13 @@ export default tseslint.config(
     },
     rules: {
       ...reactHooks.configs.recommended.rules,
-      '@typescript-eslint/consistent-type-imports': 'error'
+      '@typescript-eslint/consistent-type-imports': 'error',
+      // A leading underscore marks a parameter that exists only to type a test double's call
+      // signature, which is how mocked transports keep their `mock.calls` tuples typed.
+      '@typescript-eslint/no-unused-vars': [
+        'error',
+        { argsIgnorePattern: '^_', varsIgnorePattern: '^_', caughtErrorsIgnorePattern: '^_' }
+      ]
     }
   },
   {

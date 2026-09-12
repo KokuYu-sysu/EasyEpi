@@ -2,7 +2,7 @@
 
 EasyEpi 0.8.0 是面向流行病学与社会调查的 Windows 桌面应用，集成问卷设计、问卷录入、数据管理、统计分析和 AI 问卷助手。核心业务离线运行；AI 功能仅在用户主动发送时连接所配置的服务。
 
-AI 问卷助手支持 OpenAI、DeepSeek、Google Gemini、通义千问、Kimi/Moonshot、智谱 GLM、xAI、小米 MiMo，以及自定义 OpenAI-Compatible 服务。普通生成统一使用兼容 Chat Completions；内置联网搜索按厂商能力使用兼容 Chat Completions 或 Responses。DeepSeek、Gemini 和自定义服务当前不启用兼容搜索，仍可正常生成，并明确显示“本次未联网”。
+AI 问卷助手只使用 DeepSeek：服务地址固定为 `https://api.deepseek.com`，应用不提供厂商选择、厂商预设或自定义地址，设置页只保留模型名称（默认 `deepseek-v4-flash`，也可填写 `deepseek-v4-pro`）、API Key 和一行只读的服务地址。问卷生成使用 Chat Completions 的 JSON 输出模式，不使用函数调用。每次生成都执行固定的检索流程：先由模型把要求翻译成英文研究问题并判定医学或非医学；医学类请求随后依次检索 PubMed（NCBI E-utilities）、Europe PMC 的预印本关键词检索（bioRxiv/medRxiv 预印本发现，两个预印本服务器本身不提供关键词检索接口）和 bioRxiv/medRxiv 官方详情接口（校验 DOI 与元数据并给出正式落地页），所有请求再由 DeepSeek Responses API 的内置联网搜索补充来源；非医学类请求只使用联网来源。检索结果只作为可核验来源参与生成，医学类请求在没有检索到任何可用来源时停止生成，未使用外部来源时界面明确显示“本次未联网”。NCBI 要求使用 E-utilities 的应用向用户明示其免责声明与版权声明，设置页提供对应链接。
 
 ## 开发环境
 

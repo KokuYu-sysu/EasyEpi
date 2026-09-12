@@ -135,7 +135,12 @@ describe('staged research agent integration', () => {
         sourceCount: 1
       }]
     }))
-    const webSearchTransport = vi.fn(async () => ({
+    const webSearchTransport = vi.fn(async (_request: {
+      instructions?: string
+      input: string
+      baseUrl: string
+      model: string
+    }) => ({
       content: 'WHO recommends reducing dietary sodium to less than 5 g per day [1].',
       citations: [{ url: 'https://www.who.int/news-room/fact-sheets/detail/salt-reduction', title: 'WHO salt reduction' }],
       searched: true,
@@ -204,7 +209,7 @@ describe('staged research agent integration', () => {
       expect(body).not.toContain('tool_choice')
       expect(body).not.toContain('must-not-enter-context')
     }
-    const webRequest = webSearchTransport.mock.calls[0]![0] as { instructions?: string; input: string }
+    const webRequest = webSearchTransport.mock.calls[0]![0]
     expect(webRequest.instructions).toContain('WHO')
     expect(webRequest.input).toContain('Risk factors for hypertension among university students')
   })
