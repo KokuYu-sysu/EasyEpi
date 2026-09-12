@@ -149,6 +149,14 @@ const ERROR_MESSAGES: Readonly<Record<string, string>> = {
   AI_PERSIST_FAILED: '无法保存 AI 对话。',
   AI_SESSION_PAGE_TOO_LARGE: 'AI 对话分页内容过大。',
   AI_VERSION_MIGRATION_REQUIRED: '该对话需要先迁移。',
+  AI_RESEARCH_PLAN_INVALID: '无法把你的要求转换为可检索的英文研究问题，请把要求写得更具体后重试。',
+  AI_PUBMED_UNAVAILABLE: 'PubMed 暂时无法访问，请稍后重试或简化检索要求。',
+  AI_RESEARCH_NO_EVIDENCE: '没有检索到可核验的文献或联网来源，为避免生成无依据的问卷，本次已停止。',
+  AI_RESEARCH_SOURCE_INVALID: '检索到的来源信息不完整，已丢弃该来源。',
+  AI_EVIDENCE_INVALID: '无法从检索结果中提取可核验的证据，请调整要求后重试。',
+  AI_RESEARCH_UNSUPPORTED: '当前模型不支持内置联网搜索，请确认账号与模型是否已开通该能力。',
+  AI_RESPONSE_TRUNCATED: '模型回复被截断，请减少题目数量或缩短要求后重试。',
+  AI_MODEL_OUTPUT_TRUNCATED: '模型回复被截断，请减少题目数量或缩短要求后重试。',
   AI_INTERNAL_ERROR: 'AI 操作失败。'
 }
 
@@ -798,6 +806,7 @@ export function registerAIIpcHandlers(
           message: result.message,
           attempts: result.attempts,
           researchStatus: result.researchStatus,
+          researchMode: result.researchMode,
           citations: result.citations
         } satisfies AISendResult
       }
@@ -815,6 +824,7 @@ export function registerAIIpcHandlers(
         artifact: toPublicQuestionnaireArtifact(result.artifact, preview),
         attempts: result.attempts,
         researchStatus: result.researchStatus,
+        researchMode: result.researchMode,
         citations: result.citations
       } satisfies AISendResult
     } catch (error) {

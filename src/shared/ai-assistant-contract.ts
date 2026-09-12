@@ -20,40 +20,39 @@ export type AIJsonValue =
   | AIJsonValue[]
   | { [key: string]: AIJsonValue }
 
-export const AI_PROVIDER_IDS = [
-  'openai',
-  'deepseek',
-  'gemini',
-  'qwen',
-  'moonshot',
-  'glm',
-  'xai',
-  'mimo',
-  'custom'
-] as const
+/** EasyEpi supports exactly one AI provider. The list is a constant, not a user choice. */
+export const AI_PROVIDER_IDS = ['deepseek'] as const
 
 export type AIProviderId = (typeof AI_PROVIDER_IDS)[number]
-export type AIResearchStatus = 'searched' | 'not_needed' | 'disabled' | 'unsupported' | 'failed'
+
+/**
+ * Describes which retrieval layers actually produced the evidence used for a run.
+ * `literature_and_web` medical literature plus web search; `literature_only` literature only;
+ * `web_only` web search only; `none` no external evidence was used.
+ */
+export type AIResearchStatus = 'literature_and_web' | 'literature_only' | 'web_only' | 'none'
+export type AIResearchMode = 'medical' | 'non_medical'
 export interface AIResearchCitation { url: string; title: string }
 
 export function isAIProviderId(value: unknown): value is AIProviderId {
   return typeof value === 'string' && (AI_PROVIDER_IDS as readonly string[]).includes(value)
 }
 
+export function isAIResearchStatus(value: unknown): value is AIResearchStatus {
+  return value === 'literature_and_web' || value === 'literature_only' ||
+    value === 'web_only' || value === 'none'
+}
+
 export interface AIProviderConfigUpdate {
-  providerId?: AIProviderId
   baseUrl: string
   model: string
-  webSearchEnabled?: boolean
   /** Undefined preserves the stored key; null or an empty string clears it. */
   apiKey?: string | null
 }
 
 export interface AIProviderConfigView {
-  providerId?: AIProviderId
   baseUrl: string
   model: string
-  webSearchEnabled?: boolean
   hasApiKey: boolean
   maskedApiKey: string | null
 }
@@ -123,6 +122,10 @@ export type AISessionStatus = 'idle' | 'running' | 'completed' | 'failed' | 'can
 
 export type AIProgressStage =
   | 'starting'
+  | 'planning'
+  | 'literature'
+  | 'web_search'
+  | 'extracting'
   | 'connecting'
   | 'streaming'
   | 'validating'
@@ -201,11 +204,13 @@ export interface AIRunFailure {
 export type AIRunResult =
   | {
       kind: 'questionnaire'; artifactId: string
-      researchStatus?: AIResearchStatus; citations?: AIResearchCitation[]
+      researchStatus?: AIResearchStatus; researchMode?: AIResearchMode
+      citations?: AIResearchCitation[]
     }
   | {
       kind: 'clarification'; messageId: string; clarificationId: string
-      researchStatus?: AIResearchStatus; citations?: AIResearchCitation[]
+      researchStatus?: AIResearchStatus; researchMode?: AIResearchMode
+      citations?: AIResearchCitation[]
     }
 
 export interface AIRun {
@@ -369,10 +374,8 @@ export interface AIMutationResult<T> {
 }
 
 export interface AIConfigUpdateRequest {
-  providerId?: AIProviderId
   baseUrl: string
   model: string
-  webSearchEnabled?: boolean
   apiKey?: string | null
 }
 
@@ -466,6 +469,11 @@ interface AIProgressEventBase {
 export type AIProgressEvent =
   | (AIProgressEventBase & { type: 'started' })
   | (AIProgressEventBase & { type: 'attempt_started'; attempt: 1 | 2 | 3 })
+  | (AIProgressEventBase & {
+      type: 'stage_changed'
+      attempt: 1 | 2 | 3
+      stage: AIProgressStage
+    })
   | (AIProgressEventBase & { type: 'model_streaming'; attempt: 1 | 2 | 3 })
   | (AIProgressEventBase & {
       type: 'assistant_delta'
@@ -541,6 +549,7 @@ export type AISendResult =
       artifact: AIQuestionnaireArtifactPreviewDto
       attempts: number
       researchStatus?: AIResearchStatus
+      researchMode?: AIResearchMode
       citations?: AIResearchCitation[]
     }
   | {
@@ -550,6 +559,7 @@ export type AISendResult =
       message: AIPublicMessage
       attempts: number
       researchStatus?: AIResearchStatus
+      researchMode?: AIResearchMode
       citations?: AIResearchCitation[]
     }
   | (AIErrorResult & { details?: AIPublicFailureDetails })
@@ -597,10 +607,7 @@ function requestObject(value: unknown): Record<string, unknown> {
 
 export function parseAIConfigUpdateRequest(value: unknown): AIConfigUpdateRequest {
   const input = requestObject(value)
-  exactKeys(input, ['providerId', 'baseUrl', 'model', 'webSearchEnabled'], ['apiKey'])
-  if (!isAIProviderId(input.providerId) || typeof input.webSearchEnabled !== 'boolean') {
-    throw new Error('INVALID_AI_REQUEST')
-  }
+  exactKeys(input, ['baseUrl', 'model'], ['apiKey'])
   const baseUrl = safeString(input.baseUrl, 2_048)
   const model = safeString(input.model, 200)
   const apiKey = input.apiKey
@@ -609,10 +616,8 @@ export function parseAIConfigUpdateRequest(value: unknown): AIConfigUpdateReques
     throw new Error('INVALID_AI_REQUEST')
   }
   return {
-    providerId: input.providerId,
     baseUrl,
     model,
-    webSearchEnabled: input.webSearchEnabled,
     ...(apiKey === undefined ? {} : { apiKey })
   }
 }
@@ -1033,7 +1038,8 @@ function assertArtifactSummary(value: unknown): void {
 }
 
 const AI_PROGRESS_STAGES = new Set<AIProgressStage>([
-  'starting', 'connecting', 'streaming', 'validating', 'repairing',
+  'starting', 'planning', 'literature', 'web_search', 'extracting',
+  'connecting', 'streaming', 'validating', 'repairing',
   'clarification', 'completed', 'failed', 'cancelled'
 ])
 const AI_VALIDATION_FIELD_PATTERN =
@@ -1271,6 +1277,13 @@ export function parseAIProgressEvent(value: unknown): AIProgressEvent {
       responseAttempt(input.attempt)
       break
     }
+    case 'stage_changed': {
+      const input = responseKeys(discriminator, [...baseKeys, 'attempt', 'stage'])
+      responseAttempt(input.attempt)
+      if (typeof input.stage !== 'string' ||
+        !AI_PROGRESS_STAGES.has(input.stage as AIProgressStage)) invalidResponse()
+      break
+    }
     case 'assistant_delta': {
       const input = responseKeys(discriminator, [...baseKeys, 'attempt', 'sequence', 'delta'])
       responseAttempt(input.attempt)
@@ -1299,8 +1312,7 @@ export function parseAIProgressEvent(value: unknown): AIProgressEvent {
         [...baseKeys, 'attempt', 'capability', 'reason']
       )
       responseAttempt(input.attempt)
-      if (input.capability !== 'streaming' && input.capability !== 'response_format' &&
-        input.capability !== 'function_call') {
+      if (input.capability !== 'streaming' && input.capability !== 'response_format') {
         invalidResponse()
       }
       if (input.reason !== 'unsupported') invalidResponse()
@@ -1357,11 +1369,8 @@ export function parseAIResponse<T>(value: unknown, successKeys: readonly string[
 export function parseAIConfigResponse(value: unknown): AIConfigIpcResult {
   return parseKnownResponse<AIConfigIpcResult>(value, ['config'], (result) => {
     const config = responseKeys(result.config, [
-      'providerId', 'baseUrl', 'model', 'webSearchEnabled', 'hasApiKey', 'maskedApiKey'
+      'baseUrl', 'model', 'hasApiKey', 'maskedApiKey'
     ])
-    if (!isAIProviderId(config.providerId) || typeof config.webSearchEnabled !== 'boolean') {
-      invalidResponse()
-    }
     responseString(config.baseUrl, 2_048)
     responseString(config.model, 200, true)
     if (typeof config.hasApiKey !== 'boolean') invalidResponse()
@@ -1431,7 +1440,7 @@ export function parseAISendResponse(value: unknown): AISendResult {
   assertSafeResponseTree(value)
   const discriminator = responseKeys(value, ['ok'], [
     'requestId', 'outcome', 'artifact', 'message', 'attempts',
-    'researchStatus', 'citations', 'errorCode', 'message', 'details'
+    'researchStatus', 'researchMode', 'citations', 'errorCode', 'message', 'details'
   ])
   if (discriminator.ok === false) {
     const failure = responseKeys(
@@ -1445,9 +1454,10 @@ export function parseAISendResponse(value: unknown): AISendResult {
   } else if (discriminator.ok === true) {
     responseId(discriminator.requestId)
     responseAttempt(discriminator.attempts)
-    if (discriminator.researchStatus !== undefined && ![
-      'searched', 'not_needed', 'disabled', 'unsupported', 'failed'
-    ].includes(String(discriminator.researchStatus))) invalidResponse()
+    if (discriminator.researchStatus !== undefined &&
+      !isAIResearchStatus(discriminator.researchStatus)) invalidResponse()
+    if (discriminator.researchMode !== undefined && discriminator.researchMode !== 'medical' &&
+      discriminator.researchMode !== 'non_medical') invalidResponse()
     if (discriminator.citations !== undefined) {
       if (!Array.isArray(discriminator.citations) || discriminator.citations.length > 20) invalidResponse()
       for (const value of discriminator.citations) {
@@ -1466,14 +1476,14 @@ export function parseAISendResponse(value: unknown): AISendResult {
       responseKeys(
         discriminator,
         ['ok', 'requestId', 'outcome', 'artifact', 'attempts'],
-        ['researchStatus', 'citations']
+        ['researchStatus', 'researchMode', 'citations']
       )
       assertQuestionnaireArtifactPreview(discriminator.artifact)
     } else if (discriminator.outcome === 'clarification') {
       responseKeys(
         discriminator,
         ['ok', 'requestId', 'outcome', 'message', 'attempts'],
-        ['researchStatus', 'citations']
+        ['researchStatus', 'researchMode', 'citations']
       )
       assertPublicMessage(discriminator.message)
       const message = discriminator.message as {

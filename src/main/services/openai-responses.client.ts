@@ -1,5 +1,5 @@
 import { normalizeAIBaseUrl } from './ai-config.service'
-import { resolveOpenAICompatibleEndpoint } from './ai-provider-policy'
+import { resolveEndpointCandidates } from './ai-provider-policy'
 import {
   OpenAIResponsesParseError,
   createOpenAIResponsesSseParser,
@@ -8,12 +8,20 @@ import {
 } from './openai-responses.parser'
 import { AIClientError } from './openai-compatible.client'
 
+/**
+ * The Responses API rejects `max_output_tokens` below 16, so the floor is enforced rather than
+ * clamped silently at the transport boundary.
+ */
+export const RESPONSES_MIN_OUTPUT_TOKENS = 16
+const RESPONSES_DEFAULT_OUTPUT_TOKENS = 8_192
+
 export interface AIResponsesSearchRequest {
   baseUrl: string
   model: string
   apiKey?: string
+  instructions?: string
   input: string
-  allowedDomains?: string[]
+  maxOutputTokens?: number
   streamingSupported?: boolean
   signal?: AbortSignal
   onContentDelta?: (delta: string) => void
@@ -36,25 +44,67 @@ export interface OpenAIResponsesClientOptions {
   maxContentCharacters?: number
 }
 
+export type AIResponsesUnsupportedReason = 'web_search_tool' | 'responses_endpoint'
+
+/**
+ * Raised when the deployment explicitly refuses the hosted `web_search` tool or the `/responses`
+ * route. The caller caches this per endpoint and model so the discovery is never paid for twice.
+ */
+export class AIResponsesUnsupportedError extends Error {
+  constructor(
+    readonly reason: AIResponsesUnsupportedReason,
+    readonly status: number
+  ) {
+    super(reason === 'web_search_tool' ? 'AI_RESEARCH_UNSUPPORTED' : 'AI_MODEL_NOT_FOUND')
+    this.name = 'AIResponsesUnsupportedError'
+  }
+}
+
 function statusError(status: number): AIClientError {
   if (status === 401 || status === 403) return new AIClientError('AI_AUTH_ERROR')
-  if (status === 404) return new AIClientError('AI_MODEL_NOT_FOUND')
   if (status === 429) return new AIClientError('AI_RATE_LIMITED')
   return new AIClientError('AI_PROVIDER_ERROR')
 }
 
-function validDomains(values: string[] | undefined): string[] | undefined {
-  if (values === undefined) return undefined
-  if (values.length === 0 || values.length > 20) throw new Error('INVALID_AI_SEARCH_REQUEST')
-  const normalized = values.map((value) => value.trim().toLowerCase())
-  if (normalized.some((value) =>
-    value.length === 0 || value.length > 253 ||
-    !/^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/.test(value)
-  )) throw new Error('INVALID_AI_SEARCH_REQUEST')
-  return [...new Set(normalized)]
+function errorSignal(text: string): { param: string; message: string } {
+  try {
+    const root = JSON.parse(text) as unknown
+    if (typeof root === 'object' && root !== null && !Array.isArray(root)) {
+      const error = (root as Record<string, unknown>).error
+      if (typeof error === 'object' && error !== null && !Array.isArray(error)) {
+        const record = error as Record<string, unknown>
+        return {
+          param: typeof record.param === 'string' ? record.param.toLowerCase() : '',
+          message: [record.code, record.type, record.message]
+            .filter((value): value is string => typeof value === 'string')
+            .join(' ')
+            .toLowerCase()
+        }
+      }
+    }
+  } catch {
+    // Fall through to the raw body.
+  }
+  return { param: '', message: text.toLowerCase() }
 }
 
-async function readBounded(response: Response, maxBytes: number): Promise<string> {
+function namesWebSearchRefusal(status: number, text: string): boolean {
+  if (status !== 400 && status !== 422) return false
+  const { param, message } = errorSignal(text)
+  const namesTool = param.startsWith('tools') || message.includes('web_search') ||
+    message.includes('web search') || message.includes('websearch')
+  const refusal = message.includes('unsupported') || message.includes('not support') ||
+    message.includes('unknown') || message.includes('unrecognized') ||
+    message.includes('invalid') || message.includes('not available') ||
+    message.includes('not enabled')
+  return namesTool && refusal
+}
+
+async function readBounded(
+  response: Response,
+  maxBytes: number,
+  signal?: AbortSignal
+): Promise<string> {
   const declared = response.headers.get('content-length')
   if (declared !== null && Number(declared) > maxBytes) {
     await response.body?.cancel().catch(() => undefined)
@@ -64,15 +114,28 @@ async function readBounded(response: Response, maxBytes: number): Promise<string
   const reader = response.body.getReader()
   const chunks: Uint8Array[] = []
   let size = 0
-  for (;;) {
-    const next = await reader.read()
-    if (next.done) break
-    size += next.value.byteLength
-    if (size > maxBytes) {
-      await reader.cancel().catch(() => undefined)
-      throw new AIClientError('AI_RESPONSE_TOO_LARGE')
+  let cancelled = false
+  const onAbort = (): void => {
+    cancelled = true
+    void reader.cancel().catch(() => undefined)
+  }
+  signal?.addEventListener('abort', onAbort, { once: true })
+  try {
+    for (;;) {
+      const next = await reader.read()
+      if (signal?.aborted === true) throw new Error('ABORTED')
+      if (next.done) break
+      size += next.value.byteLength
+      if (size > maxBytes) {
+        cancelled = true
+        await reader.cancel().catch(() => undefined)
+        throw new AIClientError('AI_RESPONSE_TOO_LARGE')
+      }
+      chunks.push(next.value)
     }
-    chunks.push(next.value)
+  } finally {
+    signal?.removeEventListener('abort', onAbort)
+    if (!cancelled) reader.releaseLock()
   }
   const merged = new Uint8Array(size)
   let offset = 0
@@ -87,24 +150,111 @@ async function readBounded(response: Response, maxBytes: number): Promise<string
   }
 }
 
+function parseError(error: unknown): AIClientError {
+  if (error instanceof AIClientError) return error
+  if (error instanceof OpenAIResponsesParseError) {
+    if (error.kind === 'limit') return new AIClientError('AI_RESPONSE_TOO_LARGE')
+    if (error.kind === 'truncated') return new AIClientError('AI_RESPONSE_TRUNCATED')
+    return new AIClientError('AI_INVALID_RESPONSE')
+  }
+  return new AIClientError('AI_INVALID_RESPONSE')
+}
+
 export function createOpenAIResponsesClient(
   options: OpenAIResponsesClientOptions = {}
 ): { search(request: AIResponsesSearchRequest): Promise<AIResponsesSearchResult> } {
   const fetcher = options.fetch ?? fetch
-  const timeoutMs = options.timeoutMs ?? 60_000
-  const maxResponseBytes = options.maxResponseBytes ?? 2_000_000
+  const timeoutMs = options.timeoutMs ?? 120_000
+  const maxResponseBytes = options.maxResponseBytes ?? 4_000_000
+
+  async function requestOnce(
+    url: string,
+    request: AIResponsesSearchRequest,
+    maxOutputTokens: number,
+    useStreaming: boolean,
+    controller: AbortController
+  ): Promise<Response> {
+    return fetcher(url, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        accept: useStreaming ? 'text/event-stream' : 'application/json',
+        ...(request.apiKey === undefined || request.apiKey.length === 0
+          ? {}
+          : { authorization: `Bearer ${request.apiKey}` })
+      },
+      body: JSON.stringify({
+        model: request.model,
+        ...(request.instructions === undefined || request.instructions.length === 0
+          ? {}
+          : { instructions: request.instructions }),
+        input: request.input,
+        tools: [{ type: 'web_search' }],
+        tool_choice: 'auto',
+        // `/responses` takes `max_output_tokens`; `max_completion_tokens` belongs to Chat Completions.
+        max_output_tokens: maxOutputTokens,
+        ...(useStreaming ? { stream: true } : {})
+      }),
+      signal: controller.signal
+    })
+  }
+
+  async function readStream(
+    response: Response,
+    request: AIResponsesSearchRequest,
+    controller: AbortController
+  ): Promise<AIResponsesSearchResult> {
+    if (response.body === null) throw new AIClientError('AI_INVALID_RESPONSE')
+    const parser = createOpenAIResponsesSseParser({
+      maxEventCount: options.maxEventCount ?? 20_000,
+      maxEventBytes: Math.min(options.maxEventBytes ?? 256_000, maxResponseBytes),
+      maxPartialBytes: Math.min(options.maxPartialEventBytes ?? 256_000, maxResponseBytes),
+      maxContentCharacters: options.maxContentCharacters ?? 1_000_000
+    })
+    const reader = response.body.getReader()
+    let totalBytes = 0
+    let readerCancelled = false
+    const cancelReader = (): void => {
+      readerCancelled = true
+      void reader.cancel().catch(() => undefined)
+    }
+    controller.signal.addEventListener('abort', cancelReader, { once: true })
+    try {
+      for (;;) {
+        const next = await reader.read()
+        if (controller.signal.aborted) throw new Error('ABORTED')
+        if (next.done) break
+        totalBytes += next.value.byteLength
+        if (totalBytes > maxResponseBytes) throw new AIClientError('AI_RESPONSE_TOO_LARGE')
+        for (const delta of parser.push(next.value)) request.onContentDelta?.(delta)
+      }
+      return { ...parser.finish(), streamingSupported: true }
+    } catch (error) {
+      if (!readerCancelled) await reader.cancel().catch(() => undefined)
+      throw error instanceof OpenAIResponsesParseError ? parseError(error) : error
+    } finally {
+      controller.signal.removeEventListener('abort', cancelReader)
+      reader.releaseLock()
+    }
+  }
 
   return {
     async search(request) {
       if (request.signal?.aborted === true) throw new AIClientError('AI_CANCELLED')
-      const baseUrl = normalizeAIBaseUrl(request.baseUrl)
-      const model = request.model.trim()
-      const input = request.input.trim()
-      if (model.length === 0 || model.length > 200 || input.length === 0 || input.length > 100_000) {
+      let baseUrl: string
+      try {
+        baseUrl = normalizeAIBaseUrl(request.baseUrl)
+      } catch {
         throw new Error('INVALID_AI_SEARCH_REQUEST')
       }
-      const allowedDomains = validDomains(request.allowedDomains)
-      const useStreaming = request.streamingSupported !== false
+      const model = request.model.trim()
+      const input = request.input.trim()
+      if (model.length === 0 || model.length > 200 || input.length === 0 || input.length > 200_000) {
+        throw new Error('INVALID_AI_SEARCH_REQUEST')
+      }
+      const requestedTokens = request.maxOutputTokens ?? RESPONSES_DEFAULT_OUTPUT_TOKENS
+      const maxOutputTokens = Math.max(RESPONSES_MIN_OUTPUT_TOKENS, Math.min(requestedTokens, 65_536))
+
       const controller = new AbortController()
       let timedOut = false
       let callerAborted = false
@@ -117,76 +267,51 @@ export function createOpenAIResponsesClient(
         controller.abort()
       }
       request.signal?.addEventListener('abort', onAbort, { once: true })
+
       try {
-        const response = await fetcher(resolveOpenAICompatibleEndpoint(baseUrl, 'responses'), {
-          method: 'POST',
-          headers: {
-            'content-type': 'application/json',
-            ...(request.apiKey ? { authorization: `Bearer ${request.apiKey}` } : {})
-          },
-          body: JSON.stringify({
-            model,
-            input,
-            tools: [{
-              type: 'web_search',
-              ...(allowedDomains === undefined
-                ? {}
-                : { filters: { allowed_domains: allowedDomains } })
-            }],
-            ...(useStreaming ? { stream: true } : {})
-          }),
-          signal: controller.signal
-        })
-        if (controller.signal.aborted) {
-          await response.body?.cancel().catch(() => undefined)
-          throw new Error('ABORTED')
-        }
-        if (!response.ok) {
-          await response.body?.cancel().catch(() => undefined)
-          throw statusError(response.status)
-        }
-        const contentType = response.headers.get('content-type')?.toLowerCase() ?? ''
-        if (!useStreaming || !contentType.includes('text/event-stream')) {
-          const text = await readBounded(response, maxResponseBytes)
-          try {
-            return { ...parseOpenAIResponsesJson(JSON.parse(text)), streamingSupported: false }
-          } catch (error) {
-            if (error instanceof AIClientError) throw error
+        const useStreaming = request.streamingSupported !== false
+        for (const url of resolveEndpointCandidates(baseUrl, 'responses')) {
+          const response = await requestOnce(url, request, maxOutputTokens, useStreaming, controller)
+          if (controller.signal.aborted) {
+            await response.body?.cancel().catch(() => undefined)
+            throw new Error('ABORTED')
+          }
+          if (response.status === 404) {
+            await response.body?.cancel().catch(() => undefined)
+            continue
+          }
+          if (response.status === 400 || response.status === 422) {
+            const text = await readBounded(response, 32_000, controller.signal).catch(() => '')
+            if (namesWebSearchRefusal(response.status, text)) {
+              throw new AIResponsesUnsupportedError('web_search_tool', response.status)
+            }
+            throw statusError(response.status)
+          }
+          if (!response.ok) {
+            await response.body?.cancel().catch(() => undefined)
+            throw statusError(response.status)
+          }
+          if (response.redirected) {
+            await response.body?.cancel().catch(() => undefined)
             throw new AIClientError('AI_INVALID_RESPONSE')
           }
-        }
-        if (response.body === null) throw new AIClientError('AI_INVALID_RESPONSE')
-        const parser = createOpenAIResponsesSseParser({
-          maxEventCount: options.maxEventCount ?? 10_000,
-          maxEventBytes: Math.min(options.maxEventBytes ?? 128_000, maxResponseBytes),
-          maxPartialBytes: Math.min(options.maxPartialEventBytes ?? 128_000, maxResponseBytes),
-          maxContentCharacters: options.maxContentCharacters ?? 1_000_000
-        })
-        const reader = response.body.getReader()
-        let totalBytes = 0
-        try {
-          for (;;) {
-            const next = await reader.read()
-            if (controller.signal.aborted) throw new Error('ABORTED')
-            if (next.done) break
-            totalBytes += next.value.byteLength
-            if (totalBytes > maxResponseBytes) throw new AIClientError('AI_RESPONSE_TOO_LARGE')
-            for (const delta of parser.push(next.value)) request.onContentDelta?.(delta)
+          const contentType = response.headers.get('content-type')?.toLowerCase() ?? ''
+          if (!useStreaming || !contentType.includes('text/event-stream')) {
+            const text = await readBounded(response, maxResponseBytes, controller.signal)
+            try {
+              return { ...parseOpenAIResponsesJson(JSON.parse(text)), streamingSupported: false }
+            } catch (error) {
+              throw parseError(error)
+            }
           }
-          return { ...parser.finish(), streamingSupported: true }
-        } finally {
-          if (controller.signal.aborted || totalBytes > maxResponseBytes) {
-            await reader.cancel().catch(() => undefined)
-          }
-          reader.releaseLock()
+          return await readStream(response, request, controller)
         }
+        throw new AIResponsesUnsupportedError('responses_endpoint', 404)
       } catch (error) {
         if (callerAborted) throw new AIClientError('AI_CANCELLED')
         if (timedOut) throw new AIClientError('AI_TIMEOUT')
+        if (error instanceof AIResponsesUnsupportedError) throw error
         if (error instanceof AIClientError) throw error
-        if (error instanceof OpenAIResponsesParseError) {
-          throw new AIClientError(error.kind === 'limit' ? 'AI_RESPONSE_TOO_LARGE' : 'AI_INVALID_RESPONSE')
-        }
         throw new AIClientError('AI_NETWORK_ERROR')
       } finally {
         clearTimeout(timeout)

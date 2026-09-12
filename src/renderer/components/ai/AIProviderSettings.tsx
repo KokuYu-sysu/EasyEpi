@@ -1,42 +1,35 @@
 import { useCallback, useEffect, useState } from 'react'
 
 import { Button, Input } from '@renderer/components/ui'
-import type { AIProviderConfigView, AIProviderId } from '@shared/ai-assistant-contract'
-import { AI_PROVIDER_PRESETS } from '@shared/ai-provider-profiles'
+import type { AIProviderConfigView } from '@shared/ai-assistant-contract'
+import {
+  DEEPSEEK_BASE_URL,
+  DEEPSEEK_DEFAULT_MODEL,
+  DEEPSEEK_MODEL_OPTIONS
+} from '@shared/ai-provider-profiles'
 import { friendlyAIError } from './ai-errors'
 import { notifyAIConfigChanged } from './ai-config-events'
 
 const EMPTY_CONFIG: AIProviderConfigView = {
-  providerId: 'custom',
-  baseUrl: '',
-  model: '',
-  webSearchEnabled: false,
+  baseUrl: DEEPSEEK_BASE_URL,
+  model: DEEPSEEK_DEFAULT_MODEL,
   hasApiKey: false,
   maskedApiKey: null
 }
 
 export function AIProviderSettings() {
   const [saved, setSaved] = useState<AIProviderConfigView>(EMPTY_CONFIG)
-  const [providerId, setProviderId] = useState<AIProviderId>('custom')
-  const [baseUrl, setBaseUrl] = useState('')
-  const [model, setModel] = useState('')
-  const [webSearchEnabled, setWebSearchEnabled] = useState(false)
+  const [model, setModel] = useState(DEEPSEEK_DEFAULT_MODEL)
   const [apiKey, setApiKey] = useState('')
   const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState(false)
   const [dirty, setDirty] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [status, setStatus] = useState<string | null>(null)
-  const providerChanged = providerId !== (saved.providerId ?? 'custom')
-  const baseUrlChanged = providerChanged || baseUrl.trim() !== saved.baseUrl
-  const searchSupported = !['deepseek', 'gemini', 'custom'].includes(providerId)
 
   const adopt = useCallback((config: AIProviderConfigView) => {
     setSaved(config)
-    setProviderId(config.providerId ?? 'custom')
-    setBaseUrl(config.baseUrl)
-    setModel(config.model)
-    setWebSearchEnabled(config.webSearchEnabled === true)
+    setModel(config.model.length === 0 ? DEEPSEEK_DEFAULT_MODEL : config.model)
     setApiKey('')
     setDirty(false)
   }, [])
@@ -56,10 +49,9 @@ export function AIProviderSettings() {
   }, [adopt])
 
   const save = async () => {
-    const nextBaseUrl = baseUrl.trim()
     const nextModel = model.trim()
-    if (nextBaseUrl.length === 0 || nextModel.length === 0) {
-      setError('请填写 Base URL 和模型名称。')
+    if (nextModel.length === 0) {
+      setError('请填写模型名称。')
       return
     }
     setBusy(true)
@@ -67,10 +59,8 @@ export function AIProviderSettings() {
     setStatus(null)
     try {
       const result = await window.easyEpi.ai.config.update({
-        providerId,
-        baseUrl: nextBaseUrl,
+        baseUrl: DEEPSEEK_BASE_URL,
         model: nextModel,
-        webSearchEnabled,
         ...(apiKey.trim().length > 0 ? { apiKey } : {})
       })
       if (!result.ok) {
@@ -108,12 +98,11 @@ export function AIProviderSettings() {
   }
 
   const testConnection = async () => {
-    if (dirty || providerId !== saved.providerId || baseUrl !== saved.baseUrl ||
-      model !== saved.model || webSearchEnabled !== saved.webSearchEnabled || apiKey.length > 0) {
+    if (dirty || model !== saved.model || apiKey.length > 0) {
       setError('当前有未保存的更改，请先保存再测试连接。')
       return
     }
-    if (!saved.baseUrl || !saved.model || !saved.hasApiKey) {
+    if (!saved.model || !saved.hasApiKey) {
       setError('请先保存完整的 AI 服务配置。')
       return
     }
@@ -144,81 +133,39 @@ export function AIProviderSettings() {
       <div>
         <h3 id="ai-service-settings" className="m-0 text-[length:var(--font-size-lg)]">AI 服务</h3>
         <p className="mb-0 mt-[var(--space-1)] text-[length:var(--font-size-sm)] text-[var(--color-text-secondary)]">
-          只需配置一次，即可跨项目复用。API Key 由系统安全存储保护。
-          清除 API 配置不会清除已确认的隐私说明。
+          EasyEpi 使用 DeepSeek 生成问卷，并通过 DeepSeek Responses API 的内置联网搜索补充权威来源；
+          医学类问卷还会检索 PubMed、Europe PMC 与 bioRxiv/medRxiv 公开接口。
+          API Key 由系统安全存储保护，清除配置不会清除已确认的隐私说明。
         </p>
       </div>
       {loading ? <p role="status" className="m-0">正在读取 AI 服务配置…</p> : (
         <>
-          <label className="grid gap-[var(--space-1)] font-[var(--font-weight-medium)]">
-            <span>AI 厂商</span>
-            <select
-              className="min-h-11 w-full rounded-[var(--radius-1)] border border-[var(--color-border-default)] bg-[var(--color-surface-base)] px-[var(--space-3)]"
-              value={providerId}
-              disabled={busy}
-              onChange={(event) => {
-                const next = event.target.value as AIProviderId
-                const preset = AI_PROVIDER_PRESETS.find(({ id }) => id === next)!
-                setProviderId(next)
-                setApiKey('')
-                if (preset.defaultBaseUrl) setBaseUrl(preset.defaultBaseUrl)
-                if (['deepseek', 'gemini', 'custom'].includes(next)) setWebSearchEnabled(false)
-                markDirty()
-              }}
-            >
-              {AI_PROVIDER_PRESETS.map(({ id, label }) => <option key={id} value={id}>{label}</option>)}
-            </select>
-          </label>
-          <Input
-            label="Base URL"
-            value={baseUrl}
-            placeholder="https://api.example.com/v1"
-            autoComplete="url"
-            disabled={busy}
-            onChange={(event) => { setBaseUrl(event.target.value); markDirty() }}
-          />
+          <p className="m-0 text-[length:var(--font-size-sm)] text-[var(--color-text-secondary)]">
+            服务地址：<code>{DEEPSEEK_BASE_URL}</code>（固定为 DeepSeek 官方接口）
+          </p>
           <Input
             label="模型名称"
             value={model}
-            placeholder="model-name"
+            placeholder={DEEPSEEK_DEFAULT_MODEL}
             autoComplete="off"
             disabled={busy}
+            hint={`常用：${DEEPSEEK_MODEL_OPTIONS.join('、')}`}
             onChange={(event) => { setModel(event.target.value); markDirty() }}
           />
           <Input
             label="API Key"
             type="password"
             value={apiKey}
-            placeholder={saved.hasApiKey && !baseUrlChanged
-              ? '已安全保存；留空将保留原 Key'
-              : '请输入 API Key'}
+            placeholder={saved.hasApiKey ? '已安全保存；留空将保留原 Key' : '请输入 DeepSeek API Key'}
             autoComplete="new-password"
             disabled={busy}
             hint="为保护凭据，已保存的 Key 不会回显。"
             onChange={(event) => { setApiKey(event.target.value); markDirty() }}
           />
-          <label className="flex items-start gap-[var(--space-2)]">
-            <input
-              type="checkbox"
-              aria-label="启用内置联网搜索"
-              checked={webSearchEnabled}
-              disabled={busy || !searchSupported}
-              onChange={(event) => { setWebSearchEnabled(event.target.checked); markDirty() }}
-            />
-            <span>
-              启用内置联网搜索
-              <small className="block text-[var(--color-text-secondary)]">
-                {searchSupported
-                  ? '可能产生额外费用，且可能需在厂商控制台开通。'
-                  : '该厂商当前未提供可用的 OpenAI-Compatible 内置搜索；生成时将显示“本次未联网”。'}
-              </small>
-            </span>
-          </label>
-          {baseUrlChanged ? (
-            <p role="status" className="m-0 text-[length:var(--font-size-sm)] text-[var(--color-warning)]">
-              服务地址变化后需重新输入 API Key
-            </p>
-          ) : !saved.hasApiKey ? (
+          <p className="m-0 text-[length:var(--font-size-sm)] text-[var(--color-text-secondary)]">
+            文献检索说明：<a href="https://www.ncbi.nlm.nih.gov/books/NBK25497/" target="_blank" rel="noreferrer">NCBI E-utilities 使用条款</a>。
+          </p>
+          {!saved.hasApiKey ? (
             <p className="m-0 text-[length:var(--font-size-sm)] text-[var(--color-text-secondary)]">
               未配置 API Key。
             </p>

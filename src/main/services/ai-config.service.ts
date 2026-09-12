@@ -3,31 +3,34 @@ import { mkdir, open, readFile, rename, unlink } from 'node:fs/promises'
 import path from 'node:path'
 
 import type {
-  AIProviderId,
   AIProviderConfigErrorCode,
   AIProviderConfigResult,
   AIProviderConfigUpdate,
   AIProviderConfigView
 } from '@shared/ai-assistant-contract'
+import { AI_MASKED_API_KEY, AI_PRIVACY_NOTICE_VERSION } from '@shared/ai-assistant-contract'
 import {
-  AI_MASKED_API_KEY,
-  AI_PRIVACY_NOTICE_VERSION,
-  isAIProviderId
-} from '@shared/ai-assistant-contract'
-import { detectAIProviderId } from '@shared/ai-provider-profiles'
+  DEEPSEEK_BASE_URL,
+  DEEPSEEK_DEFAULT_MODEL,
+  detectAIProviderId
+} from '@shared/ai-provider-profiles'
 
 const CONFIG_FILE_NAME = 'ai-provider-config.json'
-const DEFAULT_BASE_URL = 'https://api.openai.com/v1'
+const DEFAULT_BASE_URL = DEEPSEEK_BASE_URL
 const MAX_BASE_URL_LENGTH = 2_048
 const MAX_MODEL_LENGTH = 200
 const MAX_API_KEY_LENGTH = 8_192
 
+/**
+ * Schema v3 drops `providerId` and `webSearchEnabled`: EasyEpi supports exactly one provider, and
+ * retrieval is a mandatory pipeline stage rather than a user preference.
+ */
+const CURRENT_SCHEMA_VERSION = 3
+
 interface StoredAIConfig {
-  schemaVersion: 1 | 2
-  providerId: AIProviderId
+  schemaVersion: number
   baseUrl: string
   model: string
-  webSearchEnabled: boolean
   encryptedApiKey?: string
   privacyAcceptedAt?: string
   privacyNoticeVersion?: number
@@ -40,10 +43,8 @@ export interface AISecureStorage {
 }
 
 export interface AIMainConfig {
-  providerId?: AIProviderId
   baseUrl: string
   model: string
-  webSearchEnabled?: boolean
   apiKey?: string
 }
 
@@ -123,7 +124,7 @@ export function normalizeAIBaseUrl(value: string): string {
 export function validateAIConfigUpdate(request: unknown): AIProviderConfigUpdate {
   if (!isPlainObject(request)) throw new Error('INVALID_AI_CONFIG')
 
-  const { providerId, baseUrl, model, webSearchEnabled, apiKey } = request
+  const { baseUrl, model, apiKey } = request
   if (
     typeof baseUrl !== 'string' ||
     typeof model !== 'string' ||
@@ -131,8 +132,6 @@ export function validateAIConfigUpdate(request: unknown): AIProviderConfigUpdate
     model.length === 0 ||
     model.length > MAX_MODEL_LENGTH ||
     hasControlCharacter(model) ||
-    (providerId !== undefined && !isAIProviderId(providerId)) ||
-    (webSearchEnabled !== undefined && typeof webSearchEnabled !== 'boolean') ||
     (apiKey !== undefined && apiKey !== null && typeof apiKey !== 'string') ||
     (typeof apiKey === 'string' && (apiKey.length > MAX_API_KEY_LENGTH || apiKey.includes('\0')))
   ) {
@@ -140,25 +139,26 @@ export function validateAIConfigUpdate(request: unknown): AIProviderConfigUpdate
   }
 
   const normalized: AIProviderConfigUpdate = {
-    providerId: providerId ?? detectAIProviderId(baseUrl),
     baseUrl: normalizeAIBaseUrl(baseUrl),
-    model,
-    webSearchEnabled: webSearchEnabled ?? false
+    model
   }
   if (apiKey !== undefined) normalized.apiKey = apiKey
   return normalized
 }
 
+/**
+ * Accepts schema v1 (single-vendor, no provider field), v2 (providerId + webSearchEnabled) and v3.
+ * Every legacy shape is normalized onto the single supported provider: a stored base URL that does
+ * not resolve to DeepSeek is replaced, its model id is reset, and its encrypted key is dropped
+ * because a key issued elsewhere is useless here.
+ */
 function parseStoredAIConfig(value: unknown): StoredAIConfig {
   if (!isPlainObject(value)) throw new Error('INVALID_AI_CONFIG_FILE')
   const {
-    schemaVersion, providerId, baseUrl, model, webSearchEnabled,
-    encryptedApiKey, privacyAcceptedAt, privacyNoticeVersion
+    schemaVersion, baseUrl, model, encryptedApiKey, privacyAcceptedAt, privacyNoticeVersion
   } = value
   if (
-    (schemaVersion !== 1 && schemaVersion !== 2) ||
-    (schemaVersion === 2 && !isAIProviderId(providerId)) ||
-    (schemaVersion === 2 && typeof webSearchEnabled !== 'boolean') ||
+    schemaVersion !== 1 && schemaVersion !== 2 && schemaVersion !== CURRENT_SCHEMA_VERSION ||
     typeof baseUrl !== 'string' ||
     typeof model !== 'string' ||
     (encryptedApiKey !== undefined &&
@@ -171,16 +171,29 @@ function parseStoredAIConfig(value: unknown): StoredAIConfig {
     throw new Error('INVALID_AI_CONFIG_FILE')
   }
 
-  const validated = model.length === 0
-    ? { baseUrl: normalizeAIBaseUrl(baseUrl), model }
-    : validateAIConfigUpdate({ baseUrl, model })
+  let storedBaseUrl: string
+  try {
+    storedBaseUrl = normalizeAIBaseUrl(baseUrl)
+  } catch {
+    throw new Error('INVALID_AI_CONFIG_FILE')
+  }
+  const belongsToDeepSeek = detectAIProviderId(storedBaseUrl) === 'deepseek'
+
+  let normalizedModel: string
+  if (model.length === 0) {
+    normalizedModel = ''
+  } else {
+    if (model !== model.trim() || model.length > MAX_MODEL_LENGTH || hasControlCharacter(model)) {
+      throw new Error('INVALID_AI_CONFIG_FILE')
+    }
+    normalizedModel = belongsToDeepSeek ? model : DEEPSEEK_DEFAULT_MODEL
+  }
+
   return {
-    schemaVersion,
-    providerId: schemaVersion === 1 ? detectAIProviderId(validated.baseUrl) : providerId as AIProviderId,
-    baseUrl: validated.baseUrl,
-    model: validated.model,
-    webSearchEnabled: schemaVersion === 1 ? false : webSearchEnabled as boolean,
-    ...(encryptedApiKey === undefined ? {} : { encryptedApiKey }),
+    schemaVersion: CURRENT_SCHEMA_VERSION,
+    baseUrl: belongsToDeepSeek ? storedBaseUrl : DEFAULT_BASE_URL,
+    model: normalizedModel,
+    ...(belongsToDeepSeek && encryptedApiKey !== undefined ? { encryptedApiKey } : {}),
     ...(privacyAcceptedAt === undefined ? {} : { privacyAcceptedAt }),
     ...(privacyNoticeVersion === undefined ? {} : { privacyNoticeVersion: Number(privacyNoticeVersion) })
   }
@@ -189,23 +202,15 @@ function parseStoredAIConfig(value: unknown): StoredAIConfig {
 function configView(config: StoredAIConfig): AIProviderConfigView {
   const hasApiKey = config.encryptedApiKey !== undefined
   return {
-    providerId: config.providerId,
     baseUrl: config.baseUrl,
     model: config.model,
-    webSearchEnabled: config.webSearchEnabled,
     hasApiKey,
     maskedApiKey: hasApiKey ? AI_MASKED_API_KEY : null
   }
 }
 
 function emptyConfig(): StoredAIConfig {
-  return {
-    schemaVersion: 2,
-    providerId: 'openai',
-    baseUrl: DEFAULT_BASE_URL,
-    model: '',
-    webSearchEnabled: false
-  }
+  return { schemaVersion: CURRENT_SCHEMA_VERSION, baseUrl: DEFAULT_BASE_URL, model: '' }
 }
 
 async function electronSafeStorage(): Promise<AISecureStorage> {
@@ -252,7 +257,10 @@ export function createAIConfigService(
       const handle = await open(temporaryPath, 'wx')
       created = true
       try {
-        await handle.writeFile(`${JSON.stringify({ ...config, schemaVersion: 2 })}\n`, 'utf8')
+        await handle.writeFile(
+          `${JSON.stringify({ ...config, schemaVersion: CURRENT_SCHEMA_VERSION })}\n`,
+          'utf8'
+        )
         await handle.sync()
       } finally {
         await handle.close()
@@ -288,14 +296,18 @@ export function createAIConfigService(
         return { ok: false, code: 'INVALID_AI_CONFIG' }
       }
 
+      // The endpoint is fixed by the provider contract; a caller-supplied host is accepted only when
+      // it is the DeepSeek host, so a renderer bug cannot redirect credentials or requests.
+      const baseUrl = detectAIProviderId(validated.baseUrl) === 'deepseek'
+        ? validated.baseUrl
+        : DEFAULT_BASE_URL
+
       let encryptedApiKey: string | undefined
       let privacyAcceptedAt: string | undefined
       let privacyNoticeVersion: number | undefined
       try {
         const current = await readStored()
-        encryptedApiKey = validated.apiKey === undefined &&
-          validated.providerId === current.providerId &&
-          validated.baseUrl === current.baseUrl
+        encryptedApiKey = validated.apiKey === undefined && baseUrl === current.baseUrl
           ? current.encryptedApiKey
           : undefined
         privacyAcceptedAt = current.privacyAcceptedAt
@@ -323,11 +335,9 @@ export function createAIConfigService(
       }
 
       const stored: StoredAIConfig = {
-        schemaVersion: 2,
-        providerId: validated.providerId!,
-        baseUrl: validated.baseUrl,
+        schemaVersion: CURRENT_SCHEMA_VERSION,
+        baseUrl,
         model: validated.model,
-        webSearchEnabled: validated.webSearchEnabled!,
         ...(encryptedApiKey === undefined ? {} : { encryptedApiKey }),
         ...(privacyAcceptedAt === undefined ? {} : { privacyAcceptedAt }),
         ...(privacyNoticeVersion === undefined ? {} : { privacyNoticeVersion })
@@ -378,12 +388,7 @@ export function createAIConfigService(
   async function getPlaintextForMain(): Promise<AIMainConfig> {
     const stored = await readStored()
     if (stored.encryptedApiKey === undefined) {
-      return {
-        providerId: stored.providerId,
-        baseUrl: stored.baseUrl,
-        model: stored.model,
-        webSearchEnabled: stored.webSearchEnabled
-      }
+      return { baseUrl: stored.baseUrl, model: stored.model }
     }
 
     let storage: AISecureStorage
@@ -391,13 +396,7 @@ export function createAIConfigService(
       storage = await secureStorage()
       if (!storage.isEncryptionAvailable()) throw new Error('UNAVAILABLE')
       const apiKey = storage.decryptString(Buffer.from(stored.encryptedApiKey, 'base64'))
-      return {
-        providerId: stored.providerId,
-        baseUrl: stored.baseUrl,
-        model: stored.model,
-        webSearchEnabled: stored.webSearchEnabled,
-        apiKey
-      }
+      return { baseUrl: stored.baseUrl, model: stored.model, apiKey }
     } catch {
       const code: AIProviderConfigErrorCode = 'AI_SECURE_STORAGE_UNAVAILABLE'
       throw new Error(code)

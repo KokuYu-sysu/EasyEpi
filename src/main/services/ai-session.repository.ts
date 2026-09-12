@@ -394,7 +394,8 @@ function validateProgress(value: unknown): AIRunProgress {
     typeof value.stage !== 'string' ||
     typeof value.attempt !== 'number' ||
     ![
-    'starting', 'connecting', 'streaming', 'validating', 'repairing', 'clarification',
+    'starting', 'planning', 'literature', 'web_search', 'extracting',
+    'connecting', 'streaming', 'validating', 'repairing', 'clarification',
     'completed', 'failed', 'cancelled'
   ].includes(value.stage) || !Number.isInteger(value.attempt) || ![1, 2, 3].includes(value.attempt) ||
     typeof value.streamFallback !== 'boolean' ||
@@ -411,18 +412,22 @@ function validateProgress(value: unknown): AIRunProgress {
 function validateRunResult(value: unknown): AIRunResult {
   if (!isPlainObject(value)) throw new Error('INVALID_AI_RUN_RESULT')
   if (value.kind === 'questionnaire') {
-    exactKeys(value, ['kind', 'artifactId'], ['researchStatus', 'citations'])
+    exactKeys(value, ['kind', 'artifactId'], ['researchStatus', 'researchMode', 'citations'])
     validatePathSegment(value.artifactId)
   } else if (value.kind === 'clarification') {
-    exactKeys(value, ['kind', 'messageId', 'clarificationId'], ['researchStatus', 'citations'])
+    exactKeys(value, ['kind', 'messageId', 'clarificationId'], ['researchStatus', 'researchMode', 'citations'])
     validatePathSegment(value.messageId)
     validatePathSegment(value.clarificationId)
   } else {
     throw new Error('INVALID_AI_RUN_RESULT')
   }
   if (value.researchStatus !== undefined && ![
-    'searched', 'not_needed', 'disabled', 'unsupported', 'failed'
+    'literature_and_web', 'literature_only', 'web_only', 'none'
   ].includes(String(value.researchStatus))) throw new Error('INVALID_AI_RUN_RESULT')
+  if (value.researchMode !== undefined &&
+    value.researchMode !== 'medical' && value.researchMode !== 'non_medical') {
+    throw new Error('INVALID_AI_RUN_RESULT')
+  }
   if (value.citations !== undefined) {
     if (!Array.isArray(value.citations) || value.citations.length > 20) throw new Error('INVALID_AI_RUN_RESULT')
     for (const citation of value.citations) {
@@ -524,15 +529,20 @@ function isCurrentV2Run(session: AISessionData, run: AIRun): boolean {
 }
 
 const SAME_ATTEMPT_PROGRESS_TRANSITIONS: Record<string, ReadonlySet<string>> = {
-  starting: new Set(['starting', 'connecting']),
+  starting: new Set(['starting', 'planning', 'connecting']),
+  planning: new Set(['planning', 'literature', 'web_search', 'connecting']),
+  literature: new Set(['literature', 'web_search', 'connecting']),
+  web_search: new Set(['web_search', 'extracting', 'connecting']),
+  extracting: new Set(['extracting', 'connecting']),
   connecting: new Set(['connecting', 'streaming', 'validating']),
   streaming: new Set(['streaming', 'validating']),
   validating: new Set(['validating', 'repairing', 'clarification']),
-  repairing: new Set(['repairing']),
+  repairing: new Set(['repairing', 'connecting']),
   clarification: new Set(['clarification'])
 }
 const RUNNING_PROGRESS_STAGES = new Set([
-  'starting', 'connecting', 'streaming', 'validating', 'repairing'
+  'starting', 'planning', 'literature', 'web_search', 'extracting',
+  'connecting', 'streaming', 'validating', 'repairing'
 ])
 
 function assertProgressTransition(current: AIRunProgress, next: AIRunProgress): void {

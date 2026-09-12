@@ -26,7 +26,11 @@ import {
   Textarea,
   useToast
 } from '@renderer/components/ui'
-import { friendlyAIError, isProjectBoundaryError } from '@renderer/components/ai/ai-errors'
+import {
+  AI_RESEARCH_STATUS_LABELS,
+  friendlyAIError,
+  isProjectBoundaryError
+} from '@renderer/components/ai/ai-errors'
 import { subscribeAIConfigChanged } from '@renderer/components/ai/ai-config-events'
 import { AIClarificationReplies } from '@renderer/components/ai/AIClarificationReplies'
 import { AIRunProgress, type AIRunProgressState } from '@renderer/components/ai/AIRunProgress'
@@ -41,11 +45,14 @@ import {
   type AIProgressEvent,
   type AIQuestionnaireArtifactPreviewDto,
   type AIResearchCitation,
-  type AIResearchStatus,
   type AISessionListItem,
   type AISessionPage,
   type AISessionStatus
 } from '@shared/ai-assistant-contract'
+import {
+  validateQuestionnaireFormat,
+  type QuestionnaireFormatIssue
+} from '@shared/questionnaire-format'
 import {
   CONDITION_OPERATOR_LABELS,
   CONSTRAINT_TYPE_LABELS,
@@ -110,14 +117,6 @@ const STATUS_LABELS: Record<AISessionStatus, string> = {
   completed: '已完成',
   failed: '失败',
   cancelled: '已取消'
-}
-
-const RESEARCH_STATUS_LABELS: Record<AIResearchStatus, string> = {
-  searched: '本次已联网检索',
-  not_needed: '服务商未执行联网检索',
-  disabled: '本次未联网（联网搜索未启用）',
-  unsupported: '本次未联网（当前厂商不支持兼容搜索）',
-  failed: '本次未联网（联网检索失败，已继续生成）'
 }
 
 function statusVariant(status: AISessionStatus): 'neutral' | 'success' | 'warning' | 'danger' {
@@ -267,6 +266,8 @@ function updateLiveRun(previous: LiveRunState, event: AIProgressEvent): LiveRunS
       return { ...base, stage: 'starting' }
     case 'attempt_started':
       return { ...base, stage: event.attempt === 1 ? 'connecting' : 'repairing', attempt: event.attempt, provisionalText: '' }
+    case 'stage_changed':
+      return { ...base, stage: event.stage, attempt: event.attempt }
     case 'model_streaming':
       return { ...base, stage: 'streaming', attempt: event.attempt }
     case 'assistant_delta': {
@@ -303,8 +304,7 @@ function updateLiveRun(previous: LiveRunState, event: AIProgressEvent): LiveRunS
         ...base,
         attempt: event.attempt,
         streamFallback: previous.streamFallback || event.capability === 'streaming',
-        responseFormatFallback: previous.responseFormatFallback || event.capability === 'response_format',
-        toolCallingFallback: previous.toolCallingFallback || event.capability === 'function_call'
+        responseFormatFallback: previous.responseFormatFallback || event.capability === 'response_format'
       }
     case 'clarification':
       return { ...base, stage: 'clarification', attempt: event.attempt }
@@ -339,15 +339,18 @@ function ArtifactPreviewCard({
   applying,
   blocked,
   requiresRegeneration,
+  formatIssues,
   onApply
 }: {
   artifact: ActiveArtifact
   applying: boolean
   blocked: boolean
   requiresRegeneration: boolean
+  formatIssues: readonly QuestionnaireFormatIssue[]
   onApply(): void
 }) {
   const { preview } = artifact
+  const formatFailed = formatIssues.length > 0
   const metadataChanges = Number(preview.diff.metadata.name !== null) +
     Number(preview.diff.metadata.description !== null)
   return (
@@ -359,8 +362,10 @@ function ArtifactPreviewCard({
             {preview.rollingSummary}
           </p>
         </div>
-        <Badge variant={requiresRegeneration ? 'warning' : 'success'}>
-          {artifact.historical ? '历史记录 · 需重新生成' : requiresRegeneration ? '需重新生成' : '本地校验通过'}
+        <Badge variant={formatFailed || requiresRegeneration ? 'warning' : 'success'}>
+          {formatFailed
+            ? '本地渲染校验未通过'
+            : artifact.historical ? '历史记录 · 需重新生成' : requiresRegeneration ? '需重新生成' : '本地校验通过'}
         </Badge>
       </CardHeader>
       <CardContent className="grid gap-[var(--space-4)]">
@@ -403,6 +408,28 @@ function ArtifactPreviewCard({
             <p className="mb-0 text-[length:var(--font-size-sm)]">修改：{preview.diff.questions.modified.map(({ variableName, fields }) => `${variableName}（${fields.join('、')}）`).join('；')}</p>
           ) : null}
         </section>
+        {formatFailed ? (
+          <section
+            role="alert"
+            aria-labelledby="draft-format-title"
+            className="rounded-[var(--radius-1)] bg-[var(--color-danger-soft)] p-[var(--space-3)]"
+          >
+            <h4 id="draft-format-title" className="mt-0">本地渲染校验未通过</h4>
+            <p className="mb-0">此草稿无法被问卷设计器识别，已禁止应用。请根据下列字段路径重新生成：</p>
+            <ul className="mb-0 mt-[var(--space-2)] grid gap-[var(--space-1)] pl-[var(--space-5)]">
+              {formatIssues.slice(0, 12).map((issue) => (
+                <li key={`${issue.code}:${issue.path}`}>
+                  <code>{issue.path}</code> · {issue.code}
+                </li>
+              ))}
+            </ul>
+            {formatIssues.length > 12 ? (
+              <p className="mb-0 mt-[var(--space-1)] text-[length:var(--font-size-sm)]">
+                另有 {formatIssues.length - 12} 个问题未显示
+              </p>
+            ) : null}
+          </section>
+        ) : null}
         {requiresRegeneration ? (
           <p role="status" className="m-0 rounded-[var(--radius-1)] bg-[var(--color-warning-soft)] p-[var(--space-3)]">
             {artifact.historical
@@ -412,7 +439,7 @@ function ArtifactPreviewCard({
         ) : null}
         <div className="flex justify-end">
           <ConfirmDialog
-            trigger={<Button loading={applying} disabled={applying || blocked || requiresRegeneration}>应用到正式问卷</Button>}
+            trigger={<Button loading={applying} disabled={applying || blocked || requiresRegeneration || formatFailed}>应用到正式问卷</Button>}
             title="应用 AI 问卷草稿"
             description="应用前会自动创建项目备份，并保留现有衍生变量。确定将此草稿应用到正式问卷吗？"
             confirmLabel="确认应用"
@@ -1185,8 +1212,8 @@ export function AIQuestionnairePage() {
         return
       }
       setDraft('')
-      setResearchNotice(RESEARCH_STATUS_LABELS[result.researchStatus ?? 'disabled'])
-      setResearchCitations(result.researchStatus === 'searched' ? (result.citations ?? []) : [])
+      setResearchNotice(AI_RESEARCH_STATUS_LABELS[result.researchStatus ?? 'none'])
+      setResearchCitations(result.researchStatus === 'none' ? [] : (result.citations ?? []))
       if (result.outcome === 'clarification') {
         setAnnouncement('AI 提出了一个补充问题。')
         await Promise.all([
@@ -1361,6 +1388,10 @@ export function AIQuestionnairePage() {
       migratingRef.current || sessionRequiresMigration || activeArtifact.historical ||
       (artifactApplicability?.artifactId === activeArtifact.artifactId &&
         !artifactApplicability.applicable)) return
+    if (!validateQuestionnaireFormat(activeArtifact.preview.draft).ok) {
+      setError('此草稿未通过本地渲染校验，无法应用。请根据校验结果重新生成。')
+      return
+    }
     const artifact = activeArtifact
     const artifactIdentityIsCurrent = () => {
       const current = activeArtifactRef.current
@@ -1416,6 +1447,13 @@ export function AIQuestionnairePage() {
   const activeArtifactRequiresRegeneration = activeArtifact?.historical === true ||
     (activeArtifact !== null && artifactApplicability?.artifactId === activeArtifact.artifactId &&
       !artifactApplicability.applicable)
+  // The renderer runs the same shared format validator the main process uses, so a draft that the
+  // design surface could not load is refused here instead of being applied and discovered later.
+  const activeArtifactFormatIssues: QuestionnaireFormatIssue[] = (() => {
+    if (activeArtifact === null) return []
+    const result = validateQuestionnaireFormat(activeArtifact.preview.draft)
+    return result.ok ? [] : result.issues
+  })()
   const canSend = activeSessionId !== null && draft.trim().length > 0 && !sessionOperationsLocked &&
     !projectBlocked && !configMissing && !sessionRequiresMigration && !sessionRunActive
 
@@ -1600,6 +1638,7 @@ export function AIQuestionnairePage() {
                     applying={applying}
                     blocked={sessionOperationsLocked || sessionRunActive || sessionRequiresMigration}
                     requiresRegeneration={activeArtifactRequiresRegeneration}
+                    formatIssues={activeArtifactFormatIssues}
                     onApply={() => void applyArtifact()}
                   />
                 ) : null}

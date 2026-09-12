@@ -1,7 +1,7 @@
-import type { AIProgressStage } from '@shared/ai-assistant-contract'
+import type { AIProgressStage, AIResearchStatus } from '@shared/ai-assistant-contract'
 
 const ERROR_MESSAGES: Readonly<Record<string, string>> = {
-  INVALID_AI_CONFIG: '请填写有效的 AI 服务地址和模型名称。',
+  INVALID_AI_CONFIG: '请填写有效的模型名称与 API Key。',
   AI_CONFIG_READ_FAILED: '无法读取 AI 服务配置，请稍后重试。',
   AI_CONFIG_SAVE_FAILED: '无法保存 AI 服务配置，请稍后重试。',
   AI_SECURE_STORAGE_UNAVAILABLE: '当前系统安全存储不可用，无法保存 API Key。',
@@ -18,10 +18,12 @@ const ERROR_MESSAGES: Readonly<Record<string, string>> = {
   AI_MODEL_NOT_FOUND: '找不到所配置的模型，请检查模型名称。',
   AI_RATE_LIMITED: 'AI 服务当前繁忙，请稍后重试。',
   AI_TIMEOUT: 'AI 服务响应超时，请稍后重试。',
-  AI_NETWORK_ERROR: '无法连接 AI 服务，请检查服务地址和网络。',
+  AI_NETWORK_ERROR: '无法连接 AI 服务，请检查网络。',
   AI_PROVIDER_ERROR: 'AI 服务返回错误，请稍后重试。',
   AI_INVALID_RESPONSE: 'AI 服务返回的内容无法使用。',
   AI_RESPONSE_TOO_LARGE: 'AI 返回内容过大，请缩短要求后重试。',
+  AI_RESPONSE_TRUNCATED: '模型回复被截断，请减少题目数量或缩短要求后重试。',
+  AI_MODEL_OUTPUT_TRUNCATED: '模型回复被截断，请减少题目数量或缩短要求后重试。',
   AI_HARNESS_VALIDATION_FAILED: '生成的问卷未通过本地校验，请调整要求后重试。',
   AI_VALIDATION_ERROR: '生成内容存在无法使用的字段，请根据校验摘要重新生成。',
   AI_ARTIFACT_STALE: '正式问卷已变更，此草稿已过期，不能应用。',
@@ -30,11 +32,21 @@ const ERROR_MESSAGES: Readonly<Record<string, string>> = {
   AI_ARTIFACT_APPLY_FAILED: '应用草稿失败，正式问卷保持不变。',
   AI_PERSIST_FAILED: '无法保存 AI 对话，请重试。',
   AI_SESSION_PAGE_TOO_LARGE: '此段对话内容过大，暂时无法显示。',
-  AI_VERSION_MIGRATION_REQUIRED: '该对话版本较旧，需要迁移后才能继续。'
+  AI_VERSION_MIGRATION_REQUIRED: '该对话版本较旧，需要迁移后才能继续。',
+  AI_RESEARCH_PLAN_INVALID: '无法把你的要求转换为可检索的英文研究问题，请把要求写得更具体后重试。',
+  AI_PUBMED_UNAVAILABLE: 'PubMed 暂时无法访问，请稍后重试或简化检索要求。',
+  AI_RESEARCH_NO_EVIDENCE: '没有检索到可核验的文献或联网来源，为避免生成无依据的问卷，本次已停止。',
+  AI_RESEARCH_SOURCE_INVALID: '检索到的来源信息不完整，已丢弃该来源。',
+  AI_EVIDENCE_INVALID: '无法从检索结果中提取可核验的证据，请调整要求后重试。',
+  AI_RESEARCH_UNSUPPORTED: '当前模型不支持内置联网搜索，请确认账号与模型是否已开通该能力。'
 }
 
 export const AI_PROGRESS_STAGE_LABELS: Readonly<Record<AIProgressStage, string>> = {
-  starting: '正在提交请求',
+  starting: '正在准备任务',
+  planning: '正在翻译并规划检索',
+  literature: '正在检索医学文献',
+  web_search: '正在补充权威来源',
+  extracting: '正在提取研究证据',
   connecting: '正在连接模型',
   streaming: '正在接收模型回答',
   validating: '正在进行本地校验',
@@ -43,6 +55,13 @@ export const AI_PROGRESS_STAGE_LABELS: Readonly<Record<AIProgressStage, string>>
   completed: '生成完成',
   failed: '生成失败',
   cancelled: '已取消生成'
+}
+
+export const AI_RESEARCH_STATUS_LABELS: Readonly<Record<AIResearchStatus, string>> = {
+  literature_and_web: '本次已检索医学文献并补充联网来源',
+  literature_only: '本次已检索医学文献（联网检索未返回可用来源）',
+  web_only: '本次已检索联网来源',
+  none: '本次未联网'
 }
 
 export function aiProgressStageLabel(stage: AIProgressStage, attempt: 1 | 2 | 3): string {

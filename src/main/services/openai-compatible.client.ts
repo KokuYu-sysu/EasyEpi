@@ -1,10 +1,7 @@
-import type { AIProviderId } from '@shared/ai-assistant-contract'
-
 import { validateAIConfigUpdate } from './ai-config.service'
 import {
-  getAIProviderRequestPolicy,
   resolveOpenAICompatibleEndpoint,
-  type AIResponseFormatLevel
+  type AITokenLimitParameter
 } from './ai-provider-policy'
 import {
   OpenAIStreamParseError,
@@ -21,6 +18,8 @@ export type AIClientErrorCode =
   | 'AI_TIMEOUT'
   | 'AI_CANCELLED'
   | 'AI_RESPONSE_TOO_LARGE'
+  | 'AI_RESPONSE_TRUNCATED'
+  | 'AI_CONTENT_FILTERED'
   | 'AI_INVALID_RESPONSE'
   | 'AI_NETWORK_ERROR'
   | 'AI_PROVIDER_ERROR'
@@ -37,22 +36,26 @@ export interface AIChatMessage {
   content: string
 }
 
+export type AIOutputMode = 'text' | 'json_object'
+
 export interface AIChatCompletionRequest {
-  providerId?: AIProviderId
   baseUrl: string
   model: string
   apiKey?: string
   messages: AIChatMessage[]
   signal?: AbortSignal
-  /** False means this provider/model was already proven not to support JSON schema. */
+  /** `json_object` sends `response_format: { type: 'json_object' }` and never sends any tool. */
+  outputMode?: AIOutputMode
+  /** Upper bound for this specific completion; defaults to the client completion limit. */
+  maxOutputTokens?: number
+  /** False means this endpoint/model was already proven not to support structured output. */
   responseFormatSupported?: boolean
-  /** False means this provider/model was already proven not to support SSE streaming. */
+  /** False means this endpoint/model was already proven not to support SSE streaming. */
   streamingSupported?: boolean
-  /** False means this provider/model was already proven not to support function calling. */
-  toolCallingSupported?: boolean
   onModelStreaming?: () => void
   onContentDelta?: (delta: StreamContentDelta) => void
-  onCapabilityFallback?: (capability: 'streaming' | 'response_format' | 'function_call') => void
+  onCapabilityFallback?: (capability: 'streaming' | 'response_format') => void
+  /** Present for questionnaire generation so the exact envelope schema is appended to the prompt. */
   schemaVersion?: number
 }
 
@@ -60,7 +63,6 @@ export interface AIChatCompletionResult {
   content: string
   streamingSupported: boolean
   responseFormatSupported: boolean
-  toolCallingSupported: boolean
 }
 
 export interface OpenAICompatibleClientOptions {
@@ -74,6 +76,7 @@ export interface OpenAICompatibleClientOptions {
   maxStreamContentCharacters?: number
   maxAssistantMessageCharacters?: number
   maxCallbackDeltaCharacters?: number
+  completionTokenLimit?: number
 }
 
 const MODEL_ENVELOPE_SCHEMA_V2 = {
@@ -375,6 +378,17 @@ function unsupportedCapability(
   return narrowlyNamesUnsupportedCapability(metadata.signal, capability)
 }
 
+function unsupportedParameter(status: number, text: string, expectedParam: string): boolean {
+  if (status !== 400 && status !== 422) return false
+  const metadata = providerErrorMetadata(text)
+  if (metadata.param !== undefined) {
+    return (metadata.param === expectedParam || metadata.param.startsWith(`${expectedParam}.`)) &&
+      unsupportedSignal(metadata.signal, true)
+  }
+  const normalized = metadata.signal.replaceAll('_', ' ')
+  return normalized.includes(expectedParam.replaceAll('_', ' ')) && unsupportedSignal(normalized, true)
+}
+
 function statusError(status: number): AIClientError {
   if (status === 401 || status === 403) return new AIClientError('AI_AUTH_ERROR')
   if (status === 404) return new AIClientError('AI_MODEL_NOT_FOUND')
@@ -436,41 +450,10 @@ function completeJsonEvidence(parsed: unknown): CompleteChoiceEvidence {
   }
 }
 
-function strictToolCallContent(parsed: unknown): string {
-  const root = asRecord(parsed)
-  if (!Array.isArray(root.choices) || root.choices.length !== 1) {
-    throw new AIClientError('AI_INVALID_RESPONSE')
-  }
-  const choice = asRecord(root.choices[0])
-  const message = asRecord(choice.message)
-  if (
-    choice.index !== 0 || choice.finish_reason !== 'tool_calls' ||
-    message.role !== undefined && message.role !== 'assistant' ||
-    hasPayload(message, 'content') &&
-      (typeof message.content !== 'string' || message.content.length > 0) ||
-    hasPayload(message, 'refusal') ||
-    hasPayload(message, 'function_call') || !Array.isArray(message.tool_calls) ||
-    message.tool_calls.length !== 1
-  ) {
-    throw new AIClientError('AI_INVALID_RESPONSE')
-  }
-  const toolCall = asRecord(message.tool_calls[0])
-  const fn = asRecord(toolCall.function)
-  if (
-    toolCall.type !== 'function' || fn.name !== 'submit_questionnaire' ||
-    typeof fn.arguments !== 'string' || fn.arguments.length === 0
-  ) {
-    throw new AIClientError('AI_INVALID_RESPONSE')
-  }
-  return fn.arguments
-}
-
-function completionContent(text: string, toolCallingMode: boolean): string {
+function completionContent(text: string): string {
   try {
     const parsed: unknown = JSON.parse(text)
-    return toolCallingMode
-      ? strictToolCallContent(parsed)
-      : strictCompletionContent(completeJsonEvidence(parsed))
+    return strictCompletionContent(completeJsonEvidence(parsed))
   } catch (error) {
     if (error instanceof AIClientError) throw error
     throw new AIClientError('AI_INVALID_RESPONSE')
@@ -498,16 +481,23 @@ export function createOpenAICompatibleClient(
   const maxStreamContentCharacters = options.maxStreamContentCharacters ?? 2_000_000
   const maxAssistantMessageCharacters = options.maxAssistantMessageCharacters ?? 20_000
   const maxCallbackDeltaCharacters = Math.min(options.maxCallbackDeltaCharacters ?? 4_096, 4_096)
+  // DeepSeek's current catalogue serves up to 384,000 output tokens. The default stays well inside
+  // that while leaving room for a large questionnaire in a single structured response.
+  const completionTokenLimit = options.completionTokenLimit ?? 65_536
   if (!Number.isSafeInteger(maxCallbackDeltaCharacters) || maxCallbackDeltaCharacters < 2) {
     throw new Error('INVALID_STREAM_LIMIT')
+  }
+  if (!Number.isSafeInteger(completionTokenLimit) || completionTokenLimit < 16 ||
+    completionTokenLimit > 1_000_000) {
+    throw new Error('INVALID_COMPLETION_TOKEN_LIMIT')
   }
 
   async function requestOnce(
     request: AIChatCompletionRequest,
     useStreaming: boolean,
-    responseFormat: AIResponseFormatLevel,
-    questionnaireMode: boolean,
-    toolCallingMode: boolean
+    jsonMode: boolean,
+    tokenLimitParameter: AITokenLimitParameter,
+    outputTokenLimit: number
   ): Promise<
     | { kind: 'error'; status: number; text: string }
     | { kind: 'complete'; content: string; usedSse: boolean }
@@ -526,10 +516,7 @@ export function createOpenAICompatibleClient(
     }
     request.signal?.addEventListener('abort', onAbort, { once: true })
     try {
-      const policy = getAIProviderRequestPolicy(
-        request.providerId ?? 'custom', request.baseUrl
-      )
-      const messages = questionnaireMode && !toolCallingMode
+      const messages = jsonMode && request.schemaVersion !== undefined
         ? [...request.messages, {
             role: 'system' as const,
             content: questionnaireJsonOnlyInstruction(request.schemaVersion)
@@ -546,41 +533,15 @@ export function createOpenAICompatibleClient(
         body: JSON.stringify({
           model: request.model,
           messages,
-          ...policy.chatBody,
           ...(useStreaming ? { stream: true } : {}),
-          ...(questionnaireMode
-            ? {
-                response_format: { type: 'json_object' },
-                ...(toolCallingMode
-                  ? {
-                      tools: [{
-                        type: 'function',
-                        function: {
-                          name: 'submit_questionnaire',
-                          parameters: providerSchema(request.schemaVersion)
-                        }
-                      }],
-                      tool_choice: {
-                        type: 'function',
-                        function: { name: 'submit_questionnaire' }
-                      }
-                    }
-                  : {})
-              }
-            : responseFormat === 'json_schema'
-              ? {
-                  response_format: {
-                    type: 'json_schema',
-                    json_schema: {
-                      name: 'easyepi_questionnaire_envelope',
-                      strict: true,
-                      schema: providerSchema(request.schemaVersion)
-                    }
-                  }
-                }
-              : responseFormat === 'json_object'
-                ? { response_format: { type: 'json_object' } }
-                : {})
+          ...(jsonMode
+            ? { response_format: { type: 'json_object' } }
+            : {}),
+          ...(tokenLimitParameter === 'max_completion_tokens'
+            ? { max_completion_tokens: outputTokenLimit }
+            : tokenLimitParameter === 'max_tokens'
+              ? { max_tokens: outputTokenLimit }
+              : {})
         }),
         signal: controller.signal
       })
@@ -603,7 +564,7 @@ export function createOpenAICompatibleClient(
         const text = await boundedText(response, maxResponseBytes, controller.signal)
         return {
           kind: 'complete',
-          content: completionContent(text, toolCallingMode),
+          content: completionContent(text),
           usedSse: false
         }
       }
@@ -647,7 +608,6 @@ export function createOpenAICompatibleClient(
             throw new AIClientError('AI_RESPONSE_TOO_LARGE')
           }
           for (const modelDelta of parser.push(result.value)) {
-            if (toolCallingMode) throw new AIClientError('AI_INVALID_RESPONSE')
             const safeDelta = extractor.push(modelDelta.content).join('')
             for (let offset = 0; offset < safeDelta.length;) {
               let end = Math.min(offset + maxCallbackDeltaCharacters, safeDelta.length)
@@ -668,30 +628,24 @@ export function createOpenAICompatibleClient(
         }
         const streamCompletion = parser.finish()
         if (streamCompletion.toolArguments !== undefined) {
-          const evidence = streamCompletion.choice
-          if (
-            !toolCallingMode || evidence.choiceCount !== 1 || evidence.index !== 0 ||
-            evidence.finishReason !== 'tool_calls' || evidence.refusalPresent ||
-            !evidence.toolCallPresent || evidence.role !== undefined && evidence.role !== 'assistant' ||
-            streamCompletion.content.length > 0
-          ) {
-            throw new AIClientError('AI_INVALID_RESPONSE')
-          }
-          return { kind: 'complete', content: streamCompletion.toolArguments, usedSse: true }
+          throw new AIClientError('AI_INVALID_RESPONSE')
         }
         const streamed = streamCompletion.content
         const extracted = extractor.finish()
-        let parsedEnvelope: unknown
-        try {
-          parsedEnvelope = JSON.parse(streamed)
-        } catch {
-          throw new AIClientError('AI_INVALID_RESPONSE')
-        }
-        const root = asRecord(parsedEnvelope)
-        if (typeof root.assistantMessage !== 'string' || root.assistantMessage !== extracted) {
-          throw new AIClientError('AI_INVALID_RESPONSE')
-        }
         const content = strictCompletionContent(streamCompletion.choice)
+        if (request.schemaVersion !== undefined) {
+          // Only the questionnaire envelope carries an `assistantMessage` that the streaming UI mirrors.
+          let parsedEnvelope: unknown
+          try {
+            parsedEnvelope = JSON.parse(streamed)
+          } catch {
+            throw new AIClientError('AI_INVALID_RESPONSE')
+          }
+          const root = asRecord(parsedEnvelope)
+          if (typeof root.assistantMessage !== 'string' || root.assistantMessage !== extracted) {
+            throw new AIClientError('AI_INVALID_RESPONSE')
+          }
+        }
         return { kind: 'complete', content, usedSse: true }
       } catch (error) {
         if (!readerCancelled) {
@@ -726,26 +680,26 @@ export function createOpenAICompatibleClient(
       }
       const safeRequest: AIChatCompletionRequest = {
         ...request,
-        providerId: validated.providerId,
         baseUrl: validated.baseUrl,
         model: validated.model,
         apiKey: typeof validated.apiKey === 'string' ? validated.apiKey : undefined
       }
-      const questionnaireMode = safeRequest.schemaVersion !== undefined
-      const policy = getAIProviderRequestPolicy(
-        safeRequest.providerId ?? 'custom', safeRequest.baseUrl
-      )
-      let responseFormat: AIResponseFormatLevel = questionnaireMode
-        ? 'json_object'
-        : safeRequest.responseFormatSupported === false
-          ? 'text'
-          : policy.responseFormat
-      if (questionnaireMode || responseFormat === 'json_schema') providerSchema(request.schemaVersion)
+      // Questionnaire generation is identified by an explicit schema version; every other JSON
+      // stage opts in through `outputMode`. No request ever carries tools or tool_choice.
+      const jsonMode = safeRequest.schemaVersion !== undefined ||
+        safeRequest.outputMode === 'json_object'
+      let responseFormatSupported = jsonMode || safeRequest.responseFormatSupported !== false
+      if (safeRequest.schemaVersion !== undefined) providerSchema(safeRequest.schemaVersion)
       let useStreaming = safeRequest.streamingSupported !== false
-      let toolCallingMode = questionnaireMode && safeRequest.toolCallingSupported !== false
+      const outputTokenLimit = Math.min(
+        safeRequest.maxOutputTokens ?? completionTokenLimit,
+        completionTokenLimit,
+        1_000_000
+      )
+      let tokenLimitParameter: AITokenLimitParameter = 'max_completion_tokens'
       for (let negotiation = 0; negotiation < 4; negotiation += 1) {
         const result = await requestOnce(
-          safeRequest, useStreaming, responseFormat, questionnaireMode, toolCallingMode
+          safeRequest, useStreaming, jsonMode, tokenLimitParameter, outputTokenLimit
         )
         if (result.kind === 'complete') {
           if (useStreaming && !result.usedSse) {
@@ -755,33 +709,27 @@ export function createOpenAICompatibleClient(
           return {
             content: result.content,
             streamingSupported: useStreaming && result.usedSse,
-            responseFormatSupported: questionnaireMode || responseFormat !== 'text',
-            toolCallingSupported: questionnaireMode && toolCallingMode
+            responseFormatSupported
           }
         }
         if (
-          questionnaireMode && toolCallingMode &&
-          unsupportedCapability(result.status, result.text, 'function_call')
-        ) {
-          toolCallingMode = false
-          safeRequest.onCapabilityFallback?.('function_call')
-          continue
-        }
-        if (
-          !questionnaireMode && responseFormat !== 'text' &&
+          !jsonMode && responseFormatSupported &&
           unsupportedCapability(result.status, result.text, 'response_format')
         ) {
-          if (responseFormat === 'json_schema' && result.text.toLowerCase().includes('json_schema')) {
-            responseFormat = 'json_object'
-          } else {
-            responseFormat = 'text'
-            safeRequest.onCapabilityFallback?.('response_format')
-          }
+          responseFormatSupported = false
+          safeRequest.onCapabilityFallback?.('response_format')
           continue
         }
         if (useStreaming && unsupportedCapability(result.status, result.text, 'streaming')) {
           useStreaming = false
           safeRequest.onCapabilityFallback?.('streaming')
+          continue
+        }
+        if (
+          tokenLimitParameter !== 'none' &&
+          unsupportedParameter(result.status, result.text, tokenLimitParameter)
+        ) {
+          tokenLimitParameter = tokenLimitParameter === 'max_completion_tokens' ? 'max_tokens' : 'none'
           continue
         }
         throw statusError(result.status)
