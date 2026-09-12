@@ -253,46 +253,39 @@ describe('createDesktopApi', () => {
   })
 
   it('never returns the submitted AI API key through the bridge', async () => {
+    const configView = {
+      baseUrl: 'https://api.deepseek.com',
+      model: 'deepseek-v4-flash',
+      hasApiKey: true,
+      maskedApiKey: '••••••••'
+    }
     const invoke = vi.fn()
+      .mockResolvedValueOnce({ ok: true, config: configView })
+      // A stale bridge answer that still carries the removed provider picker and search toggle, or an
+      // unmasked key, must be rejected instead of reaching the renderer.
       .mockResolvedValueOnce({
         ok: true,
         config: {
-          providerId: 'openai',
-          baseUrl: 'https://api.openai.com/v1',
-          model: 'gpt-4.1-mini',
-          webSearchEnabled: false,
-          hasApiKey: true,
-          maskedApiKey: '••••••••'
-        }
-      })
-      .mockResolvedValueOnce({
-        ok: true,
-        config: {
-          providerId: 'openai',
-          baseUrl: 'https://api.openai.com/v1',
-          model: 'gpt-4.1-mini',
-          webSearchEnabled: false,
-          hasApiKey: true,
-          maskedApiKey: '********'
+          ...configView,
+          providerId: 'deepseek',
+          webSearchEnabled: true,
+          maskedApiKey: 'sk-secret'
         }
       })
     const api = createDesktopApi(invoke)
 
     const result = await api.ai.config.update({
-      providerId: 'openai',
-      baseUrl: 'https://api.openai.com/v1',
-      model: 'gpt-4.1-mini',
-      webSearchEnabled: false,
+      baseUrl: 'https://api.deepseek.com',
+      model: 'deepseek-v4-flash',
       apiKey: 'sk-secret'
     })
 
     expect(invoke).toHaveBeenCalledWith(AI_CONFIG_UPDATE_CHANNEL, {
-      providerId: 'openai',
-      baseUrl: 'https://api.openai.com/v1',
-      model: 'gpt-4.1-mini',
-      webSearchEnabled: false,
+      baseUrl: 'https://api.deepseek.com',
+      model: 'deepseek-v4-flash',
       apiKey: 'sk-secret'
     })
+    expect(result).toEqual({ ok: true, config: configView })
     expect(JSON.stringify(result)).not.toContain('sk-secret')
     await expect(api.ai.config.get()).rejects.toThrow('INVALID_AI_RESPONSE')
   })

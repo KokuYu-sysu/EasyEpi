@@ -141,7 +141,10 @@ export function createSseChatCompletionParser(limits: StreamLimits): SseChatComp
       if (!has(toolCall, 'function')) invalid()
       const fn = record(toolCall.function)
       if (has(fn, 'name')) {
-        if (fn.name !== 'submit_questionnaire') invalid()
+        // The questionnaire protocol never requests tools, so any tool call is an unexpected
+        // response shape. It is captured here and rejected by the transport rather than matched
+        // against a specific function name.
+        if (typeof fn.name !== 'string' || fn.name.length === 0 || fn.name.length > 128) invalid()
         toolNameSeen = true
       }
       if (has(fn, 'arguments')) {

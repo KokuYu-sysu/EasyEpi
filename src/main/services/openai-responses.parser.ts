@@ -192,7 +192,13 @@ export function createOpenAIResponsesSseParser(
     if (dataLines.length === 0) return undefined
     const data = dataLines.join('\n')
     if (data === '[DONE]') return undefined
-    const payload = optionalRecord(JSON.parse(data))
+    let parsedData: unknown
+    try {
+      parsedData = JSON.parse(data)
+    } catch {
+      fail()
+    }
+    const payload = optionalRecord(parsedData)
     if (payload === undefined) fail()
     const type = typeof payload.type === 'string' ? payload.type : eventName
     if (eventName.length > 0 && payload.type !== undefined && eventName !== payload.type) fail()

@@ -1259,7 +1259,7 @@ export function parseAIProgressEvent(value: unknown): AIProgressEvent {
   assertSafeResponseTree(value)
   const discriminator = responseKeys(value, ['requestId', 'sessionId', 'runId', 'at', 'type'], [
     'attempt', 'sequence', 'delta', 'failure', 'nextAttempt', 'capability', 'reason',
-    'outcome', 'messageId', 'clarification', 'artifactId', 'errorCode', 'details'
+    'outcome', 'messageId', 'clarification', 'artifactId', 'errorCode', 'details', 'stage'
   ])
   responseId(discriminator.requestId)
   responseId(discriminator.sessionId, SESSION_ID_PATTERN)

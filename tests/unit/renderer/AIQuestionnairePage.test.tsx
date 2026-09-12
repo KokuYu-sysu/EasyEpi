@@ -60,27 +60,50 @@ const legacySession = {
 const questionnaire: QuestionnaireDef = {
   name: '基线调查',
   description: '社区调查',
-  questions: [{
-    id: 'question-1',
-    content: '您的性别是？',
-    variableName: 'sex',
-    type: 'single_choice',
-    options: [{ value: '1', label: '男' }, { value: '2', label: '女' }],
-    constraint: { type: 'none' },
-    defaultValue: '1',
-    isKey: true,
-    allowSkip: false,
-    order: 0
-  }],
+  questions: [
+    {
+      id: 'question-1',
+      content: '您的性别是？',
+      variableName: 'sex',
+      type: 'single_choice',
+      options: [{ value: '1', label: '男' }, { value: '2', label: '女' }],
+      constraint: { type: 'none' },
+      defaultValue: '1',
+      isKey: true,
+      allowSkip: false,
+      order: 0
+    },
+    {
+      id: 'age-question',
+      content: '您的年龄是？',
+      variableName: 'age',
+      type: 'numeric_range',
+      options: [],
+      constraint: { type: 'integer', minValue: 0, maxValue: 120 },
+      isKey: false,
+      allowSkip: false,
+      order: 1
+    }
+  ],
   conditionRules: [{
     id: 'rule-1',
     sourceQuestionId: 'question-1',
     conditions: [{ questionId: 'question-1', operator: 'equals', value: '1' }],
     logic: 'AND',
     action: 'require',
-    targetQuestionIds: ['question-1']
+    targetQuestionIds: ['age-question']
   }],
-  keyQuestionIds: ['question-1'],
+  keyQuestionIds: ['question-1']
+}
+
+/**
+ * A question order must equal its array index and a rule must never target its own source, so the
+ * fixture above is the only shape the shared format validator accepts. Derived variables are not
+ * part of a draft at all: the design surface strips them and the validator rejects the field, so
+ * they live on a separate fixture used only where the app reads the real questionnaire.
+ */
+const questionnaireWithDerivedVariables: QuestionnaireDef = {
+  ...questionnaire,
   derivedVariables: [{
     id: 'derived-1',
     variableName: 'age_group',
@@ -186,7 +209,7 @@ function installApi(accepted: boolean) {
       artifact: { preview: vi.fn(), apply: vi.fn() }
     },
     qnaire: {
-      getData: vi.fn().mockResolvedValue(questionnaire)
+      getData: vi.fn().mockResolvedValue(questionnaireWithDerivedVariables)
     },
     project: { onClosed: vi.fn(() => () => undefined) }
   }
@@ -272,7 +295,7 @@ describe('AIQuestionnairePage boundaries', () => {
 
     await waitFor(() => expect(api.ai.session.get.mock.calls.length).toBeGreaterThan(initialGetCalls))
     expect(within(screen.getByRole('list', { name: '对话消息' })).getByText(persistedMessage.content)).toBeVisible()
-    expect(screen.getByText('无法连接 AI 服务，请检查服务地址和网络。')).toBeVisible()
+    expect(screen.getByText('无法连接 AI 服务，请检查网络。')).toBeVisible()
   })
 
   it('previews completed historical artifacts but never enables their apply action', async () => {
@@ -569,8 +592,8 @@ describe('AIQuestionnairePage boundaries', () => {
       attempt: 1 as const,
       startedAt: '2026-08-25T01:00:00.000Z',
       updatedAt: '2026-08-25T01:00:01.000Z',
-      streamFallback: false,
-      toolCallingFallback: true
+      streamFallback: true,
+      toolCallingFallback: false
     }
     const userMessage = {
       id: 'message-recovered-user',
@@ -624,7 +647,7 @@ describe('AIQuestionnairePage boundaries', () => {
       requestId: recoveredRun.requestId,
       sessionId: session.sessionId
     }, expect.any(Function)))
-    expect(await screen.findByText(/当前服务不支持函数调用/)).toBeVisible()
+    expect(await screen.findByText(/当前服务不支持流式返回/)).toBeVisible()
     releaseReconciliation()
     await waitFor(() => expect(api.ai.session.get).toHaveBeenCalledTimes(3))
     expect(api.ai.onProgress.mock.invocationCallOrder[0]).toBeLessThan(api.ai.session.get.mock.invocationCallOrder[1]!)
@@ -1011,9 +1034,9 @@ describe('AIQuestionnairePage boundaries', () => {
       targetQuestionIds: [`question-${index + 2}`]
     }))
     const largeQuestionnaire: QuestionnaireDef = {
-      ...questionnaire,
-      questions: [...questionnaire.questions, ...extraQuestions],
-      conditionRules: [...questionnaire.conditionRules, ...extraRules]
+      ...questionnaireWithDerivedVariables,
+      questions: [...questionnaireWithDerivedVariables.questions, ...extraQuestions],
+      conditionRules: [...questionnaireWithDerivedVariables.conditionRules, ...extraRules]
     }
     const changedQuestionnaire: QuestionnaireDef = {
       ...largeQuestionnaire,
@@ -1116,5 +1139,211 @@ describe('AIQuestionnairePage boundaries', () => {
     expect((await screen.findAllByText(/已清除 2 项可重建缓存/)).length).toBeGreaterThan(0)
     expect(api.ai.session.get).toHaveBeenCalledTimes(2)
     expect(api.qnaire.getData).not.toHaveBeenCalled()
+  })
+
+  it('narrates the staged research pipeline through stage_changed progress events', async () => {
+    const user = userEvent.setup()
+    const api = installApi(true)
+    let progressCallback!: (event: AIProgressEvent) => void
+    api.ai.onProgress.mockImplementation((_scope, callback) => {
+      progressCallback = callback
+      return vi.fn()
+    })
+    api.ai.send.mockReturnValue(new Promise(() => undefined))
+    renderPage()
+    await screen.findByRole('heading', { name: '调查问卷讨论', level: 3 })
+
+    await user.type(screen.getByRole('textbox', { name: '给 AI 的消息' }), '生成肺癌筛查问卷')
+    await user.click(screen.getByRole('button', { name: '发送消息' }))
+    await waitFor(() => expect(api.ai.send).toHaveBeenCalledTimes(1))
+
+    const requestId = api.ai.send.mock.calls[0]![0].requestId
+    const baseEvent = {
+      requestId,
+      sessionId: session.sessionId,
+      runId: 'run-staged',
+      at: '2026-08-25T01:00:01.000Z'
+    }
+    expect(screen.getByRole('status')).toHaveTextContent(/^正在准备任务$/)
+
+    act(() => progressCallback({
+      ...baseEvent, type: 'stage_changed', attempt: 1, stage: 'planning'
+    }))
+    expect(screen.getByRole('status')).toHaveTextContent(/^正在翻译并规划检索$/)
+    act(() => progressCallback({
+      ...baseEvent, type: 'stage_changed', attempt: 1, stage: 'literature'
+    }))
+    expect(screen.getByRole('status')).toHaveTextContent(/^正在检索医学文献$/)
+    act(() => progressCallback({
+      ...baseEvent, type: 'stage_changed', attempt: 1, stage: 'web_search'
+    }))
+    expect(screen.getByRole('status')).toHaveTextContent(/^正在补充权威来源$/)
+    act(() => progressCallback({
+      ...baseEvent, type: 'stage_changed', attempt: 1, stage: 'extracting'
+    }))
+    expect(screen.getByRole('status')).toHaveTextContent(/^正在提取研究证据$/)
+    act(() => progressCallback({
+      ...baseEvent, type: 'stage_changed', attempt: 1, stage: 'connecting'
+    }))
+    expect(screen.getByRole('status')).toHaveTextContent(/^正在连接模型$/)
+    act(() => progressCallback({
+      ...baseEvent, type: 'stage_changed', attempt: 1, stage: 'literature'
+    }))
+    expect(screen.getByRole('status')).toHaveTextContent(/^正在检索医学文献$/)
+  })
+
+  it('reports the evidence composition of a completed run and drops citations when nothing was retrieved', async () => {
+    const user = userEvent.setup()
+    const api = installApi(true)
+    const preview = artifactPreview('带证据草稿')
+    api.ai.session.get.mockResolvedValue({
+      ok: true,
+      session: artifactPage('artifact-research', 'operation-research')
+    })
+    api.ai.artifact.preview.mockResolvedValue({ ok: true, preview })
+    api.ai.send
+      .mockResolvedValueOnce({
+        ok: true,
+        requestId: 'request-literature',
+        outcome: 'questionnaire',
+        artifact: artifactDto('artifact-research', 'operation-research', preview),
+        attempts: 1,
+        researchStatus: 'literature_and_web',
+        researchMode: 'medical',
+        citations: [
+          { url: 'https://pubmed.ncbi.nlm.nih.gov/12345678/', title: '肺癌筛查随机对照试验' },
+          { url: 'https://www.who.int/health-topics/cancer', title: '世界卫生组织癌症专题' }
+        ]
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        requestId: 'request-web-only',
+        outcome: 'questionnaire',
+        artifact: artifactDto('artifact-research', 'operation-research', preview),
+        attempts: 1,
+        researchStatus: 'web_only',
+        citations: [
+          { url: 'https://www.who.int/health-topics/cancer', title: '世界卫生组织癌症专题' }
+        ]
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        requestId: 'request-literature-only',
+        outcome: 'questionnaire',
+        artifact: artifactDto('artifact-research', 'operation-research', preview),
+        attempts: 1,
+        researchStatus: 'literature_only',
+        citations: []
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        requestId: 'request-none',
+        outcome: 'questionnaire',
+        artifact: artifactDto('artifact-research', 'operation-research', preview),
+        attempts: 1,
+        researchStatus: 'none',
+        citations: []
+      })
+    renderPage()
+    await screen.findByRole('heading', { name: '调查问卷讨论', level: 3 })
+
+    await user.type(screen.getByRole('textbox', { name: '给 AI 的消息' }), '生成肺癌筛查问卷')
+    await user.click(screen.getByRole('button', { name: '发送消息' }))
+    expect(await screen.findByText('本次已检索医学文献并补充联网来源')).toBeVisible()
+    expect(screen.getByRole('link', { name: '肺癌筛查随机对照试验' })).toHaveAttribute(
+      'href',
+      'https://pubmed.ncbi.nlm.nih.gov/12345678/'
+    )
+    expect(screen.getByRole('link', { name: '世界卫生组织癌症专题' })).toBeVisible()
+
+    await user.type(screen.getByRole('textbox', { name: '给 AI 的消息' }), '只补充联网来源')
+    await user.click(screen.getByRole('button', { name: '发送消息' }))
+    expect(await screen.findByText('本次已检索联网来源')).toBeVisible()
+    expect(screen.queryByText('本次已检索医学文献并补充联网来源')).not.toBeInTheDocument()
+    expect(screen.getByRole('link', { name: '世界卫生组织癌症专题' })).toBeVisible()
+
+    await user.type(screen.getByRole('textbox', { name: '给 AI 的消息' }), '只检索文献')
+    await user.click(screen.getByRole('button', { name: '发送消息' }))
+    expect(
+      await screen.findByText('本次已检索医学文献（联网检索未返回可用来源）')
+    ).toBeVisible()
+    expect(screen.queryByRole('link', { name: '世界卫生组织癌症专题' })).not.toBeInTheDocument()
+
+    await user.type(screen.getByRole('textbox', { name: '给 AI 的消息' }), '改为非医学问卷')
+    await user.click(screen.getByRole('button', { name: '发送消息' }))
+    expect(await screen.findByText('本次未联网')).toBeVisible()
+    expect(screen.queryByText('本次已检索医学文献（联网检索未返回可用来源）')).not.toBeInTheDocument()
+    expect(screen.queryByRole('link', { name: '肺癌筛查随机对照试验' })).not.toBeInTheDocument()
+  })
+
+  it('blocks a draft that fails the local render check and names the offending field path', async () => {
+    const user = userEvent.setup()
+    const api = installApi(true)
+    const brokenPreview: AIArtifactPreview = {
+      ...artifactPreview('结构异常草稿'),
+      draft: {
+        ...questionnaire,
+        questions: [{ ...questionnaire.questions[0]!, order: 5 }],
+        conditionRules: []
+      }
+    }
+    api.ai.session.get.mockResolvedValue({
+      ok: true,
+      session: artifactPage('artifact-broken', 'operation-broken')
+    })
+    api.ai.artifact.preview.mockResolvedValue({ ok: true, preview: brokenPreview })
+    renderPage()
+
+    const alert = await screen.findByRole('alert')
+    expect(within(alert).getByText('本地渲染校验未通过')).toBeVisible()
+    expect(within(alert).getByText('$.questions[0].order')).toBeVisible()
+    expect(within(alert).getByText(/INVALID_ORDER/)).toBeVisible()
+    expect(within(alert).getByText(/此草稿无法被问卷设计器识别/)).toBeVisible()
+    expect(screen.getAllByText('本地渲染校验未通过')).toHaveLength(2)
+
+    const applyButton = screen.getByRole('button', { name: '应用到正式问卷' })
+    expect(applyButton).toBeDisabled()
+    await user.click(applyButton)
+    expect(api.ai.artifact.apply).not.toHaveBeenCalled()
+  })
+
+  it('lists at most 12 render-check problems and summarizes the remaining ones', async () => {
+    const api = installApi(true)
+    const brokenQuestions: QuestionnaireDef['questions'] = Array.from(
+      { length: 15 },
+      (_, index) => ({
+        id: `broken-${index + 1}`,
+        content: `异常题目 ${index + 1}`,
+        variableName: `field_${index + 1}`,
+        type: 'free_text' as const,
+        options: [],
+        constraint: { type: 'none' as const },
+        isKey: false,
+        allowSkip: true,
+        order: 99
+      })
+    )
+    const brokenPreview: AIArtifactPreview = {
+      ...artifactPreview('多处异常草稿'),
+      draft: {
+        name: '多处异常问卷',
+        questions: brokenQuestions,
+        conditionRules: [],
+        keyQuestionIds: []
+      }
+    }
+    api.ai.session.get.mockResolvedValue({
+      ok: true,
+      session: artifactPage('artifact-many-broken', 'operation-many-broken')
+    })
+    api.ai.artifact.preview.mockResolvedValue({ ok: true, preview: brokenPreview })
+    renderPage()
+
+    const alert = await screen.findByRole('alert')
+    expect(within(alert).getAllByText(/INVALID_ORDER/)).toHaveLength(12)
+    expect(within(alert).getByText('$.questions[11].order')).toBeVisible()
+    expect(within(alert).queryByText('$.questions[12].order')).not.toBeInTheDocument()
+    expect(within(alert).getByText('另有 3 个问题未显示')).toBeVisible()
+    expect(screen.getByRole('button', { name: '应用到正式问卷' })).toBeDisabled()
   })
 })

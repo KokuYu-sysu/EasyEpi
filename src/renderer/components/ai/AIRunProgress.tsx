@@ -76,11 +76,6 @@ export function AIRunProgress({ run }: AIRunProgressProps) {
             当前服务不支持结构化响应格式，已自动改用兼容模式并保留本地校验。
           </p>
         ) : null}
-        {run.toolCallingFallback ? (
-          <p className="m-0 rounded-[var(--radius-1)] bg-[var(--color-info-soft)] p-[var(--space-2)] text-[var(--color-text-secondary)]">
-            当前模型不支持函数调用，已改用兼容的 JSON 响应；结果仍会在本地校验。
-          </p>
-        ) : null}
         {run.rejectedAttempts.length > 0 ? (
           <ul className="m-0 grid gap-[var(--space-1)] pl-[var(--space-5)] text-[var(--color-text-secondary)]">
             {run.rejectedAttempts.map((failure) => (

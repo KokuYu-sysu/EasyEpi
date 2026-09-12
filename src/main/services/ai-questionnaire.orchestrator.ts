@@ -237,7 +237,7 @@ function repairInstruction(
         ? 'Use JSON strings for id/content/variableName and option value/label; string or null for defaultValue/skipValue; JSON booleans for isKey/allowSkip; an integer for order; integer or null for fixedLength; number or null for minValue/maxValue/step.'
         : '',
       errorCodes.has('FORBIDDEN_FIELD')
-        ? 'Remove every field not declared by submit_questionnaire.'
+        ? 'Remove every field that the questionnaire envelope schema does not declare.'
         : ''
     ].filter(Boolean).join(' ')
     return `The candidate was rejected by the local harness.${lock} Return a corrected full JSON envelope.${guidance.length > 0 ? ` ${guidance}` : ''} Validation errors:\n${JSON.stringify(selected)}`

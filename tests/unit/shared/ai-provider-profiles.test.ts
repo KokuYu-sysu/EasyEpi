@@ -1,47 +1,65 @@
 import { describe, expect, it } from 'vitest'
 
+import { AI_PROVIDER_IDS } from '@shared/ai-assistant-contract'
 import {
-  AI_PROVIDER_PRESETS,
+  AI_PROVIDER_PRESET,
+  DEEPSEEK_BASE_URL,
+  DEEPSEEK_DEFAULT_MODEL,
+  DEEPSEEK_MODEL_OPTIONS,
   detectAIProviderId,
-  getAIProviderPreset
+  getAIProviderPreset,
+  isSupportedAIProviderId
 } from '@shared/ai-provider-profiles'
 
 describe('AI provider presets', () => {
-  it('provides one safe preset for every supported provider', () => {
-    expect(AI_PROVIDER_PRESETS).toEqual([
-      { id: 'openai', label: 'OpenAI', defaultBaseUrl: 'https://api.openai.com/v1' },
-      { id: 'deepseek', label: 'DeepSeek', defaultBaseUrl: 'https://api.deepseek.com' },
-      { id: 'gemini', label: 'Google Gemini', defaultBaseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai' },
-      { id: 'qwen', label: '通义千问', defaultBaseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1' },
-      { id: 'moonshot', label: 'Kimi / Moonshot', defaultBaseUrl: 'https://api.moonshot.cn/v1' },
-      { id: 'glm', label: '智谱 GLM', defaultBaseUrl: 'https://open.bigmodel.cn/api/paas/v4' },
-      { id: 'xai', label: 'xAI', defaultBaseUrl: 'https://api.x.ai/v1' },
-      { id: 'mimo', label: '小米 MiMo', defaultBaseUrl: 'https://api.xiaomimimo.com/v1' },
-      { id: 'custom', label: '自定义 OpenAI-Compatible', defaultBaseUrl: '' }
-    ])
+  it('exposes one frozen preset for the single supported provider', () => {
+    expect(AI_PROVIDER_IDS).toEqual(['deepseek'])
+    expect(AI_PROVIDER_PRESET).toEqual({
+      id: 'deepseek',
+      label: 'DeepSeek',
+      defaultBaseUrl: 'https://api.deepseek.com',
+      defaultModel: 'deepseek-v4-flash'
+    })
+    expect(DEEPSEEK_BASE_URL).toBe('https://api.deepseek.com')
+    expect(DEEPSEEK_DEFAULT_MODEL).toBe('deepseek-v4-flash')
+    expect(DEEPSEEK_MODEL_OPTIONS).toEqual(['deepseek-v4-flash', 'deepseek-v4-pro'])
   })
 
-  it('detects only known official hosts and otherwise uses custom', () => {
-    expect(detectAIProviderId('https://api.openai.com/v1')).toBe('openai')
+  it('detects only the DeepSeek host and reports every other vendor as unsupported', () => {
+    expect(detectAIProviderId('https://api.deepseek.com')).toBe('deepseek')
     expect(detectAIProviderId('https://api.deepseek.com/chat/completions')).toBe('deepseek')
-    expect(detectAIProviderId('https://generativelanguage.googleapis.com/v1beta/openai')).toBe('gemini')
-    expect(detectAIProviderId('https://dashscope.aliyuncs.com/compatible-mode/v1')).toBe('qwen')
-    expect(detectAIProviderId('https://api.moonshot.cn/v1')).toBe('moonshot')
-    expect(detectAIProviderId('https://open.bigmodel.cn/api/paas/v4')).toBe('glm')
-    expect(detectAIProviderId('https://api.x.ai/v1')).toBe('xai')
-    expect(detectAIProviderId('https://api.xiaomimimo.com/v1')).toBe('mimo')
-    expect(detectAIProviderId('https://proxy.example.com/v1')).toBe('custom')
-    expect(detectAIProviderId('not a URL')).toBe('custom')
+    expect(detectAIProviderId('https://api.deepseek.com/v1')).toBe('deepseek')
+    expect(detectAIProviderId('https://API.DeepSeek.com/v1')).toBe('deepseek')
+
+    for (const foreign of [
+      'https://api.openai.com/v1',
+      'https://generativelanguage.googleapis.com/v1beta/openai',
+      'https://dashscope.aliyuncs.com/compatible-mode/v1',
+      'https://api.moonshot.cn/v1',
+      'https://open.bigmodel.cn/api/paas/v4',
+      'https://api.x.ai/v1',
+      'https://api.xiaomimimo.com/v1',
+      'https://proxy.example.com/v1',
+      // A look-alike host must not be mistaken for the official endpoint.
+      'https://api.deepseek.com.evil.example/v1',
+      'not a URL'
+    ]) {
+      expect(detectAIProviderId(foreign)).toBeUndefined()
+    }
   })
 
   it('returns immutable preset data without accepting unknown identifiers', () => {
-    expect(getAIProviderPreset('qwen')).toEqual({
-      id: 'qwen',
-      label: '通义千问',
-      defaultBaseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1'
-    })
-    expect(getAIProviderPreset('not-supported')).toBeUndefined()
-    expect(Object.isFrozen(AI_PROVIDER_PRESETS)).toBe(true)
-    expect(AI_PROVIDER_PRESETS.every(Object.isFrozen)).toBe(true)
+    expect(getAIProviderPreset('deepseek')).toBe(AI_PROVIDER_PRESET)
+    expect(getAIProviderPreset('openai')).toBeUndefined()
+    expect(getAIProviderPreset('qwen')).toBeUndefined()
+    expect(getAIProviderPreset(undefined)).toBeUndefined()
+    expect(getAIProviderPreset(null)).toBeUndefined()
+
+    expect(isSupportedAIProviderId('deepseek')).toBe(true)
+    expect(isSupportedAIProviderId('openai')).toBe(false)
+    expect(isSupportedAIProviderId(7)).toBe(false)
+
+    expect(Object.isFrozen(AI_PROVIDER_PRESET)).toBe(true)
+    expect(Object.isFrozen(DEEPSEEK_MODEL_OPTIONS)).toBe(true)
   })
 })

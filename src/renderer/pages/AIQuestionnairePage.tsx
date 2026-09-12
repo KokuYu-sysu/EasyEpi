@@ -1467,7 +1467,7 @@ export function AIQuestionnairePage() {
       {configMissing ? (
         <Card className="border-[var(--color-warning)] bg-[var(--color-warning-soft)]">
           <CardContent className="pt-[var(--space-5)]">
-            <p className="m-0"><strong>尚未完成 AI 服务配置。</strong> 请使用右上角「设置」配置 Base URL、模型名称和 API Key。</p>
+            <p className="m-0"><strong>尚未完成 AI 服务配置。</strong> 请使用右上角「设置」填写 DeepSeek 的模型名称与 API Key。</p>
           </CardContent>
         </Card>
       ) : null}

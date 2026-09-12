@@ -8,6 +8,7 @@ import {
   createAIConfigService,
   type AISecureStorage
 } from '@main/services/ai-config.service'
+import { DEEPSEEK_BASE_URL, DEEPSEEK_DEFAULT_MODEL } from '@shared/ai-provider-profiles'
 
 const directories: string[] = []
 const secureStorage: AISecureStorage = {
@@ -17,9 +18,17 @@ const secureStorage: AISecureStorage = {
 }
 
 function temporaryDirectory(): string {
-  const directory = mkdtempSync(join(tmpdir(), 'easyepi-ai-config-v2-'))
+  const directory = mkdtempSync(join(tmpdir(), 'easyepi-ai-config-v3-'))
   directories.push(directory)
   return directory
+}
+
+function configPathOf(directory: string): string {
+  return join(directory, 'ai-provider-config.json')
+}
+
+function readStoredConfig(directory: string): Record<string, unknown> {
+  return JSON.parse(readFileSync(configPathOf(directory), 'utf8')) as Record<string, unknown>
 }
 
 afterEach(() => {
@@ -28,14 +37,14 @@ afterEach(() => {
   }
 })
 
-describe('AI configuration version 2', () => {
-  it('reads a version 1 configuration as a detected provider without rewriting it', async () => {
+describe('AI configuration schema version 3', () => {
+  it('reads a version 1 configuration on the DeepSeek host without rewriting the file', async () => {
     const directory = temporaryDirectory()
-    const configPath = join(directory, 'ai-provider-config.json')
+    const configPath = configPathOf(directory)
     writeFileSync(configPath, JSON.stringify({
       schemaVersion: 1,
       baseUrl: 'https://api.deepseek.com',
-      model: 'deepseek-v4-flash',
+      model: 'deepseek-v4-pro',
       encryptedApiKey: Buffer.from('secret').toString('base64')
     }))
 
@@ -44,77 +53,138 @@ describe('AI configuration version 2', () => {
     await expect(service.get()).resolves.toEqual({
       ok: true,
       config: {
-        providerId: 'deepseek',
         baseUrl: 'https://api.deepseek.com',
-        model: 'deepseek-v4-flash',
-        webSearchEnabled: false,
+        model: 'deepseek-v4-pro',
         hasApiKey: true,
         maskedApiKey: '••••••••'
       }
     })
-    expect(JSON.parse(readFileSync(configPath, 'utf8')).schemaVersion).toBe(1)
+    await expect(service.getPlaintextForMain()).resolves.toEqual({
+      baseUrl: 'https://api.deepseek.com',
+      model: 'deepseek-v4-pro',
+      apiKey: 'secret'
+    })
+    // Reading never rewrites the stored file; migration happens on the next write.
+    expect(readStoredConfig(directory).schemaVersion).toBe(1)
   })
 
-  it('writes provider identity and search preference using schema version 2', async () => {
+  it('migrates a version 2 configuration from another provider onto DeepSeek and drops its key', async () => {
+    const directory = temporaryDirectory()
+    writeFileSync(configPathOf(directory), JSON.stringify({
+      schemaVersion: 2,
+      providerId: 'openai',
+      baseUrl: 'https://api.openai.com/v1',
+      model: 'gpt-4o',
+      webSearchEnabled: true,
+      encryptedApiKey: Buffer.from('foreign-secret').toString('base64')
+    }))
+
+    const service = createAIConfigService(directory, secureStorage)
+
+    await expect(service.get()).resolves.toEqual({
+      ok: true,
+      config: {
+        baseUrl: DEEPSEEK_BASE_URL,
+        model: DEEPSEEK_DEFAULT_MODEL,
+        hasApiKey: false,
+        maskedApiKey: null
+      }
+    })
+    await expect(service.getPlaintextForMain()).resolves.toEqual({
+      baseUrl: DEEPSEEK_BASE_URL,
+      model: DEEPSEEK_DEFAULT_MODEL
+    })
+  })
+
+  it('writes only the single-provider fields using schema version 3', async () => {
     const directory = temporaryDirectory()
     const service = createAIConfigService(directory, secureStorage)
 
     await expect(service.update({
-      providerId: 'qwen',
-      baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1/',
-      model: 'qwen-plus',
-      webSearchEnabled: true,
+      baseUrl: 'https://api.deepseek.com/v1/',
+      model: 'deepseek-v4-pro',
       apiKey: 'secret'
     })).resolves.toMatchObject({
       ok: true,
       config: {
-        providerId: 'qwen',
-        baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
-        model: 'qwen-plus',
-        webSearchEnabled: true,
-        hasApiKey: true
+        baseUrl: 'https://api.deepseek.com/v1',
+        model: 'deepseek-v4-pro',
+        hasApiKey: true,
+        maskedApiKey: '••••••••'
       }
     })
 
-    expect(JSON.parse(readFileSync(join(directory, 'ai-provider-config.json'), 'utf8'))).toMatchObject({
-      schemaVersion: 2,
-      providerId: 'qwen',
-      baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+    expect(readStoredConfig(directory)).toEqual({
+      schemaVersion: 3,
+      baseUrl: 'https://api.deepseek.com/v1',
+      model: 'deepseek-v4-pro',
+      encryptedApiKey: Buffer.from('secret', 'utf8').toString('base64')
+    })
+    expect(readStoredConfig(directory)).not.toHaveProperty('providerId')
+    expect(readStoredConfig(directory)).not.toHaveProperty('webSearchEnabled')
+  })
+
+  it('coerces a caller-supplied non-DeepSeek base URL to the DeepSeek endpoint', async () => {
+    const directory = temporaryDirectory()
+    const service = createAIConfigService(directory, secureStorage)
+
+    await expect(service.update({
+      baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1/',
       model: 'qwen-plus',
-      webSearchEnabled: true
+      apiKey: 'secret'
+    })).resolves.toMatchObject({
+      ok: true,
+      config: {
+        baseUrl: DEEPSEEK_BASE_URL,
+        model: 'qwen-plus',
+        hasApiKey: true,
+        maskedApiKey: '••••••••'
+      }
+    })
+
+    expect(readStoredConfig(directory)).toMatchObject({
+      schemaVersion: 3,
+      baseUrl: DEEPSEEK_BASE_URL,
+      model: 'qwen-plus'
+    })
+    await expect(service.getPlaintextForMain()).resolves.toEqual({
+      baseUrl: DEEPSEEK_BASE_URL,
+      model: 'qwen-plus',
+      apiKey: 'secret'
     })
   })
 
-  it('preserves a key only when both provider and normalized Base URL stay unchanged', async () => {
+  it('preserves a key only when the key is omitted and the normalized Base URL is unchanged', async () => {
     const directory = temporaryDirectory()
     const service = createAIConfigService(directory, secureStorage)
     await service.update({
-      providerId: 'custom',
-      baseUrl: 'https://gateway.example/v1',
+      baseUrl: 'https://api.deepseek.com',
       model: 'model-a',
-      webSearchEnabled: false,
       apiKey: 'secret'
     })
 
+    // A trailing slash normalizes onto the stored Base URL, so the key survives.
     await service.update({
-      providerId: 'custom',
-      baseUrl: 'https://gateway.example/v1/',
-      model: 'model-b',
-      webSearchEnabled: false
-    })
-    await expect(service.getPlaintextForMain()).resolves.toMatchObject({ apiKey: 'secret' })
-
-    await service.update({
-      providerId: 'openai',
-      baseUrl: 'https://gateway.example/v1',
-      model: 'model-b',
-      webSearchEnabled: false
+      baseUrl: 'https://api.deepseek.com/',
+      model: 'model-b'
     })
     await expect(service.getPlaintextForMain()).resolves.toEqual({
-      providerId: 'openai',
-      baseUrl: 'https://gateway.example/v1',
+      baseUrl: 'https://api.deepseek.com',
       model: 'model-b',
-      webSearchEnabled: false
+      apiKey: 'secret'
+    })
+
+    // A different normalized Base URL clears the key even though the host is still DeepSeek.
+    await expect(service.update({
+      baseUrl: 'https://api.deepseek.com/v1',
+      model: 'model-c'
+    })).resolves.toMatchObject({
+      ok: true,
+      config: { baseUrl: 'https://api.deepseek.com/v1', hasApiKey: false, maskedApiKey: null }
+    })
+    await expect(service.getPlaintextForMain()).resolves.toEqual({
+      baseUrl: 'https://api.deepseek.com/v1',
+      model: 'model-c'
     })
   })
 })

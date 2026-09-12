@@ -5,20 +5,26 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { AIProviderSettings } from '@renderer/components/ai/AIProviderSettings'
 import type { AIProviderConfigView } from '@shared/ai-assistant-contract'
 
+const DEEPSEEK_BASE_URL = 'https://api.deepseek.com'
+const DEEPSEEK_DEFAULT_MODEL = 'deepseek-v4-flash'
+
 const savedConfig: AIProviderConfigView = {
-  providerId: 'custom',
-  baseUrl: 'https://api.example.com/v1',
+  baseUrl: DEEPSEEK_BASE_URL,
   model: 'research-model',
-  webSearchEnabled: false,
   hasApiKey: true,
-  maskedApiKey: 'sk-***'
+  maskedApiKey: '••••••••'
 }
 
 const emptyConfig: AIProviderConfigView = {
-  providerId: 'custom',
-  baseUrl: '',
+  baseUrl: DEEPSEEK_BASE_URL,
   model: '',
-  webSearchEnabled: false,
+  hasApiKey: false,
+  maskedApiKey: null
+}
+
+const modelOnlyConfig: AIProviderConfigView = {
+  baseUrl: DEEPSEEK_BASE_URL,
+  model: DEEPSEEK_DEFAULT_MODEL,
   hasApiKey: false,
   maskedApiKey: null
 }
@@ -41,19 +47,15 @@ function installConfigApi(overrides: Record<string, unknown> = {}) {
 describe('AIProviderSettings', () => {
   afterEach(() => Reflect.deleteProperty(window, 'easyEpi'))
 
-  it('loads, tests, updates, and clears a complete provider configuration', async () => {
+  it('loads, tests, updates, and clears a DeepSeek-only service configuration', async () => {
     const user = userEvent.setup()
-    const updatedConfig = {
-      ...savedConfig,
-      baseUrl: 'https://new.example.com/v1',
-      model: 'new-model'
-    }
+    const updatedConfig: AIProviderConfigView = { ...savedConfig, model: 'new-model' }
     const config = installConfigApi({
       update: vi.fn().mockResolvedValue({ ok: true, config: updatedConfig })
     })
     render(<AIProviderSettings />)
 
-    expect(await screen.findByDisplayValue(savedConfig.baseUrl)).toBeVisible()
+    expect(await screen.findByDisplayValue(savedConfig.model)).toBeVisible()
     expect(screen.getByLabelText('API Key')).toHaveAttribute(
       'placeholder',
       '已安全保存；留空将保留原 Key'
@@ -62,44 +64,109 @@ describe('AIProviderSettings', () => {
     await user.click(screen.getByRole('button', { name: '测试连接' }))
     expect(await screen.findByText('连接成功。')).toBeVisible()
 
-    await user.clear(screen.getByLabelText('Base URL'))
-    await user.type(screen.getByLabelText('Base URL'), updatedConfig.baseUrl)
     await user.clear(screen.getByLabelText('模型名称'))
     await user.type(screen.getByLabelText('模型名称'), updatedConfig.model)
     await user.type(screen.getByLabelText('API Key'), 'new-secret')
-    expect(screen.getByText('服务地址变化后需重新输入 API Key')).toBeVisible()
     await user.click(screen.getByRole('button', { name: '保存' }))
 
     expect(config.update).toHaveBeenCalledWith({
-      providerId: 'custom',
-      baseUrl: updatedConfig.baseUrl,
+      baseUrl: DEEPSEEK_BASE_URL,
       model: updatedConfig.model,
-      webSearchEnabled: false,
       apiKey: 'new-secret'
     })
+    expect(Object.keys(config.update.mock.calls[0]![0] as Record<string, unknown>).sort())
+      .toEqual(['apiKey', 'baseUrl', 'model'])
     expect(await screen.findByText('AI 服务配置已保存。')).toBeVisible()
 
     await user.click(screen.getByRole('button', { name: '清除 API 配置' }))
     expect(await screen.findByText('AI 服务配置已清除。')).toBeVisible()
     expect(screen.getByText('未配置 API Key。')).toBeVisible()
+    expect(screen.getByLabelText('API Key')).toHaveAttribute(
+      'placeholder',
+      '请输入 DeepSeek API Key'
+    )
   })
 
-  it('validates empty and unsaved settings before calling the service', async () => {
+  it('renders only the fixed DeepSeek endpoint, a model field, and an API key field', async () => {
+    const user = userEvent.setup()
+    const config = installConfigApi()
+    render(<AIProviderSettings />)
+
+    await screen.findByDisplayValue(savedConfig.model)
+
+    expect(screen.getByText(/服务地址：/)).toHaveTextContent(DEEPSEEK_BASE_URL)
+    expect(screen.getByText(/固定为 DeepSeek 官方接口/)).toBeVisible()
+    expect(screen.getByLabelText('模型名称')).toHaveValue(savedConfig.model)
+    expect(screen.getByLabelText('模型名称')).toHaveAttribute(
+      'placeholder',
+      DEEPSEEK_DEFAULT_MODEL
+    )
+    expect(screen.getByText('常用：deepseek-v4-flash、deepseek-v4-pro')).toBeVisible()
+    expect(screen.getByLabelText('API Key')).toHaveAttribute(
+      'placeholder',
+      '已安全保存；留空将保留原 Key'
+    )
+    expect(screen.getByText('为保护凭据，已保存的 Key 不会回显。')).toBeVisible()
+    expect(screen.getByRole('link', { name: 'NCBI E-utilities 使用条款' })).toHaveAttribute(
+      'href',
+      'https://www.ncbi.nlm.nih.gov/books/NBK25497/'
+    )
+
+    expect(screen.queryByLabelText('AI 厂商')).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('Base URL')).not.toBeInTheDocument()
+    expect(screen.queryByText('Base URL')).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('启用内置联网搜索')).not.toBeInTheDocument()
+    expect(screen.queryByRole('checkbox')).not.toBeInTheDocument()
+    expect(screen.queryByRole('combobox')).not.toBeInTheDocument()
+
+    // A stored key is never echoed, so a model-only change must not send an API key at all.
+    await user.clear(screen.getByLabelText('模型名称'))
+    await user.type(screen.getByLabelText('模型名称'), 'draft-model')
+    await user.click(screen.getByRole('button', { name: '保存' }))
+
+    expect(config.update).toHaveBeenCalledWith({
+      baseUrl: DEEPSEEK_BASE_URL,
+      model: 'draft-model'
+    })
+    expect(Object.keys(config.update.mock.calls[0]![0] as Record<string, unknown>).sort())
+      .toEqual(['baseUrl', 'model'])
+  })
+
+  it('defaults 模型名称 to deepseek-v4-flash when the stored model is empty', async () => {
     const user = userEvent.setup()
     const config = installConfigApi({
       get: vi.fn().mockResolvedValue({ ok: true, config: emptyConfig })
     })
     render(<AIProviderSettings />)
 
-    expect(await screen.findByText('未配置 API Key。')).toBeVisible()
-    await user.click(screen.getByRole('button', { name: '保存' }))
-    expect(screen.getByRole('alert')).toHaveTextContent('请填写 Base URL 和模型名称。')
+    const modelInput = await screen.findByLabelText('模型名称')
+    expect(modelInput).toHaveValue(DEEPSEEK_DEFAULT_MODEL)
+    expect(modelInput).toHaveAttribute('placeholder', DEEPSEEK_DEFAULT_MODEL)
+    expect(screen.getByText('常用：deepseek-v4-flash、deepseek-v4-pro')).toBeVisible()
+    expect(screen.getByText('未配置 API Key。')).toBeVisible()
+    expect(screen.getByLabelText('API Key')).toHaveAttribute(
+      'placeholder',
+      '请输入 DeepSeek API Key'
+    )
 
+    await user.clear(modelInput)
+    await user.click(screen.getByRole('button', { name: '保存' }))
+    expect(screen.getByRole('alert')).toHaveTextContent('请填写模型名称。')
+    expect(config.update).not.toHaveBeenCalled()
+  })
+
+  it('guards the connection test against unsaved changes and a missing API key', async () => {
+    const user = userEvent.setup()
+    const config = installConfigApi({
+      get: vi.fn().mockResolvedValue({ ok: true, config: modelOnlyConfig })
+    })
+    render(<AIProviderSettings />)
+
+    await screen.findByDisplayValue(DEEPSEEK_DEFAULT_MODEL)
     await user.click(screen.getByRole('button', { name: '测试连接' }))
     expect(screen.getByRole('alert')).toHaveTextContent('请先保存完整的 AI 服务配置。')
 
-    await user.type(screen.getByLabelText('Base URL'), 'https://draft.example.com/v1')
-    await user.type(screen.getByLabelText('模型名称'), 'draft-model')
+    await user.type(screen.getByLabelText('模型名称'), '-draft')
     await user.click(screen.getByRole('button', { name: '测试连接' }))
     expect(screen.getByRole('alert')).toHaveTextContent('当前有未保存的更改')
     expect(config.testConnection).not.toHaveBeenCalled()
@@ -113,7 +180,7 @@ describe('AIProviderSettings', () => {
       testConnection: vi.fn().mockResolvedValue({ ok: false, errorCode: 'AI_PROVIDER_UNREACHABLE' })
     })
     render(<AIProviderSettings />)
-    await screen.findByDisplayValue(savedConfig.baseUrl)
+    await screen.findByDisplayValue(savedConfig.model)
 
     await user.click(screen.getByRole('button', { name: '保存' }))
     expect(await screen.findByRole('alert')).toBeVisible()
@@ -123,10 +190,8 @@ describe('AIProviderSettings', () => {
     expect(await screen.findByRole('alert')).toBeVisible()
 
     expect(config.update).toHaveBeenCalledWith({
-      providerId: 'custom',
-      baseUrl: savedConfig.baseUrl,
-      model: savedConfig.model,
-      webSearchEnabled: false
+      baseUrl: DEEPSEEK_BASE_URL,
+      model: savedConfig.model
     })
     expect(config.clear).toHaveBeenCalledOnce()
     expect(config.testConnection).toHaveBeenCalledOnce()
@@ -143,7 +208,7 @@ describe('AIProviderSettings', () => {
     render(<AIProviderSettings />)
 
     expect(await screen.findByRole('alert')).toHaveTextContent('无法读取 AI 服务配置。')
-    await user.type(screen.getByLabelText('Base URL'), savedConfig.baseUrl)
+    await user.clear(screen.getByLabelText('模型名称'))
     await user.type(screen.getByLabelText('模型名称'), savedConfig.model)
     await user.click(screen.getByRole('button', { name: '保存' }))
     expect(await screen.findByRole('alert')).toHaveTextContent('无法保存 AI 服务配置。')
@@ -153,6 +218,7 @@ describe('AIProviderSettings', () => {
 
     expect(config.update).toHaveBeenCalledOnce()
     expect(config.clear).toHaveBeenCalledOnce()
+    expect(screen.queryByText(/secret-(load|save|clear|test)-detail/)).not.toBeInTheDocument()
   })
 
   it('handles explicit load failures and rejected connection tests', async () => {
@@ -169,31 +235,9 @@ describe('AIProviderSettings', () => {
       testConnection: vi.fn().mockRejectedValue(new Error('secret-provider-detail'))
     })
     render(<AIProviderSettings />)
-    await screen.findByDisplayValue(savedConfig.baseUrl)
+    await screen.findByDisplayValue(savedConfig.model)
     await user.click(screen.getByRole('button', { name: '测试连接' }))
     expect(await screen.findByRole('alert')).toHaveTextContent('AI 服务连接测试失败。')
+    expect(screen.queryByText(/secret-provider-detail/)).not.toBeInTheDocument()
   })
 })
-  it('adopts official provider URLs and saves the web-search preference', async () => {
-    const user = userEvent.setup()
-    const config = installConfigApi()
-    render(<AIProviderSettings />)
-    await screen.findByDisplayValue(savedConfig.baseUrl)
-
-    await user.type(screen.getByLabelText('API Key'), 'old-provider-secret')
-    await user.selectOptions(screen.getByLabelText('AI 厂商'), 'openai')
-    expect(screen.getByLabelText('Base URL')).toHaveValue('https://api.openai.com/v1')
-    expect(screen.getByLabelText('API Key')).toHaveValue('')
-    await user.click(screen.getByLabelText('启用内置联网搜索'))
-    expect(screen.getByText(/可能产生额外费用/)).toBeVisible()
-    await user.type(screen.getByLabelText('API Key'), 'new-secret')
-    await user.click(screen.getByRole('button', { name: '保存' }))
-
-    expect(config.update).toHaveBeenCalledWith({
-      providerId: 'openai',
-      baseUrl: 'https://api.openai.com/v1',
-      model: savedConfig.model,
-      webSearchEnabled: true,
-      apiKey: 'new-secret'
-    })
-  })

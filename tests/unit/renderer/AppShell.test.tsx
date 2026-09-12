@@ -148,17 +148,22 @@ describe('AppShell', () => {
       config: { baseUrl: string; model: string; hasApiKey: boolean; maskedApiKey: string }
     }) => void
     configUpdate.mockReturnValue(new Promise((resolve) => { resolveConfigUpdate = resolve }))
-    await user.type(screen.getByRole('textbox', { name: 'Base URL' }), 'https://example.test/v1')
-    await user.type(screen.getByRole('textbox', { name: '模型名称' }), 'model-a')
+    const modelInput = screen.getByRole('textbox', { name: '模型名称' })
+    await user.clear(modelInput)
+    await user.type(modelInput, 'model-a')
     await user.type(screen.getByLabelText('API Key'), 'secret-value')
     await user.click(screen.getByRole('button', { name: '保存' }))
-    expect(screen.getByRole('textbox', { name: 'Base URL' })).toBeDisabled()
+    expect(configUpdate).toHaveBeenCalledWith({
+      baseUrl: 'https://api.deepseek.com',
+      model: 'model-a',
+      apiKey: 'secret-value'
+    })
     expect(screen.getByRole('textbox', { name: '模型名称' })).toBeDisabled()
     expect(screen.getByLabelText('API Key')).toBeDisabled()
     resolveConfigUpdate({
       ok: true,
       config: {
-        baseUrl: 'https://example.test/v1',
+        baseUrl: 'https://api.deepseek.com',
         model: 'model-a',
         hasApiKey: true,
         maskedApiKey: '••••••••'
@@ -184,10 +189,10 @@ describe('AppShell', () => {
     expect(within(pressedButton).getByText('AB')).toHaveAttribute('aria-hidden', 'true')
   })
 
-  it('requires a fresh API key after the provider URL changes', async () => {
+  it('shows the fixed DeepSeek endpoint and saves a model change without a new API key', async () => {
     const user = userEvent.setup()
     const { configUpdate } = renderShell('/entry', '录入页元数据标题', {
-      baseUrl: 'https://first.example/v1',
+      baseUrl: 'https://api.deepseek.com',
       model: 'model-a',
       hasApiKey: true,
       maskedApiKey: '••••••••'
@@ -195,25 +200,30 @@ describe('AppShell', () => {
     configUpdate.mockResolvedValue({
       ok: true,
       config: {
-        baseUrl: 'https://second.example/v1',
-        model: 'model-a',
+        baseUrl: 'https://api.deepseek.com',
+        model: 'model-b',
         hasApiKey: false,
         maskedApiKey: null
       }
     })
 
     await user.click(screen.getByRole('button', { name: '打开设置' }))
-    const baseUrl = await screen.findByRole('textbox', { name: 'Base URL' })
-    await user.clear(baseUrl)
-    await user.type(baseUrl, 'https://second.example/v1')
+    expect(await screen.findByText(/服务地址：/)).toHaveTextContent('https://api.deepseek.com')
+    expect(screen.queryByRole('textbox', { name: 'Base URL' })).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('AI 厂商')).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('启用内置联网搜索')).not.toBeInTheDocument()
+    expect(screen.getByLabelText('API Key')).toHaveAttribute(
+      'placeholder',
+      '已安全保存；留空将保留原 Key'
+    )
 
-    expect(screen.getByText('服务地址变化后需重新输入 API Key')).toBeVisible()
+    const modelInput = screen.getByRole('textbox', { name: '模型名称' })
+    await user.clear(modelInput)
+    await user.type(modelInput, 'model-b')
     await user.click(screen.getByRole('button', { name: '保存' }))
     await waitFor(() => expect(configUpdate).toHaveBeenCalledWith({
-      providerId: 'custom',
-      baseUrl: 'https://second.example/v1',
-      model: 'model-a',
-      webSearchEnabled: false
+      baseUrl: 'https://api.deepseek.com',
+      model: 'model-b'
     }))
     expect(await screen.findByText('未配置 API Key。')).toBeVisible()
   })

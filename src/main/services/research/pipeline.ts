@@ -64,7 +64,8 @@ export function computeResearchStatus(
   if (literatureCount > 0 && webCount > 0) return 'literature_and_web'
   if (literatureCount > 0) return 'literature_only'
   if (webCount > 0) return 'web_only'
-  return mode === 'medical' ? 'none' : 'none'
+  // `mode` is accepted so callers read as a single decision; an empty result is `none` either way.
+  return mode === 'medical' || mode === 'non_medical' ? 'none' : 'none'
 }
 
 export function createAIResearchPipeline(

@@ -412,6 +412,17 @@ function hasPayload(value: Record<string, unknown>, key: string): boolean {
 }
 
 function strictCompletionContent(evidence: CompleteChoiceEvidence): string {
+  // A truncated structured response is recoverable: the questionnaire orchestrator re-asks for a more
+  // compact envelope, so it must be distinguishable from a genuinely unusable response.
+  if (
+    evidence.finishReason === 'length' || evidence.finishReason === 'max_tokens' ||
+    evidence.finishReason === 'repetition_truncation'
+  ) {
+    throw new AIClientError('AI_RESPONSE_TRUNCATED')
+  }
+  if (evidence.finishReason === 'content_filter' || evidence.finishReason === 'safety') {
+    throw new AIClientError('AI_CONTENT_FILTERED')
+  }
   if (
     evidence.choiceCount !== 1 || evidence.index !== 0 || evidence.finishReason !== 'stop' ||
     evidence.refusalPresent || evidence.toolCallPresent ||
@@ -631,10 +642,10 @@ export function createOpenAICompatibleClient(
           throw new AIClientError('AI_INVALID_RESPONSE')
         }
         const streamed = streamCompletion.content
-        const extracted = extractor.finish()
         const content = strictCompletionContent(streamCompletion.choice)
         if (request.schemaVersion !== undefined) {
           // Only the questionnaire envelope carries an `assistantMessage` that the streaming UI mirrors.
+          const extracted = extractor.finish()
           let parsedEnvelope: unknown
           try {
             parsedEnvelope = JSON.parse(streamed)

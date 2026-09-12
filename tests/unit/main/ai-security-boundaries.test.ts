@@ -179,6 +179,12 @@ describe('AI IPC request parser boundaries', () => {
     ['config rejects extra fields', parseAIConfigUpdateRequest, {
       baseUrl: 'https://example.com/v1', model: 'model', extra: true
     }],
+    ['config rejects the removed provider picker', parseAIConfigUpdateRequest, {
+      baseUrl: 'https://api.deepseek.com', model: 'model', providerId: 'deepseek'
+    }],
+    ['config rejects the removed web-search toggle', parseAIConfigUpdateRequest, {
+      baseUrl: 'https://api.deepseek.com', model: 'model', webSearchEnabled: true
+    }],
     ['config rejects empty base URLs', parseAIConfigUpdateRequest, { baseUrl: '', model: 'model' }],
     ['config rejects padded model names', parseAIConfigUpdateRequest, {
       baseUrl: 'https://example.com/v1', model: ' model '
@@ -235,18 +241,19 @@ describe('AI IPC request parser boundaries', () => {
 
   it('preserves optional request fields only when supplied', () => {
     expect(parseAIConfigUpdateRequest({
-      providerId: 'custom', baseUrl: 'https://example.com/v1', model: 'model',
-      webSearchEnabled: false
+      baseUrl: 'https://api.deepseek.com', model: 'deepseek-v4-flash'
     })).toEqual({
-      providerId: 'custom', baseUrl: 'https://example.com/v1', model: 'model',
-      webSearchEnabled: false
+      baseUrl: 'https://api.deepseek.com', model: 'deepseek-v4-flash'
     })
     expect(parseAIConfigUpdateRequest({
-      providerId: 'custom', baseUrl: 'https://example.com/v1', model: 'model',
-      webSearchEnabled: false, apiKey: null
+      baseUrl: 'https://api.deepseek.com', model: 'deepseek-v4-flash', apiKey: null
     })).toEqual({
-      providerId: 'custom', baseUrl: 'https://example.com/v1', model: 'model',
-      webSearchEnabled: false, apiKey: null
+      baseUrl: 'https://api.deepseek.com', model: 'deepseek-v4-flash', apiKey: null
+    })
+    expect(parseAIConfigUpdateRequest({
+      baseUrl: 'https://api.deepseek.com', model: 'deepseek-v4-flash', apiKey: ''
+    })).toEqual({
+      baseUrl: 'https://api.deepseek.com', model: 'deepseek-v4-flash', apiKey: ''
     })
     expect(parseAISessionCreateRequest({})).toEqual({})
     expect(parseAISessionCreateRequest({ title: 'Study' })).toEqual({ title: 'Study' })
@@ -273,15 +280,15 @@ describe('AI IPC response parser boundaries', () => {
     expect(parseAIConfigResponse({
       ok: true,
       config: {
-        providerId: 'custom', baseUrl: 'https://example.com/v1', model: 'model',
-        webSearchEnabled: false, hasApiKey: true, maskedApiKey: '••••••••'
+        baseUrl: 'https://api.deepseek.com', model: 'deepseek-v4-flash',
+        hasApiKey: true, maskedApiKey: '••••••••'
       }
     })).toMatchObject({ ok: true, config: { hasApiKey: true } })
     expect(parseAIConfigResponse({
       ok: true,
       config: {
-        providerId: 'openai', baseUrl: 'https://api.openai.com/v1', model: '',
-        webSearchEnabled: false, hasApiKey: false, maskedApiKey: null
+        baseUrl: 'https://api.deepseek.com', model: '',
+        hasApiKey: false, maskedApiKey: null
       }
     })).toMatchObject({ ok: true, config: { hasApiKey: false } })
     expect(parseAIPrivacyStatusResponse({
@@ -313,6 +320,20 @@ describe('AI IPC response parser boundaries', () => {
     ['non-boolean key state', () => parseAIConfigResponse({
       ok: true,
       config: { baseUrl: 'https://example.com', model: 'm', hasApiKey: 1, maskedApiKey: null }
+    })],
+    ['a stale provider picker in the config view', () => parseAIConfigResponse({
+      ok: true,
+      config: {
+        baseUrl: 'https://api.deepseek.com', model: 'deepseek-v4-flash',
+        hasApiKey: false, maskedApiKey: null, providerId: 'deepseek'
+      }
+    })],
+    ['a stale web-search toggle in the config view', () => parseAIConfigResponse({
+      ok: true,
+      config: {
+        baseUrl: 'https://api.deepseek.com', model: 'deepseek-v4-flash',
+        hasApiKey: false, maskedApiKey: null, webSearchEnabled: true
+      }
     })],
     ['stale privacy notice', () => parseAIPrivacyStatusResponse({
       ok: true, accepted: false, acceptedAt: null, notice: 'stale'
@@ -388,7 +409,7 @@ describe('AI configuration security boundary', () => {
     expect(message).not.toContain(apiKey)
   })
 
-  it('clears a saved API key when the normalized provider URL changes and the key is omitted', async () => {
+  it('clears a saved API key when the normalized Base URL changes and the key is omitted', async () => {
     const directory = mkdtempSync(join(tmpdir(), 'easyepi-ai-config-origin-'))
     try {
       const service = createAIConfigService(directory, {
@@ -397,29 +418,68 @@ describe('AI configuration security boundary', () => {
         decryptString: (value) => value.toString()
       })
       await service.update({
-        baseUrl: 'https://first.example/v1/',
+        baseUrl: 'https://api.deepseek.com',
         model: 'model-a',
         apiKey: 'first-secret'
       })
 
       const result = await service.update({
-        baseUrl: 'https://second.example/v1/',
+        baseUrl: 'https://api.deepseek.com/v1',
         model: 'model-a'
       })
 
       expect(result).toMatchObject({
         ok: true,
         config: {
-          baseUrl: 'https://second.example/v1',
+          baseUrl: 'https://api.deepseek.com/v1',
           hasApiKey: false,
           maskedApiKey: null
         }
       })
       await expect(service.getPlaintextForMain()).resolves.toEqual({
-        providerId: 'custom',
-        baseUrl: 'https://second.example/v1',
-        model: 'model-a',
-        webSearchEnabled: false
+        baseUrl: 'https://api.deepseek.com/v1',
+        model: 'model-a'
+      })
+    } finally {
+      rmSync(directory, { recursive: true, force: true })
+    }
+  })
+
+  it('coerces a non-DeepSeek Base URL and never carries a foreign key onto the DeepSeek endpoint', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'easyepi-ai-config-coerce-'))
+    try {
+      const service = createAIConfigService(directory, {
+        isEncryptionAvailable: () => true,
+        encryptString: (value) => Buffer.from(value),
+        decryptString: (value) => value.toString()
+      })
+      await service.update({
+        baseUrl: 'https://gateway.example/v1',
+        model: 'gpt-4o',
+        apiKey: 'foreign-secret'
+      })
+
+      await expect(service.get()).resolves.toMatchObject({
+        ok: true,
+        config: { baseUrl: 'https://api.deepseek.com' }
+      })
+
+      // Moving away from the coerced endpoint drops the key that was stored for it.
+      const result = await service.update({
+        baseUrl: 'https://api.deepseek.com/v1',
+        model: 'deepseek-v4-flash'
+      })
+      expect(result).toMatchObject({
+        ok: true,
+        config: {
+          baseUrl: 'https://api.deepseek.com/v1',
+          hasApiKey: false,
+          maskedApiKey: null
+        }
+      })
+      await expect(service.getPlaintextForMain()).resolves.toEqual({
+        baseUrl: 'https://api.deepseek.com/v1',
+        model: 'deepseek-v4-flash'
       })
     } finally {
       rmSync(directory, { recursive: true, force: true })
@@ -437,13 +497,13 @@ describe('AI configuration security boundary', () => {
           decryptString: (value) => value.toString()
         })
         await service.update({
-          baseUrl: 'https://first.example/v1',
+          baseUrl: 'https://api.deepseek.com',
           model: 'model-a',
           apiKey: 'first-secret'
         })
 
         const result = await service.update({
-          baseUrl: 'https://first.example/v1/',
+          baseUrl: 'https://api.deepseek.com/',
           model: 'model-a',
           apiKey
         })
@@ -453,10 +513,8 @@ describe('AI configuration security boundary', () => {
           config: { hasApiKey: false, maskedApiKey: null }
         })
         await expect(service.getPlaintextForMain()).resolves.toEqual({
-          providerId: 'custom',
-          baseUrl: 'https://first.example/v1',
-          model: 'model-a',
-          webSearchEnabled: false
+          baseUrl: 'https://api.deepseek.com',
+          model: 'model-a'
         })
       } finally {
         rmSync(directory, { recursive: true, force: true })
@@ -473,20 +531,18 @@ describe('AI configuration security boundary', () => {
         decryptString: (value) => value.toString()
       })
       await service.update({
-        baseUrl: 'https://first.example/v1',
+        baseUrl: 'https://api.deepseek.com',
         model: 'model-a',
         apiKey: 'first-secret'
       })
 
       await service.update({
-        baseUrl: 'https://first.example/v1/',
+        baseUrl: 'https://api.deepseek.com/',
         model: 'model-b',
       })
       await expect(service.getPlaintextForMain()).resolves.toEqual({
-        providerId: 'custom',
-        baseUrl: 'https://first.example/v1',
+        baseUrl: 'https://api.deepseek.com',
         model: 'model-b',
-        webSearchEnabled: false,
         apiKey: 'first-secret'
       })
     } finally {
@@ -503,7 +559,7 @@ describe('AI configuration security boundary', () => {
         decryptString: (value) => value.toString()
       })
       await service.acceptPrivacy()
-      await service.update({ baseUrl: 'https://api.openai.com/v1', model: 'test', apiKey: 'secret' })
+      await service.update({ baseUrl: 'https://api.deepseek.com', model: 'test', apiKey: 'secret' })
       await service.clear()
 
       await expect(service.getPrivacyStatus()).resolves.toMatchObject({ accepted: true })
@@ -694,7 +750,7 @@ describe('AI streaming and clarification public contract', () => {
     },
     {
       type: 'capability_fallback', attempt: 1,
-      capability: 'function_call', reason: 'unsupported'
+      capability: 'response_format', reason: 'unsupported'
     },
     {
       type: 'clarification', attempt: 1, outcome: 'clarification',
@@ -728,6 +784,15 @@ describe('AI streaming and clarification public contract', () => {
     expect(() => parseAIProgressEvent({
       ...base, type: 'capability_fallback', attempt: 1,
       capability: 'arbitrary', reason: 'unsupported'
+    })).toThrow('INVALID_AI_RESPONSE')
+    // Function calling was removed from the single-provider contract, so the fallback capability is
+    // no longer valid even though the renderer may still hold a cached pre-migration payload.
+    expect(() => parseAIProgressEvent({
+      ...base, type: 'capability_fallback', attempt: 1,
+      capability: 'function_call', reason: 'unsupported'
+    })).toThrow('INVALID_AI_RESPONSE')
+    expect(() => parseAIProgressEvent({
+      ...base, type: 'stage_changed', attempt: 1, stage: 'thinking'
     })).toThrow('INVALID_AI_RESPONSE')
     expect(() => parseAIProgressEvent({
       ...base, type: 'cancelled', attempt: 1, errorCode: 'AI_PROVIDER_ERROR'
@@ -1054,6 +1119,26 @@ describe('AI IPC privacy boundary', () => {
       { length: 24 },
       (_, index) => `${index.toString().padStart(2, '0')}:` + '进'.repeat(300)
     )
+    // The research stage runs before generation and asks the same client for a search plan. A
+    // non-medical plan with no usable web source keeps the pipeline deterministic offline: no
+    // literature lookup, no citations, and generation still proceeds.
+    const researchPlan = JSON.stringify({
+      originalLanguage: 'en',
+      englishResearchQuestion: 'Which screening age range should an epidemiological survey use?',
+      domain: 'non_medical',
+      searchQueries: ['screening age range survey'],
+      keywords: ['screening', 'age range'],
+      meshTerms: [],
+      population: 'survey respondents',
+      exposureOrIntervention: '',
+      outcomes: ['age range coverage']
+    })
+    // `stage_changed` events are dropped downstream by parseAIProgressEvent (see the known source
+    // bug documented in ai-assistant-contract.test.ts), and they may legitimately appear once that
+    // is fixed, so ordering assertions ignore them.
+    const progressTypes = (events: readonly unknown[]): string[] => events
+      .map((value) => (value as { type: string }).type)
+      .filter((type) => type !== 'stage_changed')
     const event = {
       senderFrame: { url: 'file:///app/index.html' },
       sender: {
@@ -1079,6 +1164,11 @@ describe('AI IPC privacy boundary', () => {
       saveProject: vi.fn(),
       client: {
         complete: vi.fn(async (request) => {
+          // The research planner is the only caller that asks for JSON without the questionnaire
+          // envelope schema appended.
+          if (request.schemaVersion === undefined) {
+            return { content: researchPlan, streamingSupported: false, responseFormatSupported: true }
+          }
           providerCalls += 1
           if (destroySecondOwner) secondOwnerDestroyed = true
           request.onModelStreaming?.()
@@ -1102,8 +1192,7 @@ describe('AI IPC privacy boundary', () => {
                 ? validClarificationCompletion()
                 : validQuestionnaireCompletion(),
             streamingSupported: true,
-            responseFormatSupported: true,
-            toolCallingSupported: true
+            responseFormatSupported: true
           }
         })
       }
@@ -1117,10 +1206,10 @@ describe('AI IPC privacy boundary', () => {
     })
 
     expect(result).toMatchObject({
-      ok: true, requestId: 'request-1', outcome: 'questionnaire', attempts: 1
+      ok: true, requestId: 'request-1', outcome: 'questionnaire', attempts: 1,
+      researchMode: 'non_medical'
     })
-    expect(sent.slice(0, 3).map((value) => (value as { type: string }).type))
-      .toEqual(['started', 'attempt_started', 'model_streaming'])
+    expect(progressTypes(sent).slice(0, 3)).toEqual(['started', 'attempt_started', 'model_streaming'])
     expect(sent.at(-2)).toMatchObject({ type: 'validating' })
     expect(sent.at(-1)).toMatchObject({ type: 'completed' })
     expect(sent.filter((value) => ['completed', 'clarification', 'failed', 'cancelled']
@@ -1159,8 +1248,7 @@ describe('AI IPC privacy boundary', () => {
         clarification: { status: 'unresolved', options: [{ id: 'age-range' }] }
       }
     })
-    expect(secondOwnerSent.map((value) => (value as { type: string }).type))
-      .toEqual(['started', 'attempt_started'])
+    expect(progressTypes(secondOwnerSent)).toEqual(['started', 'attempt_started'])
     expect(sent).toHaveLength(firstOwnerEventCount)
 
     destroySecondOwner = false
@@ -1220,8 +1308,7 @@ describe('AI IPC privacy boundary', () => {
           return {
             content: validQuestionnaireCompletion(),
             streamingSupported: true,
-            responseFormatSupported: true,
-            toolCallingSupported: true
+            responseFormatSupported: true
           }
         })
       }
@@ -1291,8 +1378,7 @@ describe('AI IPC privacy boundary', () => {
           return {
             content: validQuestionnaireCompletion(),
             streamingSupported: true,
-            responseFormatSupported: true,
-            toolCallingSupported: true
+            responseFormatSupported: true
           }
         })
       }
@@ -1357,8 +1443,7 @@ describe('AI IPC privacy boundary', () => {
           return {
             content: validQuestionnaireCompletion(),
             streamingSupported: true,
-            responseFormatSupported: true,
-            toolCallingSupported: true
+            responseFormatSupported: true
           }
         })
       }
