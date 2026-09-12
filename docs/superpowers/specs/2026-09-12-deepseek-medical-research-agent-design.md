@@ -1,8 +1,29 @@
 # DeepSeek-Only Medical Research Agent Design
 
 **Date:** 2026-09-12
-**Status:** Approved for implementation
+**Status:** Implemented
 **Target:** EasyEpi 0.8.0 AI questionnaire workflow
+
+## Verification
+
+Executed against the final commit on the `codex/easyepi-0.8.0` worktree:
+
+| Gate | Command | Result |
+| --- | --- | --- |
+| Lint | `pnpm lint` | clean |
+| Types | `pnpm typecheck` | clean (main and renderer projects) |
+| Unit + coverage | `pnpm test:coverage` | 99 files, 1347 tests, all passing; 86.14% statements / 80.84% branches |
+| Build | `pnpm build` | main, preload, renderer bundles built |
+| Release gate | `pnpm check` | exit 0 |
+| Unpackaged E2E | `pnpm test:e2e` | 14 passed |
+| Packaged portable | `pnpm test:e2e:packaged` with `EASYEPI_EXECUTABLE` on `EasyEpi-0.8.0-portable-x64.exe` | 6 passed |
+| Packaged unpacked | `pnpm test:e2e:packaged` with `EASYEPI_EXECUTABLE` on `release/win-unpacked/EasyEpi.exe` | 1 passed, 5 intentionally skipped |
+| Artifacts | `pnpm build:win` | `EasyEpi-0.8.0-setup-x64.exe`, `EasyEpi-0.8.0-portable-x64.exe`, setup blockmap |
+
+The packaged `app.asar` was inspected and contains `/node_modules/saxes`, its `xmlchars`
+dependency, and every `out/main/services/research/*` bundle, so the PubMed XML parser and the
+staged pipeline are present in the shipped application. Authenticode status is `NotSigned`
+(no signing certificate is configured).
 
 ## Problem
 

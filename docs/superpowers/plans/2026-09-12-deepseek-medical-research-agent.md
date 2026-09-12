@@ -156,6 +156,6 @@
 ### Task 8: Verification and release
 
 - [x] **Step 1: Deterministic unit suite** across contracts, retrieval clients, pipeline, services, orchestrator, repository, and renderer.
-- [ ] **Step 2: `pnpm lint && pnpm typecheck && pnpm test:coverage && pnpm build`.**
-- [ ] **Step 3: `pnpm build:win`** producing `EasyEpi-0.8.0-setup-x64.exe`, `EasyEpi-0.8.0-portable-x64.exe`, and the setup blockmap.
-- [ ] **Step 4: Copy the verified artifacts to `D:\EasyEpi\release`** and record their SHA-256 hashes.
+- [x] **Step 2: `pnpm lint && pnpm typecheck && pnpm test:coverage && pnpm build`** — all green; 99 files / 1347 tests; coverage 86.14% statements and 80.84% branches against an 80% threshold.
+- [x] **Step 3: `pnpm build:win`** producing `EasyEpi-0.8.0-setup-x64.exe`, `EasyEpi-0.8.0-portable-x64.exe`, and the setup blockmap, plus packaged smoke runs of the portable and unpacked executables.
+- [x] **Step 4: Copy the verified artifacts to `D:\EasyEpi\release`** and record their SHA-256 hashes (see the design document's Verification section).
