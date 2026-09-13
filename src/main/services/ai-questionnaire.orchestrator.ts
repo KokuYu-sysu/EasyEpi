@@ -37,7 +37,6 @@ import {
 } from './ai-questionnaire.harness'
 import { AISessionRepository } from './ai-session.repository'
 import {
-  blueprintInstruction,
   createAIResearchPipeline,
   noEvidenceDisclaimer,
   researchContextMessage,
@@ -737,7 +736,6 @@ export function createAIQuestionnaireOrchestrator(
             registryEntry
           )
           messages.push(researchMessage)
-          messages.push(blueprintInstruction())
           if (repair !== undefined) messages.push({ role: 'system', content: repair })
           let callbackPersistence = Promise.resolve()
           let modelStreaming = false

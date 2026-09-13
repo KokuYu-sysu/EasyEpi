@@ -122,7 +122,7 @@ export function createAIEvidenceService(
       outputMode: 'json_object',
       streamingSupported: false,
       responseFormatSupported: true,
-      maxOutputTokens: 8_192,
+      maxOutputTokens: 16_384,
       ...(request.signal === undefined ? {} : { signal: request.signal })
     })
     return result.content
@@ -169,13 +169,15 @@ export function createAIEvidenceService(
             ? error.errorCode
             : 'AI_EVIDENCE_INVALID'
           if (request.signal?.aborted === true) throw new ResearchContractError('AI_CANCELLED')
-          messages.push({ role: 'assistant', content: content.slice(0, 4_000) })
+          // Echoed inside the user turn: DeepSeek's reasoning models require assistant messages to
+          // carry their reasoning content, so a bare assistant replay can be rejected with a 400.
           messages.push({
             role: 'user',
             content: `The previous JSON object could not be used (code ${lastErrorCode}). ` +
               'Return one corrected object with a factors entry for every inventory factor, using only ' +
               'the supplied sourceId values, copying title and url unchanged, and using an empty ' +
-              'sourceIds list with "evidence": "none" for factors the records do not support.'
+              'sourceIds list with "evidence": "none" for factors the records do not support.\n' +
+              `Previous response:${content.slice(0, 4_000)}`
           })
         }
       }

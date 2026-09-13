@@ -20,13 +20,28 @@ Executed against the final commit on the `codex/easyepi-0.8.0` worktree:
 | Packaged unpacked | `pnpm test:e2e:packaged` with `EASYEPI_EXECUTABLE` on `release/win-unpacked/EasyEpi.exe` | 1 passed, 5 intentionally skipped |
 | Artifacts | `pnpm build:win` | `EasyEpi-0.8.0-setup-x64.exe`, `EasyEpi-0.8.0-portable-x64.exe`, setup blockmap |
 
-Artifacts copied to `D:\EasyEpi\release` from commit `f9dd606`:
+Artifacts copied to `D:\EasyEpi\release` from commit `01ab68f`:
 
 | File | Size | SHA-256 |
 | --- | --- | --- |
-| `EasyEpi-0.8.0-setup-x64.exe` | 104,959,409 | `D81D19FE16801D6F3AC70ADEF5D12DF5D6F889E94B6D7C4DC075031B3EEA25BE` |
-| `EasyEpi-0.8.0-portable-x64.exe` | 104,741,443 | `54FF258D8582ADACF1094C86790999FB13EE73580D18DE28EE339951EBC403A0` |
-| `EasyEpi-0.8.0-setup-x64.exe.blockmap` | 110,895 | `8FC41D059D8E0945F16582D6C20B06D974770022DE0F064534E6078D001E6AE9` |
+| `EasyEpi-0.8.0-setup-x64.exe` | 104,959,454 | `EAD559C314A39F26A678B6C5832FADA051A6D2E77FB6917D914C65C0C1C70870` |
+| `EasyEpi-0.8.0-portable-x64.exe` | 104,741,400 | `5653E5B03240CEBA45A9C802BA6BF3DCEC0AD9B24B2E47D5202D71F59DE07FF6` |
+| `EasyEpi-0.8.0-setup-x64.exe.blockmap` | 110,984 | `8C7F079FF0280E64F3F7060DDD172D379E56BFAF615B23EFA7048D723FF80447` |
+
+## Protocol Hardening
+
+Three request-shape risks were removed after the first real-world failure report:
+
+- **No assistant turns are replayed.** Both bounded repair loops previously echoed the rejected answer
+  as an `assistant` message. DeepSeek's reasoning models require an assistant message to carry its
+  reasoning content (`requiresReasoningContentOnAssistantMessages`), so a bare replay can be rejected
+  with a 400 and would convert a repairable rejection into a hard provider error. The previous answer
+  is now embedded in the following user turn, and the whole pipeline is system/user only.
+- **One combined user turn per generation request.** The blueprint instruction is folded into the same
+  user message as the research payload instead of being sent as a second consecutive user message.
+- **Generous output budgets.** The planner and evidence stages request 16,384 output tokens rather
+  than 8,192, so a reasoning model's thinking cannot consume the budget and truncate the structured
+  object. The bound is an upper limit, not a cost.
 
 The packaged `app.asar` was inspected and contains `/node_modules/saxes`, its `xmlchars`
 dependency, and every `out/main/services/research/*` bundle, so the PubMed XML parser and the

@@ -118,7 +118,7 @@ export function createAIResearchPlanner(
       outputMode: 'json_object',
       streamingSupported: false,
       responseFormatSupported: true,
-      maxOutputTokens: 8_192,
+      maxOutputTokens: 16_384,
       ...(request.signal === undefined ? {} : { signal: request.signal })
     })
     return result.content
@@ -149,7 +149,10 @@ export function createAIResearchPlanner(
             ? error.errorCode
             : 'AI_RESEARCH_PLAN_INVALID'
           if (request.signal?.aborted === true) throw new ResearchContractError('AI_CANCELLED')
-          messages.push({ role: 'assistant', content: content.slice(0, 4_000) })
+          // The previous answer is echoed inside the *user* turn rather than as an assistant turn.
+          // DeepSeek's reasoning models require assistant messages to carry their reasoning content,
+          // so replaying a bare assistant message can be rejected with a 400 and would turn a
+          // repairable rejection into a hard provider error.
           messages.push({ role: 'user', content: jsonRepairPrompt(lastErrorCode, content) })
         }
       }

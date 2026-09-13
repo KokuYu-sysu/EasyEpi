@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 
 import {
+  BLUEPRINT_INSTRUCTION,
   computeResearchStatus,
   createAIResearchPipeline,
   knowledgeOnlyEvidence,
@@ -319,5 +320,23 @@ describe('researchContextMessage', () => {
     expect(message.content).toContain('questionnaireBlueprint')
     expect(message.content).toContain('factorInventory')
     expect(message.content).toContain('膳食钠摄入')
+  })
+
+  it('folds the blueprint instruction into the same user turn', () => {
+    // A single combined user message keeps the generation request strictly alternating in role,
+    // instead of emitting two consecutive user turns.
+    const message = researchContextMessage({
+      status: 'none',
+      mode: 'medical',
+      plan: plan('medical'),
+      citations: [],
+      notes: [],
+      diagnostics: []
+    })
+    expect(message.content).toContain('Runtime research context')
+    expect(message.content).toContain('How to use the research context')
+    expect(message.content).toContain('Do NOT try to reproduce one specific published questionnaire')
+    expect(message.content).toContain('evidence": "none')
+    expect(BLUEPRINT_INSTRUCTION).toContain('questionnaireBlueprint')
   })
 })

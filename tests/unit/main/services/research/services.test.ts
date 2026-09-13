@@ -80,6 +80,11 @@ describe('createAIResearchPlanner', () => {
     expect(complete).toHaveBeenCalledTimes(2)
     const secondRequest = complete.mock.calls[1]![0]
     expect(secondRequest.messages.at(-1)!.content).toContain('AI_RESEARCH_PLAN_INVALID')
+    // The previous answer is echoed inside the user turn. DeepSeek's reasoning models require an
+    // assistant message to carry its reasoning content, so a bare assistant replay risks a 400 that
+    // would turn a repairable rejection into a hard provider error.
+    expect(secondRequest.messages.some(({ role }) => role === 'assistant')).toBe(false)
+    expect(secondRequest.messages.at(-1)!.content).toContain('I could not produce a plan.')
   })
 
   it('accepts a plan whose free-form fields stayed in the request language', async () => {
@@ -193,6 +198,8 @@ describe('createAIEvidenceService', () => {
     await expect(service.extract({ plan: plan(), sources: [pubmed], config: CONFIG }))
       .rejects.toThrow('AI_EVIDENCE_INVALID')
     expect(complete).toHaveBeenCalledTimes(2)
+    const secondRequest = complete.mock.calls[1]![0]
+    expect(secondRequest.messages.some(({ role }) => role === 'assistant')).toBe(false)
   })
 
   it('refuses to run without any retrieved source', async () => {
