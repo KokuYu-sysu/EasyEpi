@@ -69,6 +69,7 @@ import {
   previewQuestionnaireArtifact,
   runWithProjectAIQueue
 } from '../services/ai-questionnaire.orchestrator'
+import type { AIResearchPipeline } from '../services/research/pipeline'
 import { AISessionRepository } from '../services/ai-session.repository'
 import {
   createOpenAICompatibleClient,
@@ -108,6 +109,7 @@ interface InFlightRequest {
 export interface AIIpcDependencies {
   configService: AIConfigService
   client?: { complete(request: AIChatCompletionRequest): Promise<AIChatCompletionResult> }
+  researchPipeline?: AIResearchPipeline
   createProjectBackup?: typeof createBackup
   saveProject?: typeof saveProjectToPath
 }
@@ -776,6 +778,9 @@ export function registerAIIpcHandlers(
       if (!isCurrentProject(state, captured)) throw new Error('PROJECT_CHANGED')
       const orchestrator = createAIQuestionnaireOrchestrator({
         client,
+        ...(dependencies.researchPipeline === undefined
+          ? {}
+          : { researchPipeline: dependencies.researchPipeline }),
         persistProject: (project) => {
           if (project !== captured.project) throw new Error('PROJECT_CHANGED')
           persist(captured)

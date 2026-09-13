@@ -1119,20 +1119,29 @@ describe('AI IPC privacy boundary', () => {
       { length: 24 },
       (_, index) => `${index.toString().padStart(2, '0')}:` + '进'.repeat(300)
     )
-    // The research stage runs before generation and asks the same client for a search plan. A
-    // non-medical plan with no usable web source keeps the pipeline deterministic offline: no
-    // literature lookup, no citations, and generation still proceeds.
-    const researchPlan = JSON.stringify({
-      originalLanguage: 'en',
-      englishResearchQuestion: 'Which screening age range should an epidemiological survey use?',
-      domain: 'non_medical',
-      searchQueries: ['screening age range survey'],
-      keywords: ['screening', 'age range'],
-      meshTerms: [],
-      population: 'survey respondents',
-      exposureOrIntervention: '',
-      outcomes: ['age range coverage']
-    })
+    const researchPipeline = {
+      research: vi.fn(async () => ({
+        status: 'none' as const,
+        mode: 'non_medical' as const,
+        plan: {
+          originalLanguage: 'en',
+          englishResearchQuestion: 'Which screening age range should an epidemiological survey use?',
+          domain: 'non_medical' as const,
+          searchQueries: ['screening age range survey'],
+          keywords: ['screening', 'age range'],
+          meshTerms: [],
+          population: 'survey respondents',
+          exposureOrIntervention: '',
+          outcomes: ['age range coverage'],
+          riskFactors: [],
+          questionnaireDomains: []
+        },
+        citations: [],
+        notes: [],
+        webSearchSupported: false,
+        diagnostics: []
+      }))
+    }
     // `stage_changed` events are dropped downstream by parseAIProgressEvent (see the known source
     // bug documented in ai-assistant-contract.test.ts), and they may legitimately appear once that
     // is fixed, so ordering assertions ignore them.
@@ -1164,11 +1173,6 @@ describe('AI IPC privacy boundary', () => {
       saveProject: vi.fn(),
       client: {
         complete: vi.fn(async (request) => {
-          // The research planner is the only caller that asks for JSON without the questionnaire
-          // envelope schema appended.
-          if (request.schemaVersion === undefined) {
-            return { content: researchPlan, streamingSupported: false, responseFormatSupported: true }
-          }
           providerCalls += 1
           if (destroySecondOwner) secondOwnerDestroyed = true
           request.onModelStreaming?.()
@@ -1195,7 +1199,8 @@ describe('AI IPC privacy boundary', () => {
             responseFormatSupported: true
           }
         })
-      }
+      },
+      researchPipeline
     }, 'file:///app/index.html')
 
     const result = await handlers.get(AI_SEND_CHANNEL)!(event, {
