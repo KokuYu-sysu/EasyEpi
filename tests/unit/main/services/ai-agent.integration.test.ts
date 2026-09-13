@@ -24,7 +24,17 @@ const PLAN = {
   meshTerms: ['Hypertension'],
   population: 'university students',
   exposureOrIntervention: 'risk factors',
-  outcomes: ['hypertension prevalence']
+  outcomes: ['hypertension prevalence'],
+  riskFactors: [
+    { factor: 'dietary sodium intake', label: '膳食钠摄入', category: 'dietary' },
+    { factor: 'physical activity', label: '体力活动', category: 'lifestyle' },
+    { factor: 'family history of hypertension', label: '高血压家族史', category: 'clinical' }
+  ],
+  questionnaireDomains: [
+    { domain: '一般情况', items: ['年龄', '性别', '年级'] },
+    { domain: '饮食与生活方式', items: ['每日食盐摄入量', '体力活动', '吸烟', '饮酒'] },
+    { domain: '疾病家族史', items: ['直系亲属高血压史'] }
+  ]
 }
 
 const PUBMED_SOURCE = {
@@ -41,14 +51,40 @@ const PUBMED_SOURCE = {
   publicationTypes: ['Journal Article']
 }
 
+/**
+ * The extractor now maps the plan's factor inventory onto the retrieved records instead of asserting
+ * free-form claims: one factor cites the record that supports it, the others are kept with
+ * `evidence: 'none'` so the questionnaire still covers them without presenting them as findings.
+ */
 const EVIDENCE = {
   researchQuestion: PLAN.englishResearchQuestion,
-  claims: [{
-    claim: 'About 12% of first-year university students had hypertension.',
-    sourceIds: ['pubmed:12345678'],
-    strength: 'medium'
-  }],
-  questionnaireRecommendations: ['Ask about salt intake', 'Ask about family history'],
+  factors: [
+    {
+      factor: 'dietary sodium intake',
+      label: '膳食钠摄入',
+      category: 'dietary',
+      evidence: 'supported',
+      sourceIds: [PUBMED_SOURCE.sourceId],
+      note: 'About 12% of first-year university students had hypertension; dietary sodium was the exposure examined.'
+    },
+    {
+      factor: 'physical activity',
+      label: '体力活动',
+      category: 'lifestyle',
+      evidence: 'none',
+      sourceIds: [],
+      note: '没有检索到在该人群中测量体力活动的记录。'
+    },
+    {
+      factor: 'family history of hypertension',
+      label: '高血压家族史',
+      category: 'clinical',
+      evidence: 'none',
+      sourceIds: [],
+      note: '没有检索到报告高血压家族史的记录。'
+    }
+  ],
+  questionnaireDomains: PLAN.questionnaireDomains,
   limitations: ['Single university setting'],
   sources: [{
     sourceId: PUBMED_SOURCE.sourceId,
@@ -118,9 +154,9 @@ describe('staged research agent integration', () => {
     const complete = vi.fn(async (request: AIChatCompletionRequest) => {
       captured.push(request)
       const text = request.messages.map(({ content }) => content).join('\n')
-      const content = text.includes('You plan literature searches')
+      const content = text.includes('You plan questionnaire design')
         ? JSON.stringify(PLAN)
-        : text.includes('You extract questionnaire design evidence')
+        : text.includes('You map retrieved records onto the questionnaire factor inventory')
           ? JSON.stringify(EVIDENCE)
           : JSON.stringify(ENVELOPE)
       return { content, streamingSupported: false, responseFormatSupported: true }
@@ -200,6 +236,15 @@ describe('staged research agent integration', () => {
     const generatorText = generatorRequest!.messages.map(({ content }) => content).join('\n')
     expect(generatorText).toContain('pubmed:12345678')
     expect(generatorText).toContain('untrusted quoted data')
+    // The blueprint instruction and the research context both carry the factor inventory and the
+    // questionnaire domains, so the questionnaire is designed from the plan rather than from one paper.
+    expect(generatorText).toContain('factorInventory')
+    expect(generatorText).toContain('"questionnaireBlueprint"')
+    expect(generatorText).toContain('膳食钠摄入')
+    expect(generatorText).toContain('饮食与生活方式')
+    expect(generatorText).toContain('高血压家族史')
+    // A factor with no supporting record stays in the inventory, marked as not evidence-backed.
+    expect(generatorText).toContain('"evidence":"none"')
 
     // Protocol guarantees: JSON output only, no tools, no function-calling remnants, no project secrets.
     for (const request of captured) {
@@ -214,13 +259,20 @@ describe('staged research agent integration', () => {
     expect(webRequest.input).toContain('Risk factors for hypertension among university students')
   })
 
-  it('stops without generating when a medical request has no usable evidence', async () => {
+  it('builds a knowledge-only questionnaire when a medical request retrieves nothing', async () => {
     const value = project()
-    const complete = vi.fn(async () => ({
-      content: JSON.stringify(PLAN),
-      streamingSupported: false,
-      responseFormatSupported: true
-    }))
+    const captured: AIChatCompletionRequest[] = []
+    const complete = vi.fn(async (request: AIChatCompletionRequest) => {
+      captured.push(request)
+      const text = request.messages.map(({ content }) => content).join('\n')
+      return {
+        content: text.includes('You plan questionnaire design')
+          ? JSON.stringify(PLAN)
+          : JSON.stringify(ENVELOPE),
+        streamingSupported: false,
+        responseFormatSupported: true
+      }
+    })
     const orchestrator = createAIQuestionnaireOrchestrator({
       persistProject: vi.fn(),
       client: { complete },
@@ -254,11 +306,40 @@ describe('staged research agent integration', () => {
       runId: 'run-2'
     })
 
-    expect(result).toMatchObject({ ok: false, errorCode: 'AI_RESEARCH_NO_EVIDENCE' })
-    // Only the planner ran; the generator never saw a request.
-    expect(complete).toHaveBeenCalledOnce()
+    // Empty retrieval is no longer a hard stop: the run succeeds from the planner's factor inventory.
+    expect(result).toMatchObject({
+      ok: true,
+      outcome: 'questionnaire',
+      researchStatus: 'none',
+      researchMode: 'medical',
+      citations: []
+    })
+    // The planner and the generator each ran once; the extractor never did, because there was
+    // nothing to extract.
+    expect(complete).toHaveBeenCalledTimes(2)
+    expect(captured[1]!.messages.map(({ content }) => content).join('\n'))
+      .not.toContain('You map retrieved records')
+
+    if (!result.ok || result.outcome !== 'questionnaire') throw new Error('expected a questionnaire')
+    const artifactValue = result.artifact.value as { assistantMessage: string }
+    expect(artifactValue.assistantMessage.startsWith('【本次未检索到外部证据】')).toBe(true)
+    expect(artifactValue.assistantMessage).toContain('PubMed / Europe PMC 未返回可用记录')
+    expect(artifactValue.assistantMessage).toContain('当前模型不支持内置联网搜索')
+
+    const context = captured[1]!.messages
+      .find(({ content }) => content.includes('Runtime research context'))!.content
+    expect(context).toContain('"factorInventory"')
+    expect(context).toContain('"questionnaireBlueprint"')
+    expect(context).toContain('膳食钠摄入')
+    expect(context).toContain('"evidence":"none"')
+    expect(context).toContain('"citations":[]')
+    expect(context).not.toContain('pubmed:')
+
     const session = new AISessionRepository(value).get(sessionId)!
-    expect(session.state.runs['run-2']).toMatchObject({ status: 'failed' })
-    expect(Object.keys(session.artifacts.byId)).toHaveLength(0)
+    expect(session.state.runs['run-2']).toMatchObject({
+      status: 'completed',
+      result: { kind: 'questionnaire', researchStatus: 'none', researchMode: 'medical', citations: [] }
+    })
+    expect(Object.keys(session.artifacts.byId)).toHaveLength(1)
   })
 })

@@ -12,7 +12,7 @@ Executed against the final commit on the `codex/easyepi-0.8.0` worktree:
 | --- | --- | --- |
 | Lint | `pnpm lint` | clean |
 | Types | `pnpm typecheck` | clean (main and renderer projects) |
-| Unit + coverage | `pnpm test:coverage` | 99 files, 1347 tests, all passing; 86.14% statements / 80.84% branches |
+| Unit + coverage | `pnpm test:coverage` | 99 files, 1396 tests, all passing; 86.2% statements / 80.9% branches |
 | Build | `pnpm build` | main, preload, renderer bundles built |
 | Release gate | `pnpm check` | exit 0 |
 | Unpackaged E2E | `pnpm test:e2e` | 14 passed |
@@ -24,6 +24,11 @@ The packaged `app.asar` was inspected and contains `/node_modules/saxes`, its `x
 dependency, and every `out/main/services/research/*` bundle, so the PubMed XML parser and the
 staged pipeline are present in the shipped application. Authenticode status is `NotSigned`
 (no signing certificate is configured).
+
+Not verified end to end: a real DeepSeek call. The build machine has no outbound network, so the
+Responses `web_search` request shape and the planner's tolerance are proven only against injected
+transports and the provider contracts recovered from the local `openai` SDK and DeepSeek model
+catalogue.
 
 ## Problem
 
@@ -233,18 +238,33 @@ interface ResearchPlan {
   originalLanguage: string
   englishResearchQuestion: string
   domain: 'medical' | 'non_medical'
-  searchQueries: string[]      // 1..3
-  keywords: string[]           // <= 20
-  meshTerms: string[]          // <= 20
+  searchQueries: string[]      // 0..5, English
+  keywords: string[]           // <= 20, English
+  meshTerms: string[]          // <= 20, English
   population: string
   exposureOrIntervention: string
   outcomes: string[]
+  riskFactors: Array<{ factor: string; label: string; category: string }>
+  questionnaireDomains: Array<{ domain: string; items: string[] }>
 }
 ```
 
-Non-English requests are translated into English for searching only; the questionnaire stays in the
-user's language. The planner never produces citations. An invalid plan is repaired once with the
-bounded validation codes and paths, then fails as `AI_RESEARCH_PLAN_INVALID`.
+**The plan is a factor inventory, not a search for a matching instrument.** The questionnaire is
+built from `riskFactors` and `questionnaireDomains`; the search stages exist to attach evidence to
+each factor separately. `riskFactors[].factor` and the search keys are English, while
+`riskFactors[].label`, `questionnaireDomains[].domain` and `questionnaireDomains[].items` are in the
+user's language because they become questionnaire text. This is what makes a broad request such as a
+national chronic-disease survey workable: no published paper answers it, but the constructs are well
+established.
+
+The planner is a free-form JSON stage, so the parser normalizes rather than rejects. It tolerates
+extra keys, missing keys, renamed keys, scalar-where-array, over-limit lists (truncated), an unknown
+or absent `domain` (resolved to `medical`), and non-English text in the free-form fields — a model
+that answers in the user's language is translated or worked around downstream, not discarded. Only an
+object carrying no query, no keyword and no factor at all is rejected as
+`AI_RESEARCH_PLAN_INVALID`, after one bounded repair attempt. The earlier exact-key and
+English-only checks were the source of a false `AI_RESEARCH_PLAN_INVALID` on ordinary Chinese
+requests; that is a deliberate removal, not a relaxation of safety.
 
 An unparseable or missing `domain` resolves to `medical`, because literature retrieval degrades
 harmlessly (empty result) while a wrongly skipped literature stage cannot be recovered.
@@ -282,37 +302,55 @@ are normalized to `WebSource` with `sourceId = 'web:<normalized url>'`.
 
 ### 4. Evidence extraction
 
-The model receives the normalized sources as untrusted quoted data and returns:
+The model receives the normalized sources, the planner's factor inventory, and the recommended
+domains as untrusted quoted data, and returns a factor-by-factor mapping:
 
 ```ts
 interface ResearchEvidence {
   researchQuestion: string
-  claims: Array<{ claim: string; sourceIds: string[]; strength: 'low' | 'medium' | 'high' }>
-  questionnaireRecommendations: string[]
+  factors: Array<{
+    factor: string
+    label: string
+    category: string
+    evidence: 'supported' | 'contextual' | 'none'
+    sourceIds: string[]
+    note: string
+  }>
+  questionnaireDomains: Array<{ domain: string; items: string[] }>
   limitations: string[]
   sources: Array<{ sourceId: string; title: string; url: string }>
 }
 ```
 
-Local validation runs against the caller-owned source inventory: unknown source ids, mutated
-identity, source-free claims, and duplicate identities are rejected. Accepted sources are replaced
-with clones of the original records, so the model cannot invent or edit source identity.
+`evidence: 'none'` with an empty `sourceIds` list is a first-class, expected outcome: it means the
+factor is standard practice for this topic but no retrieved record supported it. The extractor is
+instructed to return an entry for every inventory factor and to mark the unsupported ones rather than
+dropping them or inventing a source. This is the mechanism that lets a questionnaire be built from a
+factor inventory instead of requiring one retrieved paper whose instrument already matches.
+
+Local validation still runs against the caller-owned source inventory: unknown source ids, mutated
+identity, and duplicate identities are rejected for every cited id, and accepted sources are replaced
+with clones of the original records, so the model cannot invent or edit source identity. A blueprint
+with no factors and no domains is the only shape rejected as `AI_EVIDENCE_INVALID`.
 
 ### 5. Generation
 
 Questionnaire generation stays on Chat Completions with
 `response_format: { "type": "json_object" }` and no tools. The system prompt carries the exact
-envelope contract and a compact example, and instructs the model to use only the supplied evidence.
+envelope contract and a compact example.
 
-Size handling:
+Every generation turn also receives two synthetic messages after the research context: the blueprint
+(factor inventory, recommended domains, evidence, retrieval notes) and a fixed instruction telling the
+model to build from that blueprint, to use evidence where a factor carries `sourceIds`, to include
+factors marked `evidence: "none"` as standard items rather than assertions, and explicitly **not** to
+reproduce one specific published questionnaire.
 
-- Estimate is derived from the requested question count and the serialized evidence size.
-- A single request is used when the estimate fits the configured output budget.
-- Otherwise questions are generated in ordered batches of at most 30, then assembled
-  deterministically: ordering, id de-duplication, missing-id detection, and cross-batch rule
-  reference checks all happen locally before the harness runs.
-- `finish_reason` values `length`, `max_tokens`, or an `incomplete` Responses status halve the batch
-  size, down to a floor of five questions, and retry the owning batch only.
+Size handling: a single structured request is used with an output-token bound of 65,536. DeepSeek's
+current catalogue serves up to 384,000 output tokens, so batching was deliberately not implemented —
+it would add assembly complexity for a range that a single response already covers. A `finish_reason`
+of `length`/`max_tokens` (or an `incomplete` Responses status) maps to `AI_RESPONSE_TRUNCATED`, which
+the orchestrator turns into one bounded repair asking for a more compact envelope rather than a
+terminal failure.
 
 ### 6. Dual validation
 
@@ -350,25 +388,30 @@ guarantee "the questionnaire is recognised by the app" observable in the rendere
 
 | Stage | Behavior |
 | --- | --- |
-| Planning invalid | One repair with bounded codes/paths, then `AI_RESEARCH_PLAN_INVALID`. |
+| Planning unusable | One repair with bounded codes/paths, then `AI_RESEARCH_PLAN_INVALID`. Only an object with no query, keyword, or factor reaches this. |
 | PubMed network | Two bounded retries, then literature degrades to empty. |
-| PubMed all queries empty | Literature degrades to empty, not an error. |
+| PubMed all queries empty | The literal query, the MeSH query, and the Title/Abstract query have all been tried; literature degrades to empty, not an error. |
 | Europe PMC / preprint failure | Literature keeps PubMed results and records a diagnostic. |
-| Web search unsupported or failed | Non-medical run continues with `none` and the explicit disclaimer; medical run continues when literature supplied sources. |
-| No usable source at all | `AI_RESEARCH_NO_EVIDENCE`. For medical requests this stops the run. For non-medical requests the run stops only when web search also failed or is unsupported; a successful search that returned no citable source is not a hard failure. |
+| Web search unsupported or failed | The run continues with whatever literature supplied, or with none; the reason is recorded in the retrieval notes. |
+| No usable source at all | The questionnaire is still built from the planner's factor inventory via `knowledgeOnlyEvidence()`, every factor marked `evidence: "none"`, with no citations and the reason stated in the assistant message. This is **not** a hard stop. |
 | Evidence identity mismatch | Retry extraction once, then `AI_EVIDENCE_INVALID`. |
-| Output truncated | Halve the batch, floor five, retry the owning batch. |
+| Output truncated | One bounded repair asking for a more compact envelope, then `AI_RESPONSE_TRUNCATED`. |
 | Harness rejection | Up to three attempts with bounded repair instructions. |
 | Cancellation | Abort active work, keep completed checkpoints, mark `AI_CANCELLED`. |
 
-For a medical request the run stops without producing a questionnaire when literature and web search
-both yield nothing usable. For a non-medical request, a web search that is unsupported, failed, or
-empty degrades to the honest no-external-evidence disclaimer rather than blocking the user.
+**Why an empty retrieval is no longer fatal.** The first shipped policy stopped a medical run when
+literature and web search both returned nothing. In practice that made the feature unusable for
+exactly the requests it exists for: a broad national survey such as a Chinese older-adult
+chronic-disease questionnaire has no single retrievable paper that answers it, so the pipeline
+reliably retrieved nothing and refused to produce anything. The factor inventory is the blueprint, and
+evidence is an enrichment of it, not a precondition. When retrieval is empty the run produces a
+questionnaire from that blueprint and says so plainly.
 
 The assistant message never claims a search happened unless evidence was actually retrieved. When no
-evidence was used, the fixed disclaimer is emitted:
+evidence was used, the disclaimer is emitted together with the per-stage retrieval notes:
 
-> 【本次未联网】已根据当前对话生成结果；未使用或核验任何外部来源。
+> 【本次未检索到外部证据】已根据该主题的常规流行病学要素与当前对话生成问卷；未使用或核验任何外部来源，请务必人工核对。
+> 检索情况：PubMed / Europe PMC 未返回可用记录… 当前模型不支持内置联网搜索…
 
 ## Progress and Public Surface
 

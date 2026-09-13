@@ -7,7 +7,7 @@
  */
 
 export const RESEARCH_LIMITS = Object.freeze({
-  maxQueries: 3,
+  maxQueries: 5,
   maxKeywords: 20,
   maxMeshTerms: 20,
   maxOutcomes: 10,
@@ -21,10 +21,11 @@ export const RESEARCH_LIMITS = Object.freeze({
   maxTitleLength: 1_000,
   maxJournalLength: 300,
   maxSnippetChars: 1_200,
-  maxClaims: 30,
   maxClaimLength: 1_000,
-  maxRecommendations: 20,
-  maxLimitations: 10
+  maxLimitations: 10,
+  maxFactors: 40,
+  maxDomains: 20,
+  maxDomainItems: 15
 })
 
 export type ResearchDomain = 'medical' | 'non_medical'
@@ -38,6 +39,24 @@ export type ResearchOutcome =
   | 'failed'
   | 'skipped'
 
+/**
+ * One candidate risk factor, exposure, or physiological characteristic the questionnaire should cover.
+ * `factor` is the English retrieval key; `label` stays in the user's language so the generated
+ * questionnaire reads naturally. The questionnaire is built from this inventory plus whatever
+ * evidence the retrieval stages can bind to it — not by reproducing any single published instrument.
+ */
+export interface ResearchPlanFactor {
+  factor: string
+  label: string
+  category: string
+}
+
+/** A questionnaire section the model recommends, with concrete item hints. */
+export interface ResearchPlanDomain {
+  domain: string
+  items: string[]
+}
+
 export interface ResearchPlan {
   originalLanguage: string
   englishResearchQuestion: string
@@ -48,6 +67,8 @@ export interface ResearchPlan {
   population: string
   exposureOrIntervention: string
   outcomes: string[]
+  riskFactors: ResearchPlanFactor[]
+  questionnaireDomains: ResearchPlanDomain[]
 }
 
 /**
@@ -82,10 +103,20 @@ export interface WebSource {
 
 export type ResearchSource = LiteratureSource | WebSource
 
-export interface EvidenceClaim {
-  claim: string
+/**
+ * One factor carried into questionnaire design, with whatever evidence the retrieval stages could
+ * bind to it. `evidence: 'none'` is a first-class outcome: it means the factor is standard practice
+ * for this topic but no retrieved record supported it, so the questionnaire must not present it as
+ * evidence-backed. This is what lets a questionnaire be built from a factor inventory instead of
+ * requiring one retrieved paper that already contains a matching instrument.
+ */
+export interface EvidenceFactor {
+  factor: string
+  label: string
+  category: string
+  evidence: 'supported' | 'contextual' | 'none'
   sourceIds: string[]
-  strength: 'low' | 'medium' | 'high'
+  note: string
 }
 
 export interface EvidenceSourceRef {
@@ -96,8 +127,8 @@ export interface EvidenceSourceRef {
 
 export interface ResearchEvidence {
   researchQuestion: string
-  claims: EvidenceClaim[]
-  questionnaireRecommendations: string[]
+  factors: EvidenceFactor[]
+  questionnaireDomains: ResearchPlanDomain[]
   limitations: string[]
   sources: EvidenceSourceRef[]
 }
@@ -173,51 +204,154 @@ function reject(errorCode: string): never {
   throw new ResearchContractError(errorCode)
 }
 
+/**
+ * The planner is a free-form JSON stage, not a schema-constrained one: DeepSeek's `json_object` mode
+ * does not enforce a schema, and a model that adds a helpful extra key or answers in the user's
+ * language is not wrong. This parser therefore normalizes instead of rejecting, and only fails when
+ * the object carries nothing that could drive a search or a questionnaire at all.
+ */
+const CJK_PATTERN = /[\u3400-\u9fff\u3040-\u30ff\uac00-\ud7af]/
+
+export function hasCjkText(value: string): boolean {
+  return CJK_PATTERN.test(value)
+}
+
+function textOrUndefined(value: unknown, maxLength: number): string | undefined {
+  if (typeof value !== 'string') return undefined
+  const trimmed = value.trim()
+  if (trimmed.length === 0 || trimmed.length > maxLength) return undefined
+  return trimmed
+}
+
+function firstDefined(record: Record<string, unknown>, keys: readonly string[]): unknown {
+  for (const key of keys) {
+    if (record[key] !== undefined && record[key] !== null) return record[key]
+  }
+  return undefined
+}
+
+/** Accepts a single string or an array of strings, dropping unusable entries and truncating extras. */
+function coerceStringList(value: unknown, maxItems: number, maxLength: number): string[] {
+  const raw = typeof value === 'string' ? [value] : Array.isArray(value) ? value : []
+  const result: string[] = []
+  for (const item of raw) {
+    const text = textOrUndefined(item, maxLength)
+    if (text === undefined || result.includes(text)) continue
+    result.push(text)
+    if (result.length >= maxItems) break
+  }
+  return result
+}
+
+function coerceDomain(value: unknown): ResearchDomain {
+  const text = typeof value === 'string' ? value.trim().toLowerCase() : ''
+  if (text.length === 0) return 'medical'
+  if (/non[\s_-]*medical|not[\s_-]*medical|\bother\b|\bgeneral\b|非医学|非医疗|其他/.test(text)) {
+    return 'non_medical'
+  }
+  return 'medical'
+}
+
+function coerceFactors(value: unknown): ResearchPlanFactor[] {
+  const raw = Array.isArray(value) ? value : []
+  const factors: ResearchPlanFactor[] = []
+  const seen = new Set<string>()
+  for (const item of raw) {
+    const record = isPlainRecord(item) ? item : undefined
+    const factor = record === undefined
+      ? textOrUndefined(item, RESEARCH_LIMITS.maxShortTextLength)
+      : textOrUndefined(firstDefined(record, ['factor', 'name', 'key', 'riskFactor']), RESEARCH_LIMITS.maxShortTextLength)
+    if (factor === undefined) continue
+    const key = factor.toLowerCase()
+    if (seen.has(key)) continue
+    seen.add(key)
+    const label = (record === undefined
+      ? undefined
+      : textOrUndefined(firstDefined(record, ['label', 'displayName', 'chinese', 'name']), RESEARCH_LIMITS.maxTextLength)) ?? factor
+    const category = (record === undefined
+      ? undefined
+      : textOrUndefined(firstDefined(record, ['category', 'group', 'type']), RESEARCH_LIMITS.maxShortTextLength)) ?? ''
+    factors.push({ factor, label, category })
+    if (factors.length >= RESEARCH_LIMITS.maxFactors) break
+  }
+  return factors
+}
+
+function coerceDomains(value: unknown): ResearchPlanDomain[] {
+  const raw = Array.isArray(value) ? value : []
+  const domains: ResearchPlanDomain[] = []
+  const seen = new Set<string>()
+  for (const item of raw) {
+    const record = isPlainRecord(item) ? item : undefined
+    const domain = record === undefined
+      ? textOrUndefined(item, RESEARCH_LIMITS.maxTextLength)
+      : textOrUndefined(firstDefined(record, ['domain', 'name', 'section', 'title']), RESEARCH_LIMITS.maxTextLength)
+    if (domain === undefined || seen.has(domain)) continue
+    seen.add(domain)
+    const items = record === undefined
+      ? []
+      : coerceStringList(
+          firstDefined(record, ['items', 'examples', 'exampleItems', 'questions']),
+          RESEARCH_LIMITS.maxDomainItems,
+          RESEARCH_LIMITS.maxTextLength
+        )
+    domains.push({ domain, items })
+    if (domains.length >= RESEARCH_LIMITS.maxDomains) break
+  }
+  return domains
+}
+
 export function parseResearchPlan(value: unknown): ResearchPlan {
   if (!isPlainRecord(value)) reject('AI_RESEARCH_PLAN_INVALID')
-  if (!hasExactKeys(value, [
-    'originalLanguage', 'englishResearchQuestion', 'domain', 'searchQueries',
-    'keywords', 'meshTerms', 'population', 'exposureOrIntervention', 'outcomes'
-  ])) reject('AI_RESEARCH_PLAN_INVALID')
 
-  const originalLanguage = boundedString(value.originalLanguage, RESEARCH_LIMITS.maxShortTextLength)
-  const englishResearchQuestion = boundedString(
-    value.englishResearchQuestion,
+  const originalLanguage =
+    textOrUndefined(firstDefined(value, ['originalLanguage', 'language', 'lang']), RESEARCH_LIMITS.maxShortTextLength) ??
+    'unknown'
+  const englishResearchQuestion = textOrUndefined(
+    firstDefined(value, ['englishResearchQuestion', 'researchQuestion', 'topic', 'question']),
     RESEARCH_LIMITS.maxQueryLength
   )
-  const domain = value.domain
-  const searchQueries = boundedStringArray(value.searchQueries, RESEARCH_LIMITS.maxQueries, RESEARCH_LIMITS.maxQueryLength)
-  const keywords = boundedStringArray(value.keywords, RESEARCH_LIMITS.maxKeywords, RESEARCH_LIMITS.maxShortTextLength)
-  const meshTerms = boundedStringArray(value.meshTerms, RESEARCH_LIMITS.maxMeshTerms, RESEARCH_LIMITS.maxShortTextLength)
-  const population = boundedString(value.population, RESEARCH_LIMITS.maxTextLength, true)
-  const exposureOrIntervention = boundedString(value.exposureOrIntervention, RESEARCH_LIMITS.maxTextLength, true)
-  const outcomes = boundedStringArray(value.outcomes, RESEARCH_LIMITS.maxOutcomes, RESEARCH_LIMITS.maxTextLength, true)
+  const population =
+    textOrUndefined(firstDefined(value, ['population', 'studyPopulation', 'subjects']), RESEARCH_LIMITS.maxTextLength) ?? ''
+  const exposureOrIntervention = textOrUndefined(
+    firstDefined(value, ['exposureOrIntervention', 'exposure', 'intervention']),
+    RESEARCH_LIMITS.maxTextLength
+  ) ?? ''
+  const outcomes = coerceStringList(value.outcomes, RESEARCH_LIMITS.maxOutcomes, RESEARCH_LIMITS.maxTextLength)
+  const keywords = coerceStringList(value.keywords, RESEARCH_LIMITS.maxKeywords, RESEARCH_LIMITS.maxShortTextLength)
+  const meshTerms = coerceStringList(
+    firstDefined(value, ['meshTerms', 'mesh']),
+    RESEARCH_LIMITS.maxMeshTerms,
+    RESEARCH_LIMITS.maxShortTextLength
+  )
+  const riskFactors = coerceFactors(firstDefined(value, ['riskFactors', 'factors', 'determinants']))
+  const questionnaireDomains = coerceDomains(
+    firstDefined(value, ['questionnaireDomains', 'domains', 'sections'])
+  )
+  const searchQueries = coerceStringList(
+    firstDefined(value, ['searchQueries', 'queries']),
+    RESEARCH_LIMITS.maxQueries,
+    RESEARCH_LIMITS.maxQueryLength
+  )
 
-  if (originalLanguage === undefined || englishResearchQuestion === undefined ||
-    (domain !== 'medical' && domain !== 'non_medical') ||
-    searchQueries === undefined || searchQueries.length === 0 ||
-    keywords === undefined || meshTerms === undefined ||
-    population === undefined || exposureOrIntervention === undefined || outcomes === undefined) {
-    reject('AI_RESEARCH_PLAN_INVALID')
-  }
-
-  // Search inputs must be English: the PubMed and Europe PMC indexes are English-first, and a
-  // non-English query silently returns unrelated records.
-  if (/[\u3400-\u9fff\u3040-\u30ff\uac00-\ud7af]/.test(englishResearchQuestion) ||
-    searchQueries.some((query) => /[\u3400-\u9fff\u3040-\u30ff\uac00-\ud7af]/.test(query))) {
+  const topic = englishResearchQuestion ?? keywords[0] ?? meshTerms[0] ?? riskFactors[0]?.factor ?? ''
+  if (topic.length === 0 && searchQueries.length === 0 && keywords.length === 0 &&
+    meshTerms.length === 0 && riskFactors.length === 0) {
     reject('AI_RESEARCH_PLAN_INVALID')
   }
 
   return {
     originalLanguage,
-    englishResearchQuestion,
-    domain,
-    searchQueries: [...new Set(searchQueries)],
+    englishResearchQuestion: englishResearchQuestion ?? topic,
+    domain: coerceDomain(firstDefined(value, ['domain', 'researchDomain', 'field'])),
+    searchQueries,
     keywords,
     meshTerms,
     population,
     exposureOrIntervention,
-    outcomes
+    outcomes,
+    riskFactors,
+    questionnaireDomains
   }
 }
 
@@ -309,60 +443,62 @@ export function parseResearchEvidence(
   availableSources: readonly ResearchSource[]
 ): ResearchEvidence {
   if (!isPlainRecord(value)) reject('AI_EVIDENCE_INVALID')
-  if (!hasExactKeys(
-    value,
-    ['researchQuestion', 'claims', 'questionnaireRecommendations', 'limitations', 'sources']
-  )) reject('AI_EVIDENCE_INVALID')
 
-  const researchQuestion = boundedString(value.researchQuestion, RESEARCH_LIMITS.maxQueryLength)
-  const limitations = boundedStringArray(value.limitations, RESEARCH_LIMITS.maxLimitations, RESEARCH_LIMITS.maxTextLength, true)
-  const recommendations = boundedStringArray(
-    value.questionnaireRecommendations,
-    RESEARCH_LIMITS.maxRecommendations,
-    RESEARCH_LIMITS.maxTextLength,
-    true
+  const researchQuestion =
+    textOrUndefined(firstDefined(value, ['researchQuestion', 'topic']), RESEARCH_LIMITS.maxQueryLength) ?? ''
+  const limitations = coerceStringList(value.limitations, RESEARCH_LIMITS.maxLimitations, RESEARCH_LIMITS.maxTextLength)
+  const questionnaireDomains = coerceDomains(
+    firstDefined(value, ['questionnaireDomains', 'domains', 'sections'])
   )
-  if (researchQuestion === undefined || limitations === undefined || recommendations === undefined) {
-    reject('AI_EVIDENCE_INVALID')
-  }
-  if (!Array.isArray(value.claims) || value.claims.length === 0 ||
-    value.claims.length > RESEARCH_LIMITS.maxClaims) {
-    reject('AI_EVIDENCE_INVALID')
-  }
 
   const byId = new Map(availableSources.map((source) => [source.sourceId, source]))
   const referenced = new Set<string>()
-  const claims: EvidenceClaim[] = []
-  for (const rawClaim of value.claims) {
-    if (!isPlainRecord(rawClaim) || !hasExactKeys(rawClaim, ['claim', 'sourceIds', 'strength'])) {
-      reject('AI_EVIDENCE_INVALID')
-    }
-    const claim = boundedString(rawClaim.claim, RESEARCH_LIMITS.maxClaimLength)
-    const strength = rawClaim.strength
-    const ids = boundedStringArray(rawClaim.sourceIds, RESEARCH_LIMITS.maxSources, 2_048)
-    if (claim === undefined || ids === undefined || ids.length === 0 ||
-      (strength !== 'low' && strength !== 'medium' && strength !== 'high')) {
-      reject('AI_EVIDENCE_INVALID')
-    }
+  const rawFactors = firstDefined(value, ['factors', 'riskFactors', 'determinants'])
+  const factors: EvidenceFactor[] = []
+  const seenFactors = new Set<string>()
+  for (const rawFactor of Array.isArray(rawFactors) ? rawFactors : []) {
+    const record = isPlainRecord(rawFactor) ? rawFactor : undefined
+    if (record === undefined) continue
+    const factor = textOrUndefined(
+      firstDefined(record, ['factor', 'name', 'key']),
+      RESEARCH_LIMITS.maxShortTextLength
+    )
+    if (factor === undefined) continue
+    const key = factor.toLowerCase()
+    if (seenFactors.has(key)) continue
+    seenFactors.add(key)
+    const ids = coerceStringList(record.sourceIds, RESEARCH_LIMITS.maxSources, 2_048)
+    // Source identity is immutable: a cited id must exist in the retrieved inventory.
     for (const id of ids) {
       if (!byId.has(id)) reject('AI_EVIDENCE_INVALID')
       referenced.add(id)
     }
-    claims.push({ claim, sourceIds: [...new Set(ids)], strength })
+    const declared = record.evidence
+    const evidence: EvidenceFactor['evidence'] = ids.length === 0
+      ? 'none'
+      : declared === 'supported' ? 'supported' : 'contextual'
+    factors.push({
+      factor,
+      label: textOrUndefined(firstDefined(record, ['label', 'displayName']), RESEARCH_LIMITS.maxTextLength) ?? factor,
+      category: textOrUndefined(firstDefined(record, ['category', 'group']), RESEARCH_LIMITS.maxShortTextLength) ?? '',
+      evidence,
+      sourceIds: [...new Set(ids)],
+      note: textOrUndefined(firstDefined(record, ['note', 'rationale', 'reason']), RESEARCH_LIMITS.maxClaimLength) ?? ''
+    })
+    if (factors.length >= RESEARCH_LIMITS.maxFactors) break
   }
 
-  if (!Array.isArray(value.sources) || value.sources.length > RESEARCH_LIMITS.maxSources) {
-    reject('AI_EVIDENCE_INVALID')
-  }
+  if (factors.length === 0 && questionnaireDomains.length === 0) reject('AI_EVIDENCE_INVALID')
+
+  const rawSources = Array.isArray(value.sources) ? value.sources : []
+  if (rawSources.length > RESEARCH_LIMITS.maxSources) reject('AI_EVIDENCE_INVALID')
   const seen = new Set<string>()
   const sources: EvidenceSourceRef[] = []
-  for (const rawSource of value.sources) {
-    if (!isPlainRecord(rawSource) || !hasExactKeys(rawSource, ['sourceId', 'title', 'url'])) {
-      reject('AI_EVIDENCE_INVALID')
-    }
-    const sourceId = boundedString(rawSource.sourceId, 2_048)
+  for (const rawSource of rawSources) {
+    if (!isPlainRecord(rawSource)) reject('AI_EVIDENCE_INVALID')
+    const sourceId = textOrUndefined(rawSource.sourceId, 2_048)
     const original = sourceId === undefined ? undefined : byId.get(sourceId)
-    // Source identity is immutable: title and url must be byte-identical to the retrieved record.
+    // Title and url must be byte-identical to the retrieved record, so the model cannot rewrite them.
     if (original === undefined || seen.has(original.sourceId) ||
       rawSource.title !== original.title || rawSource.url !== original.url) {
       reject('AI_EVIDENCE_INVALID')
@@ -374,13 +510,7 @@ export function parseResearchEvidence(
     if (!seen.has(id)) reject('AI_EVIDENCE_INVALID')
   }
 
-  return {
-    researchQuestion,
-    claims,
-    questionnaireRecommendations: recommendations,
-    limitations,
-    sources
-  }
+  return { researchQuestion, factors, questionnaireDomains, limitations, sources }
 }
 
 export function parseResearchDiagnostic(value: unknown): ResearchDiagnostic {

@@ -1271,7 +1271,7 @@ describe('AIQuestionnairePage boundaries', () => {
 
     await user.type(screen.getByRole('textbox', { name: '给 AI 的消息' }), '改为非医学问卷')
     await user.click(screen.getByRole('button', { name: '发送消息' }))
-    expect(await screen.findByText('本次未联网')).toBeVisible()
+    expect(await screen.findByText('本次未检索到外部证据（内容依据模型既有知识，请人工核对）')).toBeVisible()
     expect(screen.queryByText('本次已检索医学文献（联网检索未返回可用来源）')).not.toBeInTheDocument()
     expect(screen.queryByRole('link', { name: '肺癌筛查随机对照试验' })).not.toBeInTheDocument()
   })

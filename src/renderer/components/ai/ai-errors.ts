@@ -33,9 +33,9 @@ const ERROR_MESSAGES: Readonly<Record<string, string>> = {
   AI_PERSIST_FAILED: '无法保存 AI 对话，请重试。',
   AI_SESSION_PAGE_TOO_LARGE: '此段对话内容过大，暂时无法显示。',
   AI_VERSION_MIGRATION_REQUIRED: '该对话版本较旧，需要迁移后才能继续。',
-  AI_RESEARCH_PLAN_INVALID: '无法把你的要求转换为可检索的英文研究问题，请把要求写得更具体后重试。',
-  AI_PUBMED_UNAVAILABLE: 'PubMed 暂时无法访问，请稍后重试或简化检索要求。',
-  AI_RESEARCH_NO_EVIDENCE: '没有检索到可核验的文献或联网来源，为避免生成无依据的问卷，本次已停止。',
+  AI_RESEARCH_PLAN_INVALID: '无法把你的要求转换为可检索的研究计划，请把要求写得更具体后重试。',
+  AI_PUBMED_UNAVAILABLE: 'PubMed 暂时无法访问，已改用其他来源继续。',
+  AI_RESEARCH_NO_EVIDENCE: '本次没有取到任何检索来源，已跳过证据提取。',
   AI_RESEARCH_SOURCE_INVALID: '检索到的来源信息不完整，已丢弃该来源。',
   AI_EVIDENCE_INVALID: '无法从检索结果中提取可核验的证据，请调整要求后重试。',
   AI_RESEARCH_UNSUPPORTED: '当前模型不支持内置联网搜索，请确认账号与模型是否已开通该能力。'
@@ -61,7 +61,7 @@ export const AI_RESEARCH_STATUS_LABELS: Readonly<Record<AIResearchStatus, string
   literature_and_web: '本次已检索医学文献并补充联网来源',
   literature_only: '本次已检索医学文献（联网检索未返回可用来源）',
   web_only: '本次已检索联网来源',
-  none: '本次未联网'
+  none: '本次未检索到外部证据（内容依据模型既有知识，请人工核对）'
 }
 
 export function aiProgressStageLabel(stage: AIProgressStage, attempt: 1 | 2 | 3): string {

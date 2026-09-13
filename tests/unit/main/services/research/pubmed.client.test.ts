@@ -181,12 +181,12 @@ describe('PubMed E-utilities client', () => {
     expect(calls[0]).toContain('email=research%40example.org')
   })
 
-  it('issues at most three ESearch requests per run', async () => {
+  it('issues at most five ESearch requests per run', async () => {
     const { client, calls } = createClient()
 
-    await client.search({ ...request, searchQueries: ['a', 'b', 'c', 'd'] })
+    await client.search({ ...request, searchQueries: ['a', 'b', 'c', 'd', 'e', 'f'] })
 
-    expect(callsTo(calls, ESEARCH_PATH)).toHaveLength(3)
+    expect(callsTo(calls, ESEARCH_PATH)).toHaveLength(5)
   })
 
   it('normalizes the batched EFetch document into contract-valid sources', async () => {

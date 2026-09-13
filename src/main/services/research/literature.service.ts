@@ -30,6 +30,61 @@ export interface AILiteratureServiceDependencies {
 }
 
 const DEFAULT_MAX_PREPRINT_LOOKUPS = 5
+const CJK_PATTERN = /[\u3400-\u9fff\u3040-\u30ff\uac00-\ud7af]/
+
+function englishOnly(values: readonly string[]): string[] {
+  return values.filter((value) => value.length > 0 && !CJK_PATTERN.test(value))
+}
+
+/** De-duplicates before slot budgeting, so a repeated query does not waste a search slot. */
+function unique(values: readonly string[]): string[] {
+  return [...new Set(values)]
+}
+
+/**
+ * PubMed and Europe PMC are English-first indexes: a non-English query silently returns unrelated
+ * records, and a single over-narrow free-text query can return nothing at all. The planner's own
+ * queries are used first, then a MeSH query and a Title/Abstract query built from the plan's terms so
+ * a broad topic such as "chronic disease in the elderly" still retrieves records.
+ */
+export function buildPubMedQueries(plan: ResearchPlan): string[] {
+  const queries: string[] = []
+  const push = (query: string): void => {
+    const trimmed = query.trim()
+    if (trimmed.length === 0 || trimmed.length > RESEARCH_LIMITS.maxQueryLength) return
+    if (queries.includes(trimmed)) return
+    queries.push(trimmed)
+  }
+
+  for (const query of unique(englishOnly(plan.searchQueries)).slice(0, 3)) push(query)
+
+  const mesh = unique(englishOnly(plan.meshTerms)).slice(0, 3)
+  if (mesh.length > 0) push(mesh.map((term) => `${term}[MeSH Terms]`).join(' AND '))
+
+  const keywords = unique(englishOnly(plan.keywords)).slice(0, 3)
+  if (keywords.length > 0) push(keywords.map((term) => `${term}[Title/Abstract]`).join(' AND '))
+
+  for (const factor of unique(englishOnly(plan.riskFactors.map(({ factor: name }) => name))).slice(0, 2)) {
+    push(`${factor}[Title/Abstract]`)
+  }
+  return queries.slice(0, RESEARCH_LIMITS.maxQueries)
+}
+
+/** Europe PMC gets the model's queries plus one keyword query, capped by the shared query limit. */
+export function buildPreprintQueries(plan: ResearchPlan): string[] {
+  const queries: string[] = []
+  const push = (query: string): void => {
+    const trimmed = query.trim()
+    if (trimmed.length === 0 || queries.includes(trimmed)) return
+    queries.push(trimmed)
+  }
+  for (const query of unique(englishOnly(plan.searchQueries)).slice(0, 2)) push(query)
+  const keywords = unique(englishOnly(plan.keywords)).slice(0, 3)
+  if (keywords.length > 0) push(keywords.join(' AND '))
+  const factors = unique(englishOnly(plan.riskFactors.map(({ factor: name }) => name))).slice(0, 1)
+  for (const factor of factors) push(factor)
+  return queries.slice(0, RESEARCH_LIMITS.maxQueries)
+}
 
 function normalizeDoi(doi: string | undefined): string | undefined {
   if (doi === undefined) return undefined
@@ -110,7 +165,7 @@ export function createAILiteratureService(
       if (dependencies.pubmed !== undefined) {
         try {
           const result = await dependencies.pubmed.search({
-            searchQueries: request.plan.searchQueries,
+            searchQueries: buildPubMedQueries(request.plan),
             meshTerms: request.plan.meshTerms,
             keywords: request.plan.keywords
           }, request.signal)
@@ -131,7 +186,7 @@ export function createAILiteratureService(
       if (dependencies.europePmc !== undefined) {
         try {
           const result = await dependencies.europePmc.searchPreprints(
-            { queries: request.plan.searchQueries },
+            { queries: buildPreprintQueries(request.plan) },
             request.signal
           )
           preprintSources = result.sources

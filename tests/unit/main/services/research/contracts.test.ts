@@ -12,20 +12,25 @@ import {
 
 const validPlan = {
   originalLanguage: 'zh',
-  englishResearchQuestion: 'Risk factors for hypertension in university students',
+  englishResearchQuestion: 'Risk factors for chronic disease among older adults in China',
   domain: 'medical',
-  searchQueries: ['hypertension AND university students'],
-  keywords: ['hypertension', 'university students'],
-  meshTerms: ['Hypertension', 'Students'],
-  population: 'university students',
-  exposureOrIntervention: 'risk factors',
-  outcomes: ['hypertension prevalence']
+  searchQueries: ['chronic disease AND aged AND China'],
+  keywords: ['chronic disease', 'older adults'],
+  meshTerms: ['Chronic Disease', 'Aged'],
+  population: 'older adults',
+  exposureOrIntervention: 'dietary and lifestyle factors',
+  outcomes: ['chronic disease prevalence'],
+  riskFactors: [
+    { factor: 'dietary sodium intake', label: '膳食钠摄入', category: 'dietary' },
+    { factor: 'parity', label: '生育次数', category: 'reproductive' }
+  ],
+  questionnaireDomains: [{ domain: '一般情况', items: ['年龄', '文化程度'] }]
 }
 
 const pubmedSource = {
   sourceId: 'pubmed:12345678',
   kind: 'pubmed' as const,
-  title: 'Hypertension in students',
+  title: 'Hypertension in older adults',
   abstract: 'Abstract text',
   authors: ['Doe J'],
   journal: 'Journal',
@@ -45,24 +50,76 @@ const webSource = {
 }
 
 describe('parseResearchPlan', () => {
-  it('accepts an exact English plan and normalizes duplicate queries', () => {
-    const plan = parseResearchPlan({ ...validPlan, searchQueries: ['a', 'a'] })
-    expect(plan.searchQueries).toEqual(['a'])
-    expect(plan.domain).toBe('medical')
+  it('normalizes duplicate and over-limit query lists instead of rejecting them', () => {
+    const plan = parseResearchPlan({ ...validPlan, searchQueries: ['a', 'a', 'b'] })
+    expect(plan.searchQueries).toEqual(['a', 'b'])
+
+    const many = parseResearchPlan({
+      ...validPlan,
+      keywords: Array.from({ length: 30 }, (_, index) => `keyword ${index}`)
+    })
+    expect(many.keywords).toHaveLength(20)
   })
 
-  it('rejects extra keys, non-English search text, and over-limit collections', () => {
-    expect(() => parseResearchPlan({ ...validPlan, unexpected: true })).toThrow('AI_RESEARCH_PLAN_INVALID')
-    expect(() => parseResearchPlan({ ...validPlan, englishResearchQuestion: '高血压危险因素' }))
-      .toThrow('AI_RESEARCH_PLAN_INVALID')
-    expect(() => parseResearchPlan({ ...validPlan, searchQueries: ['高血压 AND students'] }))
-      .toThrow('AI_RESEARCH_PLAN_INVALID')
-    expect(() => parseResearchPlan({ ...validPlan, searchQueries: ['a', 'b', 'c', 'd'] }))
-      .toThrow('AI_RESEARCH_PLAN_INVALID')
-    expect(() => parseResearchPlan({ ...validPlan, keywords: Array.from({ length: 21 }, (_, i) => `k${i}`) }))
-      .toThrow('AI_RESEARCH_PLAN_INVALID')
-    expect(() => parseResearchPlan({ ...validPlan, domain: 'unknown' })).toThrow('AI_RESEARCH_PLAN_INVALID')
-    expect(() => parseResearchPlan({ ...validPlan, searchQueries: [] })).toThrow('AI_RESEARCH_PLAN_INVALID')
+  it('tolerates extra keys, missing keys, and synonyms', () => {
+    // A free-form JSON stage adds helpful keys and renames fields; neither is an error.
+    const plan = parseResearchPlan({
+      ...validPlan,
+      unexpected: true,
+      confidence: 0.9,
+      topic: 'ignored because englishResearchQuestion exists'
+    })
+    expect(plan.englishResearchQuestion).toBe(validPlan.englishResearchQuestion)
+    expect(plan).not.toHaveProperty('unexpected')
+
+    const renamed = parseResearchPlan({
+      language: 'zh',
+      topic: 'Chronic disease in older adults',
+      researchDomain: 'non-medical',
+      queries: 'chronic disease AND aged',
+      factors: ['smoking'],
+      domains: [{ name: '一般情况', examples: ['年龄'] }]
+    })
+    expect(renamed.englishResearchQuestion).toBe('Chronic disease in older adults')
+    expect(renamed.domain).toBe('non_medical')
+    expect(renamed.searchQueries).toEqual(['chronic disease AND aged'])
+    expect(renamed.riskFactors).toEqual([{ factor: 'smoking', label: 'smoking', category: '' }])
+    expect(renamed.questionnaireDomains).toEqual([{ domain: '一般情况', items: ['年龄'] }])
+    expect(renamed.population).toBe('')
+    expect(renamed.outcomes).toEqual([])
+  })
+
+  it('keeps the model answer usable when it stays in the request language', () => {
+    // The search stages translate or fall back on their own; rejecting the whole plan because a
+    // free-form answer echoed Chinese was the source of a false AI_RESEARCH_PLAN_INVALID.
+    const plan = parseResearchPlan({
+      ...validPlan,
+      englishResearchQuestion: '中国老年人慢性病危险因素',
+      searchQueries: ['中国老年人 慢性病']
+    })
+    expect(plan.englishResearchQuestion).toContain('中国老年人')
+    expect(plan.riskFactors).toHaveLength(2)
+  })
+
+  it('defaults an unknown or missing domain to medical', () => {
+    expect(parseResearchPlan({ ...validPlan, domain: 'unknown' }).domain).toBe('medical')
+    expect(parseResearchPlan({ ...validPlan, domain: undefined }).domain).toBe('medical')
+    expect(parseResearchPlan({ ...validPlan, domain: 'non_medical' }).domain).toBe('non_medical')
+    expect(parseResearchPlan({ ...validPlan, domain: '非医学' }).domain).toBe('non_medical')
+  })
+
+  it('coerces a scalar where a list was expected', () => {
+    const plan = parseResearchPlan({ ...validPlan, outcomes: 'chronic disease prevalence' })
+    expect(plan.outcomes).toEqual(['chronic disease prevalence'])
+  })
+
+  it('rejects only an object that carries nothing usable at all', () => {
+    expect(() => parseResearchPlan(null)).toThrow('AI_RESEARCH_PLAN_INVALID')
+    expect(() => parseResearchPlan([])).toThrow('AI_RESEARCH_PLAN_INVALID')
+    expect(() => parseResearchPlan({})).toThrow('AI_RESEARCH_PLAN_INVALID')
+    expect(() => parseResearchPlan({ note: 'sorry' })).toThrow('AI_RESEARCH_PLAN_INVALID')
+    // A single usable key is enough.
+    expect(parseResearchPlan({ keywords: ['hypertension'] }).keywords).toEqual(['hypertension'])
   })
 
   it('throws a typed contract error carrying the public code', () => {
@@ -121,8 +178,25 @@ describe('parseResearchEvidence', () => {
 
   const validEvidence = {
     researchQuestion: validPlan.englishResearchQuestion,
-    claims: [{ claim: 'Hypertension is common', sourceIds: ['pubmed:12345678'], strength: 'high' }],
-    questionnaireRecommendations: ['Ask about salt intake'],
+    factors: [
+      {
+        factor: 'dietary sodium intake',
+        label: '膳食钠摄入',
+        category: 'dietary',
+        evidence: 'supported',
+        sourceIds: ['pubmed:12345678'],
+        note: 'High intake was associated with hypertension.'
+      },
+      {
+        factor: 'parity',
+        label: '生育次数',
+        category: 'reproductive',
+        evidence: 'none',
+        sourceIds: [],
+        note: 'No retrieved record measured parity.'
+      }
+    ],
+    questionnaireDomains: [{ domain: '饮食情况', items: ['食盐摄入'] }],
     limitations: ['Single region'],
     sources: [{
       sourceId: 'pubmed:12345678',
@@ -131,16 +205,31 @@ describe('parseResearchEvidence', () => {
     }]
   }
 
-  it('accepts evidence whose identity is copied from the retrieved inventory', () => {
+  it('accepts a factor inventory whose identity is copied from the retrieved inventory', () => {
     const evidence = parseResearchEvidence(validEvidence, sources)
-    expect(evidence.claims).toHaveLength(1)
+    expect(evidence.factors).toHaveLength(2)
+    expect(evidence.factors[0]?.evidence).toBe('supported')
     expect(evidence.sources[0]?.sourceId).toBe('pubmed:12345678')
+  })
+
+  it('treats an uncited factor as unsupported rather than rejecting it', () => {
+    // This is the normal case: most factors have no matching record, and that must not be an error.
+    const evidence = parseResearchEvidence({
+      ...validEvidence,
+      factors: [{ factor: 'parity', label: '生育次数', evidence: 'supported', sourceIds: [] }]
+    }, sources)
+    expect(evidence.factors[0]).toMatchObject({ evidence: 'none', sourceIds: [] })
   })
 
   it('rejects an unknown source id', () => {
     expect(() => parseResearchEvidence({
       ...validEvidence,
-      claims: [{ claim: 'Claim', sourceIds: ['pubmed:99999999'], strength: 'high' }],
+      factors: [{
+        factor: 'dietary sodium intake',
+        label: '膳食钠摄入',
+        evidence: 'supported',
+        sourceIds: ['pubmed:99999999']
+      }],
       sources: [{ sourceId: 'pubmed:99999999', title: 'X', url: 'https://pubmed.ncbi.nlm.nih.gov/99999999/' }]
     }, sources)).toThrow('AI_EVIDENCE_INVALID')
   })
@@ -156,22 +245,30 @@ describe('parseResearchEvidence', () => {
     }, sources)).toThrow('AI_EVIDENCE_INVALID')
   })
 
-  it('rejects a claim with no sources and an uncited reference', () => {
-    expect(() => parseResearchEvidence({
-      ...validEvidence,
-      claims: [{ claim: 'Claim', sourceIds: [], strength: 'high' }]
-    }, sources)).toThrow('AI_EVIDENCE_INVALID')
-    expect(() => parseResearchEvidence({ ...validEvidence, sources: [] }, sources))
-      .toThrow('AI_EVIDENCE_INVALID')
-  })
-
-  it('rejects duplicate source identities and unknown keys', () => {
+  it('rejects duplicate source identities', () => {
     expect(() => parseResearchEvidence({
       ...validEvidence,
       sources: [validEvidence.sources[0], validEvidence.sources[0]]
     }, sources)).toThrow('AI_EVIDENCE_INVALID')
-    expect(() => parseResearchEvidence({ ...validEvidence, extra: true }, sources))
+  })
+
+  it('rejects a cited factor that is missing from the referenced source list', () => {
+    expect(() => parseResearchEvidence({ ...validEvidence, sources: [] }, sources))
       .toThrow('AI_EVIDENCE_INVALID')
+  })
+
+  it('rejects an object with neither factors nor domains', () => {
+    expect(() => parseResearchEvidence({ ...validEvidence, factors: [], questionnaireDomains: [] }, sources))
+      .toThrow('AI_EVIDENCE_INVALID')
+  })
+
+  it('accepts a blueprint-only object with no retrieved sources at all', () => {
+    const evidence = parseResearchEvidence({
+      researchQuestion: validPlan.englishResearchQuestion,
+      factors: [{ factor: 'physical activity', label: '体力活动', evidence: 'none', sourceIds: [] }]
+    }, [])
+    expect(evidence.factors).toHaveLength(1)
+    expect(evidence.sources).toEqual([])
   })
 })
 

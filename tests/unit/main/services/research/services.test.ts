@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 
 import type { ResearchPlan } from '@main/services/research/contracts'
 import { createAIEvidenceService } from '@main/services/research/evidence.service'
-import { createAILiteratureService } from '@main/services/research/literature.service'
+import { createAILiteratureService, buildPreprintQueries, buildPubMedQueries } from '@main/services/research/literature.service'
 import { createAIResearchPlanner } from '@main/services/research/planner.service'
 import { createAIWebSearchService } from '@main/services/research/web-search.service'
 import { AIClientError, type AIChatCompletionRequest } from '@main/services/openai-compatible.client'
@@ -13,27 +13,38 @@ const CONFIG = { baseUrl: 'https://api.deepseek.com', model: 'deepseek-v4-flash'
 function plan(domain: 'medical' | 'non_medical' = 'medical'): ResearchPlan {
   return {
     originalLanguage: 'zh',
-    englishResearchQuestion: 'Risk factors for hypertension in university students',
+    englishResearchQuestion: 'Risk factors for chronic disease among older adults in China',
     domain,
-    searchQueries: ['hypertension AND university students'],
-    keywords: ['hypertension'],
-    meshTerms: ['Hypertension'],
-    population: 'university students',
-    exposureOrIntervention: 'risk factors',
-    outcomes: ['hypertension prevalence']
+    searchQueries: ['chronic disease AND aged AND China'],
+    keywords: ['chronic disease', 'older adults'],
+    meshTerms: ['Chronic Disease', 'Aged'],
+    population: 'older adults',
+    exposureOrIntervention: 'dietary and lifestyle factors',
+    outcomes: ['chronic disease prevalence'],
+    riskFactors: [
+      { factor: 'dietary sodium intake', label: '膳食钠摄入', category: 'dietary' },
+      { factor: 'physical activity', label: '体力活动', category: 'lifestyle' },
+      { factor: 'parity', label: '生育次数', category: 'reproductive' }
+    ],
+    questionnaireDomains: [
+      { domain: '一般情况', items: ['年龄', '文化程度'] },
+      { domain: '饮食情况', items: ['食盐摄入'] }
+    ]
   }
 }
 
 const validPlanJson = JSON.stringify({
-  originalLanguage: 'en',
-  englishResearchQuestion: 'Risk factors for hypertension in university students',
+  originalLanguage: 'zh',
+  englishResearchQuestion: 'Risk factors for chronic disease among older adults in China',
   domain: 'medical',
-  searchQueries: ['hypertension AND university students'],
-  keywords: ['hypertension'],
-  meshTerms: ['Hypertension'],
-  population: 'university students',
-  exposureOrIntervention: 'risk factors',
-  outcomes: ['hypertension prevalence']
+  searchQueries: ['chronic disease AND aged AND China'],
+  keywords: ['chronic disease'],
+  meshTerms: ['Chronic Disease'],
+  population: 'older adults',
+  exposureOrIntervention: 'dietary factors',
+  outcomes: ['chronic disease prevalence'],
+  riskFactors: [{ factor: 'dietary sodium intake', label: '膳食钠摄入', category: 'dietary' }],
+  questionnaireDomains: [{ domain: '饮食情况', items: ['食盐摄入'] }]
 })
 
 describe('createAIResearchPlanner', () => {
@@ -54,19 +65,40 @@ describe('createAIResearchPlanner', () => {
     expect(request.messages[0]!.content).toContain('Return ONE JSON object')
   })
 
-  it('repairs once using the bounded codes and fails on a second invalid response', async () => {
+  it('repairs once when the object carries nothing usable, then fails', async () => {
+    // The planner is deliberately tolerant, so only an object with no query, no keyword and no factor
+    // is unusable. A model that merely answers in the request language is no longer rejected.
     const complete = vi.fn(async (_request: AIChatCompletionRequest) => ({
-      content: JSON.stringify({ ...JSON.parse(validPlanJson), englishResearchQuestion: '高血压危险因素' }),
+      content: JSON.stringify({ note: 'I could not produce a plan.' }),
       streamingSupported: false,
       responseFormatSupported: true
     }))
     const planner = createAIResearchPlanner({ client: { complete } })
 
-    await expect(planner.plan({ userText: '高血压问卷', config: CONFIG }))
+    await expect(planner.plan({ userText: '老年慢性病问卷', config: CONFIG }))
       .rejects.toThrow('AI_RESEARCH_PLAN_INVALID')
     expect(complete).toHaveBeenCalledTimes(2)
     const secondRequest = complete.mock.calls[1]![0]
     expect(secondRequest.messages.at(-1)!.content).toContain('AI_RESEARCH_PLAN_INVALID')
+  })
+
+  it('accepts a plan whose free-form fields stayed in the request language', async () => {
+    const complete = vi.fn(async (_request: AIChatCompletionRequest) => ({
+      content: JSON.stringify({
+        ...JSON.parse(validPlanJson),
+        englishResearchQuestion: '中国老年人慢性病危险因素',
+        searchQueries: ['中国老年人 慢性病 危险因素']
+      }),
+      streamingSupported: false,
+      responseFormatSupported: true
+    }))
+    const planner = createAIResearchPlanner({ client: { complete } })
+
+    const result = await planner.plan({ userText: '老年慢性病问卷', config: CONFIG })
+
+    expect(complete).toHaveBeenCalledOnce()
+    expect(result.plan.riskFactors).toHaveLength(1)
+    expect(result.plan.questionnaireDomains[0]?.domain).toBe('饮食情况')
   })
 
   it('does not repair after cancellation', async () => {
@@ -94,12 +126,29 @@ describe('createAIEvidenceService', () => {
     publicationTypes: []
   }
 
-  it('quotes retrieved records as untrusted data and returns validated evidence', async () => {
+  it('maps retrieved records onto the factor inventory and quotes them as untrusted data', async () => {
     const complete = vi.fn(async (_request: AIChatCompletionRequest) => ({
       content: JSON.stringify({
-        researchQuestion: 'Risk factors for hypertension in university students',
-        claims: [{ claim: 'Hypertension is common', sourceIds: ['pubmed:12345678'], strength: 'high' }],
-        questionnaireRecommendations: ['Ask about salt intake'],
+        researchQuestion: 'Risk factors for chronic disease among older adults in China',
+        factors: [
+          {
+            factor: 'dietary sodium intake',
+            label: '膳食钠摄入',
+            category: 'dietary',
+            evidence: 'supported',
+            sourceIds: ['pubmed:12345678'],
+            note: 'High intake was associated with hypertension.'
+          },
+          {
+            factor: 'parity',
+            label: '生育次数',
+            category: 'reproductive',
+            evidence: 'none',
+            sourceIds: [],
+            note: 'No record measured parity.'
+          }
+        ],
+        questionnaireDomains: [{ domain: '饮食情况', items: ['食盐摄入'] }],
         limitations: [],
         sources: [{ sourceId: pubmed.sourceId, title: pubmed.title, url: pubmed.url }]
       }),
@@ -111,17 +160,28 @@ describe('createAIEvidenceService', () => {
     const result = await service.extract({ plan: plan(), sources: [pubmed], config: CONFIG })
 
     expect(result.evidence.sources[0]?.sourceId).toBe('pubmed:12345678')
+    expect(result.evidence.factors).toHaveLength(2)
+    expect(result.evidence.factors[1]).toMatchObject({ evidence: 'none', sourceIds: [] })
     const userMessage = complete.mock.calls[0]![0].messages.at(-1)!.content
     expect(userMessage).toContain('untrusted quoted data')
     expect(userMessage).toContain('pubmed:12345678')
+    // The planner's factor inventory is handed over so the model maps evidence onto those constructs
+    // instead of looking for a single paper that already contains a matching questionnaire.
+    expect(userMessage).toContain('Factor inventory to map onto')
+    expect(userMessage).toContain('dietary sodium intake')
+    expect(userMessage).toContain('生育次数')
   })
 
   it('rejects an unknown source id and repairs once', async () => {
     const complete = vi.fn(async (_request: AIChatCompletionRequest) => ({
       content: JSON.stringify({
         researchQuestion: 'Q',
-        claims: [{ claim: 'Claim', sourceIds: ['pubmed:99999999'], strength: 'high' }],
-        questionnaireRecommendations: [],
+        factors: [{
+          factor: 'dietary sodium intake',
+          label: '膳食钠摄入',
+          evidence: 'supported',
+          sourceIds: ['pubmed:99999999']
+        }],
         limitations: [],
         sources: [{ sourceId: 'pubmed:99999999', title: 'X', url: 'https://pubmed.ncbi.nlm.nih.gov/99999999/' }]
       }),
@@ -365,5 +425,49 @@ describe('createAILiteratureService', () => {
 
     expect(result.sources).toEqual([])
     expect(result.diagnostics.some(({ errorCode }) => errorCode === 'AI_PUBMED_UNAVAILABLE')).toBe(true)
+  })
+})
+
+describe('literature query construction', () => {
+  it('adds MeSH and Title/Abstract fallbacks after the planner queries', () => {
+    // A single over-narrow free-text query returning nothing was a real failure mode: a broad topic
+    // such as a national chronic-disease survey needs the MeSH and keyword forms as well.
+    const queries = buildPubMedQueries(plan('medical'))
+    expect(queries[0]).toBe('chronic disease AND aged AND China')
+    expect(queries).toContain('Chronic Disease[MeSH Terms] AND Aged[MeSH Terms]')
+    expect(queries).toContain('chronic disease[Title/Abstract] AND older adults[Title/Abstract]')
+    expect(queries.length).toBeLessThanOrEqual(5)
+  })
+
+  it('never sends a non-English query to an English-first index', () => {
+    const chinese: ResearchPlan = {
+      ...plan('medical'),
+      searchQueries: ['中国老年人 慢性病', 'chronic disease AND aged'],
+      keywords: ['老年人', 'older adults'],
+      meshTerms: ['老年人'],
+      riskFactors: [{ factor: '吸烟', label: '吸烟', category: 'lifestyle' }]
+    }
+    const queries = buildPubMedQueries(chinese)
+    expect(queries).toEqual(['chronic disease AND aged', 'older adults[Title/Abstract]'])
+    expect(queries.every((query) => !/[\u3400-\u9fff]/.test(query))).toBe(true)
+  })
+
+  it('caps the query list and drops duplicates', () => {
+    const many: ResearchPlan = {
+      ...plan('medical'),
+      searchQueries: ['a AND b', 'a AND b', 'c', 'd', 'e', 'f'],
+      meshTerms: [],
+      keywords: [],
+      riskFactors: []
+    }
+    const queries = buildPubMedQueries(many)
+    expect(queries).toEqual(['a AND b', 'c', 'd'])
+  })
+
+  it('builds a smaller preprint query set', () => {
+    const queries = buildPreprintQueries(plan('medical'))
+    expect(queries[0]).toBe('chronic disease AND aged AND China')
+    expect(queries).toContain('chronic disease AND older adults')
+    expect(queries.length).toBeLessThanOrEqual(5)
   })
 })

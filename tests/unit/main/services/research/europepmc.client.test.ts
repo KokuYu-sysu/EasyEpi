@@ -111,11 +111,21 @@ describe('Europe PMC preprint search client', () => {
     const client = createEuropePmcClient({ fetch: fetcher, pageSize: 5 })
 
     await client.searchPreprints({
-      queries: ['one', 'two', 'three', 'four', ' ', 'one']
+      queries: ['one', 'two', 'three', 'four', 'five', 'six', 'seven']
     })
 
+    expect(RESEARCH_LIMITS.maxQueries).toBe(5)
     expect(fetcher).toHaveBeenCalledTimes(RESEARCH_LIMITS.maxQueries)
     expect(requestUrl(fetcher).searchParams.get('pageSize')).toBe('5')
+  })
+
+  it('drops blank and duplicate queries before spending a request on them', async () => {
+    const fetcher = vi.fn().mockResolvedValue(fixtureResponse())
+    const client = createEuropePmcClient({ fetch: fetcher })
+
+    await client.searchPreprints({ queries: ['one', ' ', 'one', 'two'] })
+
+    expect(fetcher).toHaveBeenCalledTimes(2)
   })
 
   it('coerces pubYear, splits authorString and emits contract-legal sources', async () => {

@@ -37,6 +37,7 @@ import {
 } from './ai-questionnaire.harness'
 import { AISessionRepository } from './ai-session.repository'
 import {
+  blueprintInstruction,
   createAIResearchPipeline,
   noEvidenceDisclaimer,
   researchContextMessage,
@@ -135,7 +136,7 @@ const PROJECT_AI_QUEUES = new WeakMap<ProjectData, Promise<void>>()
 
 function honestAssistantMessage(value: string, result: ResearchPipelineResult | undefined): string {
   if (result !== undefined && result.status !== 'none') return value
-  return noEvidenceDisclaimer()
+  return noEvidenceDisclaimer(result?.notes ?? [])
 }
 
 export function runWithProjectAIQueue<T>(project: ProjectData, task: () => Promise<T> | T): Promise<T> {
@@ -736,6 +737,7 @@ export function createAIQuestionnaireOrchestrator(
             registryEntry
           )
           messages.push(researchMessage)
+          messages.push(blueprintInstruction())
           if (repair !== undefined) messages.push({ role: 'system', content: repair })
           let callbackPersistence = Promise.resolve()
           let modelStreaming = false
