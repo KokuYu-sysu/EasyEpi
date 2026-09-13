@@ -402,9 +402,95 @@ describe('OpenAI-compatible Responses client', () => {
       new Promise<Response>((_resolve, reject) => {
         init?.signal?.addEventListener('abort', () => reject(new Error('aborted')))
       }))
-    const client = createOpenAIResponsesClient({ fetch: fetcher, timeoutMs: 5 })
+    const client = createOpenAIResponsesClient({ fetch: fetcher, idleTimeoutMs: 5 })
 
     await expect(client.search(searchRequest())).rejects.toMatchObject({ code: 'AI_TIMEOUT' })
     expect(fetcher).toHaveBeenCalledOnce()
+  })
+
+  it('keeps a slow but active stream alive past the inactivity window', async () => {
+    // A fixed deadline aborted healthy long-running hosted searches. Every received chunk must reset
+    // the inactivity window, so a stream that keeps delivering is never mistaken for a hung one.
+    const encoder = new TextEncoder()
+    // 20 deliveries at 40 ms each: the total (≈840 ms) is far past the 400 ms window, while every
+    // individual gap is ten times smaller than it. Without a reset per chunk this cannot pass.
+    const deltas = Array.from({ length: 20 }, (_, index) =>
+      `data: {"type":"response.output_text.delta","delta":"${String.fromCharCode(97 + (index % 26))}"}\n\n`)
+    const events = [
+      ...deltas,
+      `data: ${JSON.stringify({
+        type: 'response.completed',
+        response: {
+          status: 'completed',
+          output: [{
+            type: 'message', id: 'm_1', role: 'assistant', status: 'completed',
+            content: [{ type: 'output_text', text: deltas.map((_, index) => String.fromCharCode(97 + (index % 26))).join(''), annotations: [] }]
+          }]
+        }
+      })}\n\n`
+    ]
+    const expected = deltas.map((_, index) => String.fromCharCode(97 + (index % 26))).join('')
+    expect(events.length * 40).toBeGreaterThan(800)
+
+    let index = 0
+    const body = new ReadableStream<Uint8Array>({
+      async pull(controller) {
+        await new Promise((resolve) => setTimeout(resolve, 40))
+        if (index >= events.length) {
+          controller.close()
+          return
+        }
+        controller.enqueue(encoder.encode(events[index]))
+        index += 1
+      }
+    })
+
+    const client = createOpenAIResponsesClient({
+      idleTimeoutMs: 400,
+      maxRequestMs: 20_000,
+      fetch: vi.fn().mockResolvedValue(new Response(body, {
+        status: 200, headers: { 'content-type': 'text/event-stream' }
+      }))
+    })
+
+    await expect(client.search(searchRequest({ streamingSupported: true })))
+      .resolves.toMatchObject({ content: expected })
+  })
+
+  it('keeps a slow non-streaming body alive past the inactivity window', async () => {
+    // The planner, evidence and hosted-search stages all read a whole JSON body. Bytes arriving slowly
+    // are still activity, so they must reset the window too.
+    const payload = JSON.stringify({
+      status: 'completed',
+      output: [{
+        type: 'message', id: 'm_1', role: 'assistant', status: 'completed',
+        content: [{ type: 'output_text', text: 'slow', annotations: [] }]
+      }]
+    })
+    const pieces = payload.match(/[\s\S]{1,8}/g)!
+    expect(pieces.length * 40).toBeGreaterThan(600)
+
+    let index = 0
+    const body = new ReadableStream<Uint8Array>({
+      async pull(controller) {
+        await new Promise((resolve) => setTimeout(resolve, 40))
+        if (index >= pieces.length) {
+          controller.close()
+          return
+        }
+        controller.enqueue(new TextEncoder().encode(pieces[index]!))
+        index += 1
+      }
+    })
+
+    const client = createOpenAIResponsesClient({
+      idleTimeoutMs: 400,
+      maxRequestMs: 20_000,
+      fetch: vi.fn().mockResolvedValue(new Response(body, {
+        status: 200, headers: { 'content-type': 'application/json' }
+      }))
+    })
+
+    await expect(client.search(searchRequest())).resolves.toMatchObject({ content: 'slow' })
   })
 })

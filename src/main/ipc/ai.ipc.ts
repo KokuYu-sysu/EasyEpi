@@ -136,7 +136,7 @@ const ERROR_MESSAGES: Readonly<Record<string, string>> = {
   AI_AUTH_ERROR: 'AI 认证失败。',
   AI_MODEL_NOT_FOUND: '未找到配置的 AI 模型。',
   AI_RATE_LIMITED: 'AI 服务忙，请稍后重试。',
-  AI_TIMEOUT: 'AI 请求超时。',
+  AI_TIMEOUT: '模型长时间无响应，已中断。',
   AI_NETWORK_ERROR: '无法连接 AI 服务。',
   AI_PROVIDER_ERROR: 'AI 服务返回错误。',
   AI_INVALID_RESPONSE: 'AI 服务返回了无效响应。',

@@ -146,16 +146,26 @@ describe('large questionnaire streaming bounds', () => {
     const emitted = extractor.push('{"assistantMessage":"abcdefghijklmnop"}')
     // Exactly the bound is mirrored, the rest is dropped, and nothing throws.
     expect(emitted.join('')).toBe('abcdefgh')
-    expect(extractor.overflowed).toBe(true)
+    expect(extractor.reliable).toBe(false)
     expect(extractor.finish()).toBe('abcdefgh')
   })
 
-  it('does not raise overflowed for an assistant message inside the bound', () => {
+  it('reports the mirror as unreliable for an assistant message inside the bound', () => {
     const extractor = createAssistantMessageExtractor(64)
     const emitted = extractor.push('{"assistantMessage":"short"}')
     expect(emitted.join('')).toBe('short')
-    expect(extractor.overflowed).toBe(false)
+    expect(extractor.reliable).toBe(true)
     expect(extractor.finish()).toBe('short')
+  })
+
+  it('survives streamed content that is not a bare JSON envelope', () => {
+    // A fenced code block is what the harness accepts after stripping the fence. The mirror must not
+    // be able to reject it, or the client becomes stricter than the authority it feeds.
+    const extractor = createAssistantMessageExtractor(1_000)
+    expect(extractor.push('```json\n')).toEqual([])
+    expect(extractor.push('{"assistantMessage":"x"}')).toEqual([])
+    expect(extractor.reliable).toBe(false)
+    expect(extractor.finish()).toBe('')
   })
 })
 

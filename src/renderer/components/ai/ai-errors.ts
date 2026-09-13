@@ -17,7 +17,7 @@ const ERROR_MESSAGES: Readonly<Record<string, string>> = {
   AI_AUTH_ERROR: 'AI 服务认证失败，请检查 API Key。',
   AI_MODEL_NOT_FOUND: '找不到所配置的模型，请检查模型名称。',
   AI_RATE_LIMITED: 'AI 服务当前繁忙，请稍后重试。',
-  AI_TIMEOUT: 'AI 服务响应超时，请稍后重试。',
+  AI_TIMEOUT: '模型超过 3 分钟没有返回任何数据，已中断本次请求。请重试。',
   AI_NETWORK_ERROR: '无法连接 AI 服务，请检查网络。',
   AI_PROVIDER_ERROR: 'AI 服务返回错误，请稍后重试。',
   AI_INVALID_RESPONSE: 'AI 服务返回的内容无法使用。',

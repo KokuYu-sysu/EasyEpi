@@ -36,7 +36,10 @@ export interface AIResponsesSearchResult {
 
 export interface OpenAIResponsesClientOptions {
   fetch?: typeof fetch
-  timeoutMs?: number
+  /** How long the stream may deliver nothing before the request is abandoned. Reset by every chunk. */
+  idleTimeoutMs?: number
+  /** Absolute ceiling for one request, so a stream that dribbles forever still ends. */
+  maxRequestMs?: number
   maxResponseBytes?: number
   maxEventCount?: number
   maxEventBytes?: number
@@ -103,7 +106,8 @@ function namesWebSearchRefusal(status: number, text: string): boolean {
 async function readBounded(
   response: Response,
   maxBytes: number,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  onActivity?: () => void
 ): Promise<string> {
   const declared = response.headers.get('content-length')
   if (declared !== null && Number(declared) > maxBytes) {
@@ -123,6 +127,8 @@ async function readBounded(
   try {
     for (;;) {
       const next = await reader.read()
+      // A non-streaming body can still arrive slowly; received bytes are activity either way.
+      onActivity?.()
       if (signal?.aborted === true) throw new Error('ABORTED')
       if (next.done) break
       size += next.value.byteLength
@@ -164,7 +170,8 @@ export function createOpenAIResponsesClient(
   options: OpenAIResponsesClientOptions = {}
 ): { search(request: AIResponsesSearchRequest): Promise<AIResponsesSearchResult> } {
   const fetcher = options.fetch ?? fetch
-  const timeoutMs = options.timeoutMs ?? 120_000
+  const idleTimeoutMs = options.idleTimeoutMs ?? 180_000
+  const maxRequestMs = options.maxRequestMs ?? 1_800_000
   const maxResponseBytes = options.maxResponseBytes ?? 4_000_000
 
   async function requestOnce(
@@ -202,7 +209,8 @@ export function createOpenAIResponsesClient(
   async function readStream(
     response: Response,
     request: AIResponsesSearchRequest,
-    controller: AbortController
+    controller: AbortController,
+    onActivity: () => void
   ): Promise<AIResponsesSearchResult> {
     if (response.body === null) throw new AIClientError('AI_INVALID_RESPONSE')
     const parser = createOpenAIResponsesSseParser({
@@ -227,6 +235,8 @@ export function createOpenAIResponsesClient(
     try {
       for (;;) {
         const next = await reader.read()
+        // Every chunk is activity, so a slow hosted search is never mistaken for a hung connection.
+        onActivity()
         if (controller.signal.aborted) throw new Error('ABORTED')
         if (next.done) break
         totalBytes += next.value.byteLength
@@ -263,10 +273,21 @@ export function createOpenAIResponsesClient(
       const controller = new AbortController()
       let timedOut = false
       let callerAborted = false
-      const timeout = setTimeout(() => {
+      // Inactivity window, reset by every received chunk, with an absolute backstop. A fixed deadline
+      // aborts a slow-but-healthy hosted search, which is the opposite of what a timeout is for.
+      let idleTimer: ReturnType<typeof setTimeout> | undefined
+      const armIdleTimer = (): void => {
+        if (idleTimer !== undefined) clearTimeout(idleTimer)
+        idleTimer = setTimeout(() => {
+          timedOut = true
+          controller.abort()
+        }, idleTimeoutMs)
+      }
+      armIdleTimer()
+      const absoluteTimer = setTimeout(() => {
         timedOut = true
         controller.abort()
-      }, timeoutMs)
+      }, maxRequestMs)
       const onAbort = (): void => {
         callerAborted = true
         controller.abort()
@@ -286,7 +307,7 @@ export function createOpenAIResponsesClient(
             continue
           }
           if (response.status === 400 || response.status === 422) {
-            const text = await readBounded(response, 32_000, controller.signal).catch(() => '')
+            const text = await readBounded(response, 32_000, controller.signal, armIdleTimer).catch(() => '')
             if (namesWebSearchRefusal(response.status, text)) {
               throw new AIResponsesUnsupportedError('web_search_tool', response.status)
             }
@@ -302,14 +323,14 @@ export function createOpenAIResponsesClient(
           }
           const contentType = response.headers.get('content-type')?.toLowerCase() ?? ''
           if (!useStreaming || !contentType.includes('text/event-stream')) {
-            const text = await readBounded(response, maxResponseBytes, controller.signal)
+            const text = await readBounded(response, maxResponseBytes, controller.signal, armIdleTimer)
             try {
               return { ...parseOpenAIResponsesJson(JSON.parse(text)), streamingSupported: false }
             } catch (error) {
               throw parseError(error)
             }
           }
-          return await readStream(response, request, controller)
+          return await readStream(response, request, controller, armIdleTimer)
         }
         throw new AIResponsesUnsupportedError('responses_endpoint', 404)
       } catch (error) {
@@ -319,7 +340,8 @@ export function createOpenAIResponsesClient(
         if (error instanceof AIClientError) throw error
         throw new AIClientError('AI_NETWORK_ERROR')
       } finally {
-        clearTimeout(timeout)
+        clearTimeout(idleTimer)
+        clearTimeout(absoluteTimer)
         request.signal?.removeEventListener('abort', onAbort)
       }
     }

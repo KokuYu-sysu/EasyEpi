@@ -256,11 +256,13 @@ export interface AssistantMessageExtractor {
   push(text: string): string[]
   finish(): string
   /**
-   * True when the root `assistantMessage` value exceeded the mirroring bound. The boundary only feeds
-   * the provisional UI text, so overflowing it stops the mirror rather than aborting the request: the
-   * main-process harness validates the final envelope and is the authority on whether it is usable.
+   * False when the mirrored text cannot be trusted to equal the envelope's `assistantMessage`: the
+   * value overflowed the mirroring bound, or the streamed text is not the bare JSON object the mirror
+   * understands (a fenced code block or prose, for example). The mirror only feeds provisional UI
+   * text, so neither case fails the request — the main-process harness validates the final envelope
+   * and it strips code fences itself.
    */
-  readonly overflowed: boolean
+  readonly reliable: boolean
 }
 
 type RootPhase = 'start' | 'keyOrEnd' | 'colon' | 'value' | 'commaOrEnd' | 'closed'
@@ -279,6 +281,7 @@ export function createAssistantMessageExtractor(maxCharacters: number): Assistan
   let assistantSeen = false
   let primitive = false
   let overflowed = false
+  let mirroring = true
   const nested: string[] = []
   const rootKeys = new Set<string>()
 
@@ -402,6 +405,7 @@ export function createAssistantMessageExtractor(maxCharacters: number): Assistan
 
   return {
     push(text) {
+      if (!mirroring) return []
       const emitted: string[] = []
       for (let index = 0; index < text.length; index += 1) {
         const character = text[index]!
@@ -431,7 +435,14 @@ export function createAssistantMessageExtractor(maxCharacters: number): Assistan
         }
         if (character === ' ' || character === '\t' || character === '\r' || character === '\n') continue
         if (phase === 'start') {
-          if (character !== '{') invalid()
+          if (character !== '{') {
+            // The streamed text is not a bare JSON object — a ```json fence, a prose preamble, anything
+            // else the provider decided to wrap around the answer. The harness strips a fence and is the
+            // authority on the final envelope, so the mirror gives up quietly instead of rejecting a
+            // response the harness would have accepted. Every other check below stays strict.
+            mirroring = false
+            return []
+          }
           phase = 'keyOrEnd'
         } else if (phase === 'keyOrEnd') {
           if (character === '}') phase = 'closed'
@@ -453,11 +464,12 @@ export function createAssistantMessageExtractor(maxCharacters: number): Assistan
       return emitted
     },
     finish() {
+      if (!mirroring) return assistant
       if (phase !== 'closed' || purpose !== null || nested.length > 0 || primitive || escaped || unicode.length > 0 || !assistantSeen) invalid()
       return assistant
     },
-    get overflowed() {
-      return overflowed
+    get reliable() {
+      return mirroring && !overflowed
     }
   }
 }
