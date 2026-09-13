@@ -975,8 +975,7 @@ describe('OpenAI-compatible Chat Completions transport', () => {
     ['event bytes', { maxEventBytes: 20 }, sse(chunk(envelope), chunk(undefined, 'stop'), '[DONE]')],
     ['partial bytes', { maxPartialEventBytes: 20 }, `data: ${chunk(envelope)}`],
     ['event count', { maxEventCount: 1 }, sse(chunk(envelope), chunk(undefined, 'stop'), '[DONE]')],
-    ['content characters', { maxStreamContentCharacters: 5 }, sse(chunk(envelope), chunk(undefined, 'stop'), '[DONE]')],
-    ['assistant characters', { maxAssistantMessageCharacters: 5 }, sse(chunk(envelope), chunk(undefined, 'stop'), '[DONE]')]
+    ['content characters', { maxStreamContentCharacters: 5 }, sse(chunk(envelope), chunk(undefined, 'stop'), '[DONE]')]
   ])('enforces the %s limit', async (_name, limits, body) => {
     const client = createOpenAICompatibleClient({
       ...limits,
@@ -984,5 +983,18 @@ describe('OpenAI-compatible Chat Completions transport', () => {
     })
     await expect(client.complete(request())).rejects.toSatisfy((error: unknown) =>
       ['AI_RESPONSE_TOO_LARGE', 'AI_INVALID_RESPONSE'].includes(errorCode(error) ?? ''))
+  })
+
+  it('stops mirroring a long assistant message instead of failing the request', async () => {
+    // The assistant-message bound only feeds the provisional UI text. Aborting on it turned a
+    // questionnaire the harness would have accepted into an unrepairable AI_RESPONSE_TOO_LARGE.
+    const client = createOpenAICompatibleClient({
+      maxAssistantMessageCharacters: 5,
+      fetch: vi.fn().mockResolvedValue(streamingResponse([
+        sse(chunk(envelope), chunk(undefined, 'stop'), '[DONE]')
+      ]))
+    })
+
+    await expect(client.complete(request())).resolves.toMatchObject({ content: envelope })
   })
 })

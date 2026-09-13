@@ -140,7 +140,7 @@ const ERROR_MESSAGES: Readonly<Record<string, string>> = {
   AI_NETWORK_ERROR: '无法连接 AI 服务。',
   AI_PROVIDER_ERROR: 'AI 服务返回错误。',
   AI_INVALID_RESPONSE: 'AI 服务返回了无效响应。',
-  AI_RESPONSE_TOO_LARGE: 'AI 响应过大。',
+  AI_RESPONSE_TOO_LARGE: '模型返回内容超过可接收上限。',
   AI_HARNESS_VALIDATION_FAILED: 'AI 生成的问卷未通过本地校验。',
   AI_ARTIFACT_STALE: '问卷已变更，该 AI 结果已过期。',
   AI_ARTIFACT_NOT_APPLICABLE: 'AI 结果不可用。',

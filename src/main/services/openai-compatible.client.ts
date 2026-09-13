@@ -486,21 +486,25 @@ export function createOpenAICompatibleClient(
   // require three bytes per character, so the wire-size bound must leave room for both.
   const maxResponseBytes = options.maxResponseBytes ?? 16_000_000
   const maxErrorResponseBytes = options.maxErrorResponseBytes ?? 32_000
-  const maxEventCount = options.maxEventCount ?? 10_000
+  // DeepSeek's current catalogue serves up to 384,000 output tokens. The default stays well inside
+  // that while leaving room for a large questionnaire in a single structured response.
+  const completionTokenLimit = options.completionTokenLimit ?? 65_536
+  if (!Number.isSafeInteger(completionTokenLimit) || completionTokenLimit < 16 ||
+    completionTokenLimit > 1_000_000) {
+    throw new Error('INVALID_COMPLETION_TOKEN_LIMIT')
+  }
+  // OpenAI-compatible streamers emit roughly one SSE event per generated token, so an event-count
+  // bound below the output-token budget aborts exactly the large questionnaires the budget exists to
+  // allow. The bound is derived from the budget rather than fixed: at 10,000 events a 65,536-token
+  // questionnaire died part-way through with AI_RESPONSE_TOO_LARGE.
+  const maxEventCount = options.maxEventCount ?? Math.min(completionTokenLimit * 8, 1_000_000)
   const maxEventBytes = Math.min(options.maxEventBytes ?? maxResponseBytes, maxResponseBytes)
   const maxPartialEventBytes = Math.min(options.maxPartialEventBytes ?? maxResponseBytes, maxResponseBytes)
   const maxStreamContentCharacters = options.maxStreamContentCharacters ?? 2_000_000
   const maxAssistantMessageCharacters = options.maxAssistantMessageCharacters ?? 20_000
   const maxCallbackDeltaCharacters = Math.min(options.maxCallbackDeltaCharacters ?? 4_096, 4_096)
-  // DeepSeek's current catalogue serves up to 384,000 output tokens. The default stays well inside
-  // that while leaving room for a large questionnaire in a single structured response.
-  const completionTokenLimit = options.completionTokenLimit ?? 65_536
   if (!Number.isSafeInteger(maxCallbackDeltaCharacters) || maxCallbackDeltaCharacters < 2) {
     throw new Error('INVALID_STREAM_LIMIT')
-  }
-  if (!Number.isSafeInteger(completionTokenLimit) || completionTokenLimit < 16 ||
-    completionTokenLimit > 1_000_000) {
-    throw new Error('INVALID_COMPLETION_TOKEN_LIMIT')
   }
 
   async function requestOnce(
@@ -653,7 +657,10 @@ export function createOpenAICompatibleClient(
             throw new AIClientError('AI_INVALID_RESPONSE')
           }
           const root = asRecord(parsedEnvelope)
-          if (typeof root.assistantMessage !== 'string' || root.assistantMessage !== extracted) {
+          // The mirror is best-effort: when the assistant message overflowed the mirroring bound it
+          // is simply not compared, and the harness still validates the full envelope.
+          if (typeof root.assistantMessage !== 'string' ||
+            (!extractor.overflowed && root.assistantMessage !== extracted)) {
             throw new AIClientError('AI_INVALID_RESPONSE')
           }
         }

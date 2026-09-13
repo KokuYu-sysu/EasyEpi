@@ -206,9 +206,14 @@ export function createOpenAIResponsesClient(
   ): Promise<AIResponsesSearchResult> {
     if (response.body === null) throw new AIClientError('AI_INVALID_RESPONSE')
     const parser = createOpenAIResponsesSseParser({
-      maxEventCount: options.maxEventCount ?? 20_000,
-      maxEventBytes: Math.min(options.maxEventBytes ?? 256_000, maxResponseBytes),
-      maxPartialBytes: Math.min(options.maxPartialEventBytes ?? 256_000, maxResponseBytes),
+      // One SSE event per generated token, so the bound tracks the output budget rather than a fixed
+      // number that a long answer with hosted search results would exceed.
+      maxEventCount: options.maxEventCount ?? 200_000,
+      // A single `response.completed` event embeds the whole response, including every hosted search
+      // result, so the per-event bound has to be generous rather than the 256 KB that fit a plain chat
+      // completion.
+      maxEventBytes: Math.min(options.maxEventBytes ?? 2_000_000, maxResponseBytes),
+      maxPartialBytes: Math.min(options.maxPartialEventBytes ?? 2_000_000, maxResponseBytes),
       maxContentCharacters: options.maxContentCharacters ?? 1_000_000
     })
     const reader = response.body.getReader()

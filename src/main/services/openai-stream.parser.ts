@@ -255,6 +255,12 @@ export function createSseChatCompletionParser(limits: StreamLimits): SseChatComp
 export interface AssistantMessageExtractor {
   push(text: string): string[]
   finish(): string
+  /**
+   * True when the root `assistantMessage` value exceeded the mirroring bound. The boundary only feeds
+   * the provisional UI text, so overflowing it stops the mirror rather than aborting the request: the
+   * main-process harness validates the final envelope and is the authority on whether it is usable.
+   */
+  readonly overflowed: boolean
 }
 
 type RootPhase = 'start' | 'keyOrEnd' | 'colon' | 'value' | 'commaOrEnd' | 'closed'
@@ -272,6 +278,7 @@ export function createAssistantMessageExtractor(maxCharacters: number): Assistan
   let pendingHighSurrogate = ''
   let assistantSeen = false
   let primitive = false
+  let overflowed = false
   const nested: string[] = []
   const rootKeys = new Set<string>()
 
@@ -282,8 +289,8 @@ export function createAssistantMessageExtractor(maxCharacters: number): Assistan
       const scalar = pendingHighSurrogate + unit
       pendingHighSurrogate = ''
       if (target === 'key') key += scalar
+      else if (assistant.length + scalar.length > maxCharacters) overflowed = true
       else {
-        if (assistant.length + scalar.length > maxCharacters) limit()
         assistant += scalar
         emitted.push(scalar)
       }
@@ -297,8 +304,9 @@ export function createAssistantMessageExtractor(maxCharacters: number): Assistan
     if (target === 'key') {
       key += unit
       if (key.length > 4096) limit()
+    } else if (assistant.length + unit.length > maxCharacters) {
+      overflowed = true
     } else {
-      if (assistant.length + unit.length > maxCharacters) limit()
       assistant += unit
       emitted.push(unit)
     }
@@ -447,6 +455,9 @@ export function createAssistantMessageExtractor(maxCharacters: number): Assistan
     finish() {
       if (phase !== 'closed' || purpose !== null || nested.length > 0 || primitive || escaped || unicode.length > 0 || !assistantSeen) invalid()
       return assistant
+    },
+    get overflowed() {
+      return overflowed
     }
   }
 }

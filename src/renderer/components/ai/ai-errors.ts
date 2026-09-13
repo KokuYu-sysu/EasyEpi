@@ -21,7 +21,7 @@ const ERROR_MESSAGES: Readonly<Record<string, string>> = {
   AI_NETWORK_ERROR: '无法连接 AI 服务，请检查网络。',
   AI_PROVIDER_ERROR: 'AI 服务返回错误，请稍后重试。',
   AI_INVALID_RESPONSE: 'AI 服务返回的内容无法使用。',
-  AI_RESPONSE_TOO_LARGE: 'AI 返回内容过大，请缩短要求后重试。',
+  AI_RESPONSE_TOO_LARGE: '模型本次返回的内容超过了应用可接收的上限。请减少题目数量，或分两次生成后合并。',
   AI_RESPONSE_TRUNCATED: '模型回复被截断，请减少题目数量或缩短要求后重试。',
   AI_MODEL_OUTPUT_TRUNCATED: '模型回复被截断，请减少题目数量或缩短要求后重试。',
   AI_HARNESS_VALIDATION_FAILED: '生成的问卷未通过本地校验，请调整要求后重试。',

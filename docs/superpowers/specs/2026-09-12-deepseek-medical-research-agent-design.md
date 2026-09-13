@@ -20,13 +20,35 @@ Executed against the final commit on the `codex/easyepi-0.8.0` worktree:
 | Packaged unpacked | `pnpm test:e2e:packaged` with `EASYEPI_EXECUTABLE` on `release/win-unpacked/EasyEpi.exe` | 1 passed, 5 intentionally skipped |
 | Artifacts | `pnpm build:win` | `EasyEpi-0.8.0-setup-x64.exe`, `EasyEpi-0.8.0-portable-x64.exe`, setup blockmap |
 
-Artifacts copied to `D:\EasyEpi\release` from commit `44e4b36`:
+Artifacts copied to `D:\EasyEpi\release` from commit `84f6ebe` plus the stream-bound fix:
 
 | File | Size | SHA-256 |
 | --- | --- | --- |
-| `EasyEpi-0.8.0-setup-x64.exe` | 104,959,454 | `EAD559C314A39F26A678B6C5832FADA051A6D2E77FB6917D914C65C0C1C70870` |
-| `EasyEpi-0.8.0-portable-x64.exe` | 104,741,400 | `5653E5B03240CEBA45A9C802BA6BF3DCEC0AD9B24B2E47D5202D71F59DE07FF6` |
-| `EasyEpi-0.8.0-setup-x64.exe.blockmap` | 110,984 | `8C7F079FF0280E64F3F7060DDD172D379E56BFAF615B23EFA7048D723FF80447` |
+| `EasyEpi-0.8.0-setup-x64.exe` | 104,959,537 | `CE3799B342C44F6A7D83ABF0839172A91AB565677596F0DAF2FA017A069CF5A7` |
+| `EasyEpi-0.8.0-portable-x64.exe` | 104,741,465 | `7533284B8CBBBEDD98522B7788C696A91D9FC4CFC1A4CD2661F139244AD6A2B0` |
+| `EasyEpi-0.8.0-setup.x64.exe.blockmap` | 110,862 | `8AE0373B95A0FC0B7C7D0FC74A5D314423113D990879F72506844920DF4ACDF9` |
+
+## Stream Bounds
+
+A comprehensive questionnaire failed with `AI_RESPONSE_TOO_LARGE` after the blueprint rework. The
+cause was a bound that had never been revisited:
+
+**The SSE event-count bound was a fixed 10,000 while the output budget is 65,536 tokens.** OpenAI-
+compatible streamers emit roughly one SSE event per generated token, so a questionnaire of more than
+about ten thousand tokens was aborted part-way through. The bound is now derived from the output
+budget (`completionTokenLimit * 8`, capped at 1,000,000) so the two cannot drift apart again. The
+same reasoning raised the Responses client's per-event bound from 256 KB to 2 MB, because a single
+`response.completed` event embeds the whole response including every hosted search result.
+
+Two related corrections:
+
+- **The assistant-message mirror is no longer fatal.** `createAssistantMessageExtractor` bounded the
+  root `assistantMessage` at 20,000 characters and threw `limit()` on overflow, which became
+  `AI_RESPONSE_TOO_LARGE` — an error the user cannot act on and the orchestrator cannot repair. The
+  mirror only feeds provisional UI text, so overflow now stops the mirror and reports
+  `extractor.overflowed`; the harness remains the authority on whether the envelope is usable, and it
+  already reports an oversized assistant message as a repairable `INVALID_ASSISTANT_MESSAGE`.
+- **The error message is actionable** rather than the previous "AI 返回内容过大，请缩短要求后重试。".
 
 ## Protocol Hardening
 
