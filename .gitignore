@@ -9,6 +9,16 @@ playwright-report/
 .tmp/
 *.log
 
+# Local credentials and environment overrides
+.env
+.env.*
+!.env.example
+ai-provider-config.json
+*.key
+*.pem
+*.p12
+*.pfx
+
 # TypeScript emit accidentally written beside source files
 /*.config.js
 /src/**/*.js
