@@ -119,8 +119,8 @@
 
 - [x] **Step 1: Planner** returns the versioned `ResearchPlan` with an English-only research question and a `medical`/`non_medical` domain; one bounded repair.
 - [x] **Step 2: Web search** builds the query from the plan plus a literature gap inventory and filters citations to authority hosts for medical runs.
-- [x] **Step 3: Evidence extraction** requires immutable source identity and rejects unknown ids, mutated titles/urls, and source-free claims.
-- [x] **Step 4: Pipeline ordering and policy** — literature only for medical, one stage callback per stage, stop with `AI_RESEARCH_NO_EVIDENCE` for medical when nothing was found, degrade to the honest disclaimer for non-medical.
+- [x] **Step 3: Evidence extraction** maps retrieved records onto the planner's factor inventory, requires immutable source identity for every cited id, and treats an uncited factor as `evidence: "none"` instead of an error.
+- [x] **Step 4: Pipeline ordering and policy** — literature only for medical, one stage callback per stage, and an empty retrieval degrades to a knowledge-only blueprint (`status: 'none'`) with the retrieval reason stated, rather than stopping the run.
 
 ### Task 6: Orchestrator, repository, and IPC
 
