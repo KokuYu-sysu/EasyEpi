@@ -20,6 +20,14 @@ Executed against the final commit on the `codex/easyepi-0.8.0` worktree:
 | Packaged unpacked | `pnpm test:e2e:packaged` with `EASYEPI_EXECUTABLE` on `release/win-unpacked/EasyEpi.exe` | 1 passed, 5 intentionally skipped |
 | Artifacts | `pnpm build:win` | `EasyEpi-0.8.0-setup-x64.exe`, `EasyEpi-0.8.0-portable-x64.exe`, setup blockmap |
 
+Artifacts copied to `D:\EasyEpi\release` from commit `f9dd606`:
+
+| File | Size | SHA-256 |
+| --- | --- | --- |
+| `EasyEpi-0.8.0-setup-x64.exe` | 104,959,409 | `D81D19FE16801D6F3AC70ADEF5D12DF5D6F889E94B6D7C4DC075031B3EEA25BE` |
+| `EasyEpi-0.8.0-portable-x64.exe` | 104,741,443 | `54FF258D8582ADACF1094C86790999FB13EE73580D18DE28EE339951EBC403A0` |
+| `EasyEpi-0.8.0-setup-x64.exe.blockmap` | 110,895 | `8FC41D059D8E0945F16582D6C20B06D974770022DE0F064534E6078D001E6AE9` |
+
 The packaged `app.asar` was inspected and contains `/node_modules/saxes`, its `xmlchars`
 dependency, and every `out/main/services/research/*` bundle, so the PubMed XML parser and the
 staged pipeline are present in the shipped application. Authenticode status is `NotSigned`
