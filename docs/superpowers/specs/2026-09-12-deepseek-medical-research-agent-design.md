@@ -20,7 +20,7 @@ Executed against the final commit on the `codex/easyepi-0.8.0` worktree:
 | Packaged unpacked | `pnpm test:e2e:packaged` with `EASYEPI_EXECUTABLE` on `release/win-unpacked/EasyEpi.exe` | 1 passed, 5 intentionally skipped |
 | Artifacts | `pnpm build:win` | `EasyEpi-0.8.0-setup-x64.exe`, `EasyEpi-0.8.0-portable-x64.exe`, setup blockmap |
 
-Artifacts copied to `D:\EasyEpi\release` from commit `01ab68f`:
+Artifacts copied to `D:\EasyEpi\release` from commit `44e4b36`:
 
 | File | Size | SHA-256 |
 | --- | --- | --- |
