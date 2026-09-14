@@ -7,12 +7,12 @@ import type { AIProviderId } from './ai-assistant-contract'
 export const DEEPSEEK_BASE_URL = 'https://api.deepseek.com'
 
 /**
- * Current DeepSeek catalogue entries are `deepseek-v4-flash` and `deepseek-v4-pro`.
+ * Current DeepSeek catalogue entries are `deepseek-v4.1-flash` and `deepseek-v4-pro`.
  * `deepseek-chat` and `deepseek-reasoner` are legacy V3 aliases and are not assumed to exist.
  */
-export const DEEPSEEK_DEFAULT_MODEL = 'deepseek-v4-flash'
+export const DEEPSEEK_DEFAULT_MODEL = 'deepseek-v4.1-flash'
 export const DEEPSEEK_MODEL_OPTIONS: readonly string[] = Object.freeze([
-  'deepseek-v4-flash',
+  'deepseek-v4.1-flash',
   'deepseek-v4-pro'
 ])
 

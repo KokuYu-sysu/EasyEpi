@@ -6,7 +6,7 @@ import { AIProviderSettings } from '@renderer/components/ai/AIProviderSettings'
 import type { AIProviderConfigView } from '@shared/ai-assistant-contract'
 
 const DEEPSEEK_BASE_URL = 'https://api.deepseek.com'
-const DEEPSEEK_DEFAULT_MODEL = 'deepseek-v4-flash'
+const DEEPSEEK_DEFAULT_MODEL = 'deepseek-v4.1-flash'
 
 const savedConfig: AIProviderConfigView = {
   baseUrl: DEEPSEEK_BASE_URL,
@@ -101,7 +101,7 @@ describe('AIProviderSettings', () => {
       'placeholder',
       DEEPSEEK_DEFAULT_MODEL
     )
-    expect(screen.getByText('常用：deepseek-v4-flash、deepseek-v4-pro')).toBeVisible()
+    expect(screen.getByText('常用：deepseek-v4.1-flash、deepseek-v4-pro')).toBeVisible()
     expect(screen.getByLabelText('API Key')).toHaveAttribute(
       'placeholder',
       '已安全保存；留空将保留原 Key'
@@ -132,7 +132,7 @@ describe('AIProviderSettings', () => {
       .toEqual(['baseUrl', 'model'])
   })
 
-  it('defaults 模型名称 to deepseek-v4-flash when the stored model is empty', async () => {
+  it('defaults 模型名称 to deepseek-v4.1-flash when the stored model is empty', async () => {
     const user = userEvent.setup()
     const config = installConfigApi({
       get: vi.fn().mockResolvedValue({ ok: true, config: emptyConfig })
@@ -142,7 +142,7 @@ describe('AIProviderSettings', () => {
     const modelInput = await screen.findByLabelText('模型名称')
     expect(modelInput).toHaveValue(DEEPSEEK_DEFAULT_MODEL)
     expect(modelInput).toHaveAttribute('placeholder', DEEPSEEK_DEFAULT_MODEL)
-    expect(screen.getByText('常用：deepseek-v4-flash、deepseek-v4-pro')).toBeVisible()
+    expect(screen.getByText('常用：deepseek-v4.1-flash、deepseek-v4-pro')).toBeVisible()
     expect(screen.getByText('未配置 API Key。')).toBeVisible()
     expect(screen.getByLabelText('API Key')).toHaveAttribute(
       'placeholder',

@@ -791,12 +791,12 @@ AI 问卷助手在已创建并解锁的项目内，通过多轮自然语言对�
 | **AI 厂商** | 仅 DeepSeek 一家，不可选择；应用不提供厂商预设、厂商切换或自定义服务 |
 | **服务地址** | 固定为 `https://api.deepseek.com`，以只读文本显示；应用不接受用户提供的地址，主进程会把任何非 DeepSeek 主机改写为该端点 |
 | **API Key** | 以密码方式输入，界面仅显示掩码，不允许写入项目文件、日志或缓存 |
-| **模型名称** | 默认 `deepseek-v4-flash`，可改为 `deepseek-v4-pro`；用户输入服务端实际支持的模型标识 |
+| **模型名称** | 默认 `deepseek-v4.1-flash`，可改为 `deepseek-v4-pro`；用户输入服务端实际支持的模型标识 |
 | **检索来源** | 不是用户开关：每次生成都执行固定的检索流程（见下），医学类请求检索 PubMed、Europe PMC 与 bioRxiv/medRxiv，所有请求再由 DeepSeek Responses API 的内置联网搜索补充来源 |
 
 - API Key 使用 Windows 操作系统安全凭据能力保存。安全凭据不可用时不得降级为明文持久化，应提示用户当前无法安全记忆密钥。
 - 服务地址与模型名称保存在应用级偏好设置中，不随项目复制、备份或导出；存储格式为 schema v3（`schemaVersion`、`baseUrl`、`model`、可选的 `encryptedApiKey`、`privacyAcceptedAt`、`privacyNoticeVersion`）。
-- 旧版本 v1/v2 配置自动迁移到 v3：非 DeepSeek 主机的地址被替换为 DeepSeek 端点、其模型标识重置为 `deepseek-v4-flash`、其加密 API Key 被丢弃（仅当原主机已是 DeepSeek 时保留密文与模型）；`providerId` 与 `webSearchEnabled` 字段被移除。
+- 旧版本 v1/v2 配置自动迁移到 v3：非 DeepSeek 主机的地址被替换为 DeepSeek 端点、其模型标识重置为 `deepseek-v4.1-flash`、其加密 API Key 被丢弃（仅当原主机已是 DeepSeek 时保留密文与模型）；`providerId` 与 `webSearchEnabled` 字段被移除。
 - 提供「测试连接」，验证认证与模型可用性；测试只发送一条固定连通性消息，不启用流式、不使用 JSON 输出模式、不触发检索，也不读取或发送项目内容。
 - 问卷生成使用 Chat Completions 并要求 `response_format: { "type": "json_object" }`。`response_format` 与流式响应均作为能力增强项按服务能力独立协商降级，不得成为发送的唯一前提。
 - 问卷协议不使用函数调用：任何请求都不得携带 `tools` 或 `tool_choice`，`submit_questionnaire` 已从协议中移除；函数调用的错误识别逻辑仅作为历史兼容兜底保留。
@@ -919,7 +919,7 @@ AI 问卷助手页面至少包含：Session 列表、多轮对话窗、发送区
 - [ ] 正常轮次只产生一次 LLM 调用；仅解析/校验失败时允许最多两次修复调用。
 - [ ] 支持流式时能显示可读助手文字和完整阶段；`stream` 或 `response_format` 被明确拒绝时能按能力独立回退，且不显示原始 JSON。
 - [ ] 配置界面只提供 DeepSeek 的模型名称与 API Key，服务地址以只读形式显示 `https://api.deepseek.com`；不存在厂商预设、自定义地址或联网搜索开关。
-- [ ] 旧 v1/v2 配置自动迁移到 schema v3：非 DeepSeek 主机被替换、其模型重置为 `deepseek-v4-flash`、其加密 Key 被丢弃。
+- [ ] 旧 v1/v2 配置自动迁移到 schema v3：非 DeepSeek 主机被替换、其模型重置为 `deepseek-v4.1-flash`、其加密 Key 被丢弃。
 - [ ] 每次生成按 `planning → literature（仅医学类）→ web_search → extracting → 生成 → 本地校验` 执行；非医学类请求不执行文献检索。
 - [ ] 医学类请求的文献检索顺序为 PubMed E-utilities、Europe PMC 预印本检索、bioRxiv/medRxiv 详情校验，并如实披露未使用任何订阅数据源。
 - [ ] 界面显示的证据构成与本次实际来源一致，只能是 `literature_and_web`、`literature_only`、`web_only` 或 `none`；`none` 时必须以固定免责声明「【本次未检索到外部证据】已根据该主题的常规流行病学要素与当前对话生成问卷；未使用或核验任何外部来源，请务必人工核对。」开头并附检索结果说明。

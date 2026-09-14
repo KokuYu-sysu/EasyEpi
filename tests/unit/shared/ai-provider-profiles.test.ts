@@ -18,11 +18,11 @@ describe('AI provider presets', () => {
       id: 'deepseek',
       label: 'DeepSeek',
       defaultBaseUrl: 'https://api.deepseek.com',
-      defaultModel: 'deepseek-v4-flash'
+      defaultModel: 'deepseek-v4.1-flash'
     })
     expect(DEEPSEEK_BASE_URL).toBe('https://api.deepseek.com')
-    expect(DEEPSEEK_DEFAULT_MODEL).toBe('deepseek-v4-flash')
-    expect(DEEPSEEK_MODEL_OPTIONS).toEqual(['deepseek-v4-flash', 'deepseek-v4-pro'])
+    expect(DEEPSEEK_DEFAULT_MODEL).toBe('deepseek-v4.1-flash')
+    expect(DEEPSEEK_MODEL_OPTIONS).toEqual(['deepseek-v4.1-flash', 'deepseek-v4-pro'])
   })
 
   it('detects only the DeepSeek host and reports every other vendor as unsupported', () => {

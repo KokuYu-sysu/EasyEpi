@@ -6,8 +6,8 @@
 
 - Windows 10/11 x64；准备两个使用不同密码的测试项目 A、B，并能正常创建、打开和解锁。
 - 准备一个可用的 DeepSeek API Key，并确认账号与所选模型已开通 Responses API 的内置联网搜索能力。应用只使用 DeepSeek：服务地址固定为 `https://api.deepseek.com`，问卷生成与检索规划走 Chat Completions（读取 `choices[0].message.content` 字符串），联网搜索走 Responses API。
-- 设置页只有模型名称、API Key 和只读的服务地址；没有厂商预设、没有自定义地址输入框、也没有“内置联网搜索”开关。模型默认为 `deepseek-v4-flash`，也可填写 `deepseek-v4-pro`。连接测试固定发送一条连通性消息，始终不启用联网搜索。
-- 应用不接受用户提供的服务地址：主进程会把任何非 DeepSeek 主机改写为 `https://api.deepseek.com`。全局配置文件 `ai-provider-config.json` 使用 schema v3（`schemaVersion: 3`、`baseUrl`、`model`、可选的 `encryptedApiKey`、`privacyAcceptedAt`、`privacyNoticeVersion`）；旧 v1/v2 文件自动迁移：非 DeepSeek 主机被替换为 DeepSeek 端点、模型重置为 `deepseek-v4-flash`、`encryptedApiKey` 仅在原主机已是 DeepSeek 时保留，`providerId` 与 `webSearchEnabled` 不再写入。
+- 设置页只有模型名称、API Key 和只读的服务地址；没有厂商预设、没有自定义地址输入框、也没有“内置联网搜索”开关。模型默认为 `deepseek-v4.1-flash`，也可填写 `deepseek-v4-pro`。连接测试固定发送一条连通性消息，始终不启用联网搜索。
+- 应用不接受用户提供的服务地址：主进程会把任何非 DeepSeek 主机改写为 `https://api.deepseek.com`。全局配置文件 `ai-provider-config.json` 使用 schema v3（`schemaVersion: 3`、`baseUrl`、`model`、可选的 `encryptedApiKey`、`privacyAcceptedAt`、`privacyNoticeVersion`）；旧 v1/v2 文件自动迁移：非 DeepSeek 主机被替换为 DeepSeek 端点、模型重置为 `deepseek-v4.1-flash`、`encryptedApiKey` 仅在原主机已是 DeepSeek 时保留，`providerId` 与 `webSearchEnabled` 不再写入。
 - 推荐模型至少能遵循多轮指令、输出单个 JSON 对象、返回完整问卷候选并在收到本地校验错误后修正。响应根必须包含 `kind`、`assistantMessage`、`rollingSummary`、`options`、`questionnaire`。问卷协议不使用函数调用：请求不携带 `tools` 或 `tool_choice`，`submit_questionnaire` 已移除；`response_format` 和流式响应仍按能力协商降级。
 - 准备可查看并计数请求的 HTTPS 调试代理或受控故障注入测试构建，以及可按脚本返回 400/401/403/404/429、延迟、断连和指定响应内容的 stub。由于服务地址固定，生产构建无法指向本地服务，故障注入只能通过注入 transport 的测试构建，或经系统信任、可拦截 `api.deepseek.com` 的 HTTPS 代理完成。代理必须脱敏 `Authorization`，测试捕获文件不得进入提交或正式日志。
 - 使用独立测试项目目录和独立 Electron userData。打包版默认 userData 通常位于 `%APPDATA%\EasyEpi`，最终以实际启动参数/环境为准。
@@ -18,8 +18,8 @@
 
 ### MT-AI-00 DeepSeek 配置、只读端点与旧配置迁移
 
-- **操作**：用全新 userData 打开右上角“设置 → AI 服务”，逐项记录界面元素，确认不存在厂商选择、地址输入框和联网搜索开关；填写 DeepSeek API Key（模型保留默认 `deepseek-v4-flash`），保存后关闭重开设置，点击“测试连接”；再把模型改为 `deepseek-v4-pro`，保存并再次测试连接。随后用另两个隔离 userData 启动：一份存放 `schemaVersion: 2` 且 `baseUrl` 已是 DeepSeek 的配置，一份存放 `schemaVersion: 2` 且 `baseUrl` 指向其他主机（并带 `providerId`、`webSearchEnabled`、`encryptedApiKey`），分别在设置页核对并直接打开 `ai-provider-config.json`。
-- **预期**：设置页只有模型名称与 API Key 两个输入项，服务地址以只读形式显示 `https://api.deepseek.com`（固定为 DeepSeek 官方接口），没有厂商预设、没有自定义地址、没有“内置联网搜索”开关；保存后模型与“已保存 Key”状态正确恢复，API Key 从不回显。测试连接只发送固定连通性消息，不启用流式、不启用 JSON 输出模式、不触发任何检索，也不读取项目内容。迁移后配置一律为 schema v3：原主机已是 DeepSeek 时保留模型与 `encryptedApiKey` 密文；原主机不是 DeepSeek 时 `baseUrl` 被替换为 DeepSeek 端点、模型重置为 `deepseek-v4-flash`、`encryptedApiKey` 被丢弃；`providerId` 与 `webSearchEnabled` 不再出现。
+- **操作**：用全新 userData 打开右上角“设置 → AI 服务”，逐项记录界面元素，确认不存在厂商选择、地址输入框和联网搜索开关；填写 DeepSeek API Key（模型保留默认 `deepseek-v4.1-flash`），保存后关闭重开设置，点击“测试连接”；再把模型改为 `deepseek-v4-pro`，保存并再次测试连接。随后用另两个隔离 userData 启动：一份存放 `schemaVersion: 2` 且 `baseUrl` 已是 DeepSeek 的配置，一份存放 `schemaVersion: 2` 且 `baseUrl` 指向其他主机（并带 `providerId`、`webSearchEnabled`、`encryptedApiKey`），分别在设置页核对并直接打开 `ai-provider-config.json`。
+- **预期**：设置页只有模型名称与 API Key 两个输入项，服务地址以只读形式显示 `https://api.deepseek.com`（固定为 DeepSeek 官方接口），没有厂商预设、没有自定义地址、没有“内置联网搜索”开关；保存后模型与“已保存 Key”状态正确恢复，API Key 从不回显。测试连接只发送固定连通性消息，不启用流式、不启用 JSON 输出模式、不触发任何检索，也不读取项目内容。迁移后配置一律为 schema v3：原主机已是 DeepSeek 时保留模型与 `encryptedApiKey` 密文；原主机不是 DeepSeek 时 `baseUrl` 被替换为 DeepSeek 端点、模型重置为 `deepseek-v4.1-flash`、`encryptedApiKey` 被丢弃；`providerId` 与 `webSearchEnabled` 不再出现。
 - **注意点**：测试连接只接受“已保存且未改动”的配置；输入框有未保存改动时点击“测试连接”应先提示保存，而不是发出请求。迁移是被动且自动的，不要手工编辑既有密文；记录迁移前后文件内容时只保留字段名与结构，不要粘贴 Key。
 
 ### MT-AI-00A 检索阶段与证据构成（医学 / 非医学）
@@ -39,7 +39,7 @@
 ### MT-AI-02 Key 不回显、保留与清除
 
 - **操作**：保存 Key 后关闭并重开设置；只修改模型并让 Key 输入框保持空白后保存；再点击“清除 API 配置”。
-- **预期**：已保存 Key 从不以明文回填，只显示“已安全保存”语义/掩码；空白保存保留原 Key；清除后模型输入框回到默认值 `deepseek-v4-flash`（未保存状态）、Key 状态为空、服务地址仍为固定的 `https://api.deepseek.com`，AI 页面阻止发送。
+- **预期**：已保存 Key 从不以明文回填，只显示“已安全保存”语义/掩码；空白保存保留原 Key；清除后模型输入框回到默认值 `deepseek-v4.1-flash`（未保存状态）、Key 状态为空、服务地址仍为固定的 `https://api.deepseek.com`，AI 页面阻止发送。
 - **注意点**：清除 API 配置会保留已经接受的隐私确认，因此配置文件可能仍存在。不要把掩码误认为真实 Key。
 
 ### MT-AI-03 safeStorage 不可用

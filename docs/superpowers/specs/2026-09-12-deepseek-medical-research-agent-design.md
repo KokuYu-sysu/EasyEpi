@@ -153,10 +153,10 @@ promise:
 
 ```ts
 export const DEEPSEEK_BASE_URL = 'https://api.deepseek.com'
-export const DEEPSEEK_DEFAULT_MODEL = 'deepseek-v4-flash'
+export const DEEPSEEK_DEFAULT_MODEL = 'deepseek-v4.1-flash'
 ```
 
-`deepseek-v4-flash` and `deepseek-v4-pro` are the current catalogue entries (1,000,000-token context,
+`deepseek-v4.1-flash` and `deepseek-v4-pro` are the current catalogue entries (1,000,000-token context,
 384,000-token maximum output). `deepseek-chat` and `deepseek-reasoner` are legacy V3 aliases and are
 not assumed to exist.
 
@@ -199,7 +199,7 @@ Authorization: Bearer <key>
 Content-Type: application/json
 
 {
-  "model": "deepseek-v4-flash",
+  "model": "deepseek-v4.1-flash",
   "instructions": "...",
   "input": "<research question>",
   "tools": [{ "type": "web_search" }],
