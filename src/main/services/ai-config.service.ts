@@ -20,18 +20,25 @@ const DEFAULT_BASE_URL = DEEPSEEK_BASE_URL
 const MAX_BASE_URL_LENGTH = 2_048
 const MAX_MODEL_LENGTH = 200
 const MAX_API_KEY_LENGTH = 8_192
+/** An NCBI E-utilities key is a short opaque token; 200 characters is far above any issued value. */
+const MAX_NCBI_API_KEY_LENGTH = 200
 
 /**
  * Schema v3 drops `providerId` and `webSearchEnabled`: EasyEpi supports exactly one provider, and
  * retrieval is a mandatory pipeline stage rather than a user preference.
+ *
+ * Schema v4 adds the optional `encryptedNcbiApiKey`. It is independent of the chat provider, so it is
+ * kept (and never dropped) when the Base URL is not DeepSeek. Records written by v1/v2/v3 have no
+ * NCBI key at all, which is a fully valid state.
  */
-const CURRENT_SCHEMA_VERSION = 3
+const CURRENT_SCHEMA_VERSION = 4
 
 interface StoredAIConfig {
   schemaVersion: number
   baseUrl: string
   model: string
   encryptedApiKey?: string
+  encryptedNcbiApiKey?: string
   privacyAcceptedAt?: string
   privacyNoticeVersion?: number
 }
@@ -46,6 +53,8 @@ export interface AIMainConfig {
   baseUrl: string
   model: string
   apiKey?: string
+  /** Optional PubMed/NCBI E-utilities key. Independent of the chat provider. */
+  ncbiApiKey?: string
 }
 
 export interface AIConfigService {
@@ -124,7 +133,7 @@ export function normalizeAIBaseUrl(value: string): string {
 export function validateAIConfigUpdate(request: unknown): AIProviderConfigUpdate {
   if (!isPlainObject(request)) throw new Error('INVALID_AI_CONFIG')
 
-  const { baseUrl, model, apiKey } = request
+  const { baseUrl, model, apiKey, ncbiApiKey } = request
   if (
     typeof baseUrl !== 'string' ||
     typeof model !== 'string' ||
@@ -133,7 +142,12 @@ export function validateAIConfigUpdate(request: unknown): AIProviderConfigUpdate
     model.length > MAX_MODEL_LENGTH ||
     hasControlCharacter(model) ||
     (apiKey !== undefined && apiKey !== null && typeof apiKey !== 'string') ||
-    (typeof apiKey === 'string' && (apiKey.length > MAX_API_KEY_LENGTH || apiKey.includes('\0')))
+    (typeof apiKey === 'string' && (apiKey.length > MAX_API_KEY_LENGTH || apiKey.includes('\0'))) ||
+    (ncbiApiKey !== undefined && ncbiApiKey !== null && typeof ncbiApiKey !== 'string') ||
+    (typeof ncbiApiKey === 'string' &&
+      (ncbiApiKey.length > MAX_NCBI_API_KEY_LENGTH ||
+        ncbiApiKey.includes('\0') ||
+        hasControlCharacter(ncbiApiKey)))
   ) {
     throw new Error('INVALID_AI_CONFIG')
   }
@@ -143,26 +157,32 @@ export function validateAIConfigUpdate(request: unknown): AIProviderConfigUpdate
     model
   }
   if (apiKey !== undefined) normalized.apiKey = apiKey
+  if (ncbiApiKey !== undefined) normalized.ncbiApiKey = ncbiApiKey
   return normalized
 }
 
 /**
- * Accepts schema v1 (single-vendor, no provider field), v2 (providerId + webSearchEnabled) and v3.
+ * Accepts schema v1 (single-vendor, no provider field), v2 (providerId + webSearchEnabled), v3 and v4.
  * Every legacy shape is normalized onto the single supported provider: a stored base URL that does
- * not resolve to DeepSeek is replaced, its model id is reset, and its encrypted key is dropped
- * because a key issued elsewhere is useless here.
+ * not resolve to DeepSeek is replaced, its model id is reset, and its encrypted chat key is dropped
+ * because a key issued elsewhere is useless here. The optional NCBI key is provider-independent, so it
+ * is preserved across that rewrite and absent keys are always valid.
  */
 function parseStoredAIConfig(value: unknown): StoredAIConfig {
   if (!isPlainObject(value)) throw new Error('INVALID_AI_CONFIG_FILE')
   const {
-    schemaVersion, baseUrl, model, encryptedApiKey, privacyAcceptedAt, privacyNoticeVersion
+    schemaVersion, baseUrl, model, encryptedApiKey, encryptedNcbiApiKey,
+    privacyAcceptedAt, privacyNoticeVersion
   } = value
   if (
-    schemaVersion !== 1 && schemaVersion !== 2 && schemaVersion !== CURRENT_SCHEMA_VERSION ||
+    schemaVersion !== 1 && schemaVersion !== 2 && schemaVersion !== 3 &&
+      schemaVersion !== CURRENT_SCHEMA_VERSION ||
     typeof baseUrl !== 'string' ||
     typeof model !== 'string' ||
     (encryptedApiKey !== undefined &&
       (typeof encryptedApiKey !== 'string' || !isStrictBase64(encryptedApiKey))) ||
+    (encryptedNcbiApiKey !== undefined &&
+      (typeof encryptedNcbiApiKey !== 'string' || !isStrictBase64(encryptedNcbiApiKey))) ||
     (privacyAcceptedAt !== undefined &&
       (typeof privacyAcceptedAt !== 'string' || !Number.isFinite(Date.parse(privacyAcceptedAt)))) ||
     (privacyNoticeVersion !== undefined &&
@@ -194,6 +214,7 @@ function parseStoredAIConfig(value: unknown): StoredAIConfig {
     baseUrl: belongsToDeepSeek ? storedBaseUrl : DEFAULT_BASE_URL,
     model: normalizedModel,
     ...(belongsToDeepSeek && encryptedApiKey !== undefined ? { encryptedApiKey } : {}),
+    ...(encryptedNcbiApiKey === undefined ? {} : { encryptedNcbiApiKey }),
     ...(privacyAcceptedAt === undefined ? {} : { privacyAcceptedAt }),
     ...(privacyNoticeVersion === undefined ? {} : { privacyNoticeVersion: Number(privacyNoticeVersion) })
   }
@@ -201,11 +222,35 @@ function parseStoredAIConfig(value: unknown): StoredAIConfig {
 
 function configView(config: StoredAIConfig): AIProviderConfigView {
   const hasApiKey = config.encryptedApiKey !== undefined
+  const hasNcbiApiKey = config.encryptedNcbiApiKey !== undefined
   return {
     baseUrl: config.baseUrl,
     model: config.model,
     hasApiKey,
-    maskedApiKey: hasApiKey ? AI_MASKED_API_KEY : null
+    maskedApiKey: hasApiKey ? AI_MASKED_API_KEY : null,
+    hasNcbiApiKey,
+    maskedNcbiApiKey: hasNcbiApiKey ? AI_MASKED_API_KEY : null
+  }
+}
+
+/**
+ * Encrypts one optional credential with the same mechanism as the chat key. `undefined` preserves
+ * whatever is stored, while `null` or an empty string clears it. `null` is also returned when secure
+ * storage cannot encrypt, which the caller maps onto `AI_SECURE_STORAGE_UNAVAILABLE`.
+ */
+async function encryptOptionalKey(
+  submitted: string | null | undefined,
+  secureStorage: () => Promise<AISecureStorage>
+): Promise<string | undefined | null> {
+  if (submitted === undefined) return undefined
+  const key = submitted?.trim() ?? ''
+  if (key.length === 0) return undefined
+  try {
+    const storage = await secureStorage()
+    if (!storage.isEncryptionAvailable()) return null
+    return storage.encryptString(key).toString('base64')
+  } catch {
+    return null
   }
 }
 
@@ -303,6 +348,7 @@ export function createAIConfigService(
         : DEFAULT_BASE_URL
 
       let encryptedApiKey: string | undefined
+      let storedNcbiApiKey: string | undefined
       let privacyAcceptedAt: string | undefined
       let privacyNoticeVersion: number | undefined
       try {
@@ -310,6 +356,7 @@ export function createAIConfigService(
         encryptedApiKey = validated.apiKey === undefined && baseUrl === current.baseUrl
           ? current.encryptedApiKey
           : undefined
+        storedNcbiApiKey = current.encryptedNcbiApiKey
         privacyAcceptedAt = current.privacyAcceptedAt
         privacyNoticeVersion = current.privacyNoticeVersion
       } catch {
@@ -334,11 +381,21 @@ export function createAIConfigService(
         }
       }
 
+      // The NCBI key is independent of the chat provider, so an omitted value keeps it stored even
+      // when the Base URL changes.
+      const encryptedNcbiApiKey = validated.ncbiApiKey === undefined
+        ? storedNcbiApiKey
+        : await encryptOptionalKey(validated.ncbiApiKey, secureStorage)
+      if (encryptedNcbiApiKey === null) {
+        return { ok: false, code: 'AI_SECURE_STORAGE_UNAVAILABLE' }
+      }
+
       const stored: StoredAIConfig = {
         schemaVersion: CURRENT_SCHEMA_VERSION,
         baseUrl,
         model: validated.model,
         ...(encryptedApiKey === undefined ? {} : { encryptedApiKey }),
+        ...(encryptedNcbiApiKey === undefined ? {} : { encryptedNcbiApiKey }),
         ...(privacyAcceptedAt === undefined ? {} : { privacyAcceptedAt }),
         ...(privacyNoticeVersion === undefined ? {} : { privacyNoticeVersion })
       }
@@ -387,7 +444,7 @@ export function createAIConfigService(
 
   async function getPlaintextForMain(): Promise<AIMainConfig> {
     const stored = await readStored()
-    if (stored.encryptedApiKey === undefined) {
+    if (stored.encryptedApiKey === undefined && stored.encryptedNcbiApiKey === undefined) {
       return { baseUrl: stored.baseUrl, model: stored.model }
     }
 
@@ -395,8 +452,22 @@ export function createAIConfigService(
     try {
       storage = await secureStorage()
       if (!storage.isEncryptionAvailable()) throw new Error('UNAVAILABLE')
-      const apiKey = storage.decryptString(Buffer.from(stored.encryptedApiKey, 'base64'))
-      return { baseUrl: stored.baseUrl, model: stored.model, apiKey }
+    } catch {
+      const code: AIProviderConfigErrorCode = 'AI_SECURE_STORAGE_UNAVAILABLE'
+      throw new Error(code)
+    }
+
+    try {
+      return {
+        baseUrl: stored.baseUrl,
+        model: stored.model,
+        ...(stored.encryptedApiKey === undefined
+          ? {}
+          : { apiKey: storage.decryptString(Buffer.from(stored.encryptedApiKey, 'base64')) }),
+        ...(stored.encryptedNcbiApiKey === undefined
+          ? {}
+          : { ncbiApiKey: storage.decryptString(Buffer.from(stored.encryptedNcbiApiKey, 'base64')) })
+      }
     } catch {
       const code: AIProviderConfigErrorCode = 'AI_SECURE_STORAGE_UNAVAILABLE'
       throw new Error(code)

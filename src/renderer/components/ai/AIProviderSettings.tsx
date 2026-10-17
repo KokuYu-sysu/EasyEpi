@@ -14,13 +14,16 @@ const EMPTY_CONFIG: AIProviderConfigView = {
   baseUrl: DEEPSEEK_BASE_URL,
   model: DEEPSEEK_DEFAULT_MODEL,
   hasApiKey: false,
-  maskedApiKey: null
+  maskedApiKey: null,
+  hasNcbiApiKey: false,
+  maskedNcbiApiKey: null
 }
 
 export function AIProviderSettings() {
   const [saved, setSaved] = useState<AIProviderConfigView>(EMPTY_CONFIG)
   const [model, setModel] = useState(DEEPSEEK_DEFAULT_MODEL)
   const [apiKey, setApiKey] = useState('')
+  const [ncbiApiKey, setNcbiApiKey] = useState('')
   const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState(false)
   const [dirty, setDirty] = useState(false)
@@ -31,6 +34,7 @@ export function AIProviderSettings() {
     setSaved(config)
     setModel(config.model.length === 0 ? DEEPSEEK_DEFAULT_MODEL : config.model)
     setApiKey('')
+    setNcbiApiKey('')
     setDirty(false)
   }, [])
 
@@ -61,7 +65,8 @@ export function AIProviderSettings() {
       const result = await window.easyEpi.ai.config.update({
         baseUrl: DEEPSEEK_BASE_URL,
         model: nextModel,
-        ...(apiKey.trim().length > 0 ? { apiKey } : {})
+        ...(apiKey.trim().length > 0 ? { apiKey } : {}),
+        ...(ncbiApiKey.trim().length > 0 ? { ncbiApiKey } : {})
       })
       if (!result.ok) {
         setError(friendlyAIError(result.errorCode, '无法保存 AI 服务配置。'))
@@ -161,6 +166,16 @@ export function AIProviderSettings() {
             disabled={busy}
             hint="为保护凭据，已保存的 Key 不会回显。"
             onChange={(event) => { setApiKey(event.target.value); markDirty() }}
+          />
+          <Input
+            label="NCBI API Key（可选）"
+            type="password"
+            value={ncbiApiKey}
+            placeholder={saved.hasNcbiApiKey ? '已安全保存；留空将保留原 Key' : '可不填'}
+            autoComplete="new-password"
+            disabled={busy}
+            hint="可选。填写后仅提高 PubMed/NCBI 的请求配额，不影响对话服务；已保存的 Key 不会回显。"
+            onChange={(event) => { setNcbiApiKey(event.target.value); markDirty() }}
           />
           <p className="m-0 text-[length:var(--font-size-sm)] text-[var(--color-text-secondary)]">
             文献检索说明：<a href="https://www.ncbi.nlm.nih.gov/books/NBK25497/" target="_blank" rel="noreferrer">NCBI E-utilities 使用条款</a>。

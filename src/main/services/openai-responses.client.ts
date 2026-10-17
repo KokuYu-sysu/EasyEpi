@@ -34,6 +34,14 @@ export interface AIResponsesSearchResult {
   streamingSupported: boolean
 }
 
+/**
+ * Request shapes tried in order against each endpoint. `full` is the documented form; `minimal`
+ * drops the optional `instructions` and `tool_choice` fields a provider is most likely to reject, so
+ * a provider that refuses them still gets to run the search instead of reporting a bare failure.
+ */
+const RESPONSES_BODY_VARIANTS = ['full', 'minimal'] as const
+type ResponsesBodyVariant = (typeof RESPONSES_BODY_VARIANTS)[number]
+
 export interface OpenAIResponsesClientOptions {
   fetch?: typeof fetch
   /** How long the stream may deliver nothing before the request is abandoned. Reset by every chunk. */
@@ -91,11 +99,12 @@ function errorSignal(text: string): { param: string; message: string } {
   return { param: '', message: text.toLowerCase() }
 }
 
-function namesWebSearchRefusal(status: number, text: string): boolean {
-  if (status !== 400 && status !== 422) return false
+function namesWebSearchRefusal(status: number, text: string): boolean {  if (status !== 400 && status !== 422) return false
   const { param, message } = errorSignal(text)
-  const namesTool = param.startsWith('tools') || message.includes('web_search') ||
-    message.includes('web search') || message.includes('websearch')
+  const namesTool = param.startsWith('tools') || param.startsWith('tool_choice') ||
+    message.includes('web_search') || message.includes('web search') ||
+    message.includes('websearch') || message.includes('tools') ||
+    message.includes('tool_choice')
   const refusal = message.includes('unsupported') || message.includes('not support') ||
     message.includes('unknown') || message.includes('unrecognized') ||
     message.includes('invalid') || message.includes('not available') ||
@@ -179,7 +188,8 @@ export function createOpenAIResponsesClient(
     request: AIResponsesSearchRequest,
     maxOutputTokens: number,
     useStreaming: boolean,
-    controller: AbortController
+    controller: AbortController,
+    variant: ResponsesBodyVariant
   ): Promise<Response> {
     return fetcher(url, {
       method: 'POST',
@@ -192,12 +202,15 @@ export function createOpenAIResponsesClient(
       },
       body: JSON.stringify({
         model: request.model,
-        ...(request.instructions === undefined || request.instructions.length === 0
+        // `minimal` drops the two optional fields a provider is most likely to reject outright. The
+        // tool and the input — the parts that actually perform the search — are never dropped.
+        ...(variant === 'minimal' || request.instructions === undefined ||
+          request.instructions.length === 0
           ? {}
           : { instructions: request.instructions }),
         input: request.input,
         tools: [{ type: 'web_search' }],
-        tool_choice: 'auto',
+        ...(variant === 'minimal' ? {} : { tool_choice: 'auto' }),
         // `/responses` takes `max_output_tokens`; `max_completion_tokens` belongs to Chat Completions.
         max_output_tokens: maxOutputTokens,
         ...(useStreaming ? { stream: true } : {})
@@ -296,41 +309,51 @@ export function createOpenAIResponsesClient(
 
       try {
         const useStreaming = request.streamingSupported !== false
-        for (const url of resolveEndpointCandidates(baseUrl, 'responses')) {
-          const response = await requestOnce(url, request, maxOutputTokens, useStreaming, controller)
-          if (controller.signal.aborted) {
-            await response.body?.cancel().catch(() => undefined)
-            throw new Error('ABORTED')
-          }
-          if (response.status === 404) {
-            await response.body?.cancel().catch(() => undefined)
-            continue
-          }
-          if (response.status === 400 || response.status === 422) {
-            const text = await readBounded(response, 32_000, controller.signal, armIdleTimer).catch(() => '')
-            if (namesWebSearchRefusal(response.status, text)) {
-              throw new AIResponsesUnsupportedError('web_search_tool', response.status)
+        const candidates = resolveEndpointCandidates(baseUrl, 'responses')
+        for (const url of candidates) {
+          for (const variant of RESPONSES_BODY_VARIANTS) {
+            const response = await requestOnce(
+              url, request, maxOutputTokens, useStreaming, controller, variant)
+            if (controller.signal.aborted) {
+              await response.body?.cancel().catch(() => undefined)
+              throw new Error('ABORTED')
             }
-            throw statusError(response.status)
-          }
-          if (!response.ok) {
-            await response.body?.cancel().catch(() => undefined)
-            throw statusError(response.status)
-          }
-          if (response.redirected) {
-            await response.body?.cancel().catch(() => undefined)
-            throw new AIClientError('AI_INVALID_RESPONSE')
-          }
-          const contentType = response.headers.get('content-type')?.toLowerCase() ?? ''
-          if (!useStreaming || !contentType.includes('text/event-stream')) {
-            const text = await readBounded(response, maxResponseBytes, controller.signal, armIdleTimer)
-            try {
-              return { ...parseOpenAIResponsesJson(JSON.parse(text)), streamingSupported: false }
-            } catch (error) {
-              throw parseError(error)
+            if (response.status === 404) {
+              // The endpoint itself is missing. Try the other spelling, not the other body.
+              await response.body?.cancel().catch(() => undefined)
+              break
             }
+            if (response.status === 400 || response.status === 422) {
+              const text = await readBounded(response, 32_000, controller.signal, armIdleTimer)
+                .catch(() => '')
+              if (namesWebSearchRefusal(response.status, text)) {
+                throw new AIResponsesUnsupportedError('web_search_tool', response.status)
+              }
+              // The provider rejected the request *shape* rather than the tool. Retry once with the
+              // least demanding body before giving up, so a provider that refuses `instructions` or
+              // `tool_choice` still gets the chance to run the search.
+              if (variant === 'full') continue
+              throw statusError(response.status)
+            }
+            if (!response.ok) {
+              await response.body?.cancel().catch(() => undefined)
+              throw statusError(response.status)
+            }
+            if (response.redirected) {
+              await response.body?.cancel().catch(() => undefined)
+              throw new AIClientError('AI_INVALID_RESPONSE')
+            }
+            const contentType = response.headers.get('content-type')?.toLowerCase() ?? ''
+            if (!useStreaming || !contentType.includes('text/event-stream')) {
+              const text = await readBounded(response, maxResponseBytes, controller.signal, armIdleTimer)
+              try {
+                return { ...parseOpenAIResponsesJson(JSON.parse(text)), streamingSupported: false }
+              } catch (error) {
+                throw parseError(error)
+              }
+            }
+            return await readStream(response, request, controller, armIdleTimer)
           }
-          return await readStream(response, request, controller, armIdleTimer)
         }
         throw new AIResponsesUnsupportedError('responses_endpoint', 404)
       } catch (error) {

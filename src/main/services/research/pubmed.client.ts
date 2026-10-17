@@ -34,6 +34,8 @@ export interface PubMedSearchRequest {
   /** Carried for pipeline symmetry: the search queries already contain the expanded terms. */
   meshTerms: readonly string[]
   keywords: readonly string[]
+  /** Per-request override, so the configured NCBI key reaches the client without rebuilding it. */
+  apiKey?: string
 }
 
 export interface PubMedSearchResult {
@@ -50,6 +52,11 @@ export interface PubMedClientOptions {
   now?: () => number
   wait?: (milliseconds: number, signal?: AbortSignal) => Promise<void>
   contactEmail?: string
+  /**
+   * Optional NCBI API key. NCBI allows 10 requests/second with a key instead of 3 without one, and an
+   * identified request is far less likely to be throttled or blocked.
+   */
+  apiKey?: string
   maxResponseBytes?: number
   maxSources?: number
 }
@@ -59,6 +66,8 @@ const TOOL_NAME = 'easyepi'
 const ESEARCH_RETMAX = '20'
 const DEFAULT_MAX_RESPONSE_BYTES = 8_000_000
 const MIN_REQUEST_INTERVAL_MS = 334
+/** 10 requests/second is NCBI's documented allowance for keyed requests; pace at ~9/second. */
+const KEYED_REQUEST_INTERVAL_MS = 110
 const FIXED_RETRY_DELAYS_MS: readonly number[] = [500, 1_000]
 const MAX_RETRY_AFTER_SECONDS = 5
 const MAX_XML_DEPTH = 32
@@ -87,15 +96,15 @@ export function assertTrustedEUtilsUrl(rawUrl: string): URL {
   return url
 }
 
-function esearchUrl(query: string, contactEmail: string): string {
+function esearchUrl(query: string, contactEmail: string, apiKeySuffix: string): string {
   return `${EUTILS_ORIGIN}${ESEARCH_PATH}?db=pubmed&term=${encodeURIComponent(query)}` +
     `&retmode=json&retmax=${ESEARCH_RETMAX}&retstart=0&sort=relevance` +
-    `&tool=${TOOL_NAME}&email=${encodeURIComponent(contactEmail)}`
+    `&tool=${TOOL_NAME}&email=${encodeURIComponent(contactEmail)}${apiKeySuffix}`
 }
 
-function efetchUrl(pmids: readonly string[], contactEmail: string): string {
+function efetchUrl(pmids: readonly string[], contactEmail: string, apiKeySuffix: string): string {
   return `${EUTILS_ORIGIN}${EFETCH_PATH}?db=pubmed&id=${encodeURIComponent(pmids.join(','))}` +
-    `&rettype=abstract&retmode=xml&tool=${TOOL_NAME}&email=${encodeURIComponent(contactEmail)}`
+    `&rettype=abstract&retmode=xml&tool=${TOOL_NAME}&email=${encodeURIComponent(contactEmail)}${apiKeySuffix}`
 }
 
 function isCancellation(error: unknown): boolean {
@@ -202,8 +211,19 @@ function parseXmlDocument(xml: string): XmlElement {
     if (nodeCount > MAX_XML_NODES) throw new ResearchContractError(UNAVAILABLE_ERROR)
   }
 
-  parser.on('doctype', () => {
-    throw new ResearchContractError(UNAVAILABLE_ERROR)
+  parser.on('doctype', (doctype: string) => {
+    // Every real PubMed EFetch response opens with the NLM doctype:
+    //   <!DOCTYPE PubmedArticleSet PUBLIC "-//NLM//DTD PubMedArticle, 1st January 2024//EN" "...dtd">
+    // Refusing the declaration itself refused every real response, which quietly emptied the literature
+    // stage and left only Europe PMC preprints in the results.
+    //
+    // The declaration is inert on its own: saxes is a pure parser and never fetches an external DTD.
+    // An *internal subset* is not inert — that is where `<!ENTITY>` declarations live, and those are
+    // what enable entity-expansion attacks — so a subset is still refused.
+    const declaration = String(doctype)
+    if (declaration.includes('[') || /ENTITY/i.test(declaration)) {
+      throw new ResearchContractError(UNAVAILABLE_ERROR)
+    }
   })
 
   parser.on('opentag', (tag) => {
@@ -533,13 +553,18 @@ export function createPubMedClient(options: PubMedClientOptions = {}): PubMedCli
   const contactEmail = configuredEmail === undefined || configuredEmail.length === 0
     ? DEFAULT_CONTACT_EMAIL
     : configuredEmail
+  // NCBI documents 3 requests/second anonymously and 10/second with an API key. Pacing at the
+  // anonymous rate while holding a key leaves most of the allowance unused and makes a rate-limit
+  // rejection more likely, because an unidentified request is the one NCBI throttles first.
+  const configuredKey = options.apiKey?.trim()
+  const apiKey = configuredKey === undefined || configuredKey.length === 0 ? undefined : configuredKey
   const maxResponseBytes = positiveIntegerOr(options.maxResponseBytes, DEFAULT_MAX_RESPONSE_BYTES)
   const maxSources = positiveIntegerOr(options.maxSources, RESEARCH_LIMITS.maxSources)
   let lastRequestStartedAt: number | undefined
 
-  const pace = async (signal?: AbortSignal): Promise<void> => {
+  const pace = async (intervalMs: number, signal?: AbortSignal): Promise<void> => {
     if (lastRequestStartedAt !== undefined) {
-      const delay = MIN_REQUEST_INTERVAL_MS - (now() - lastRequestStartedAt)
+      const delay = intervalMs - (now() - lastRequestStartedAt)
       if (delay > 0) await waitFor(delay, signal, wait)
     }
     lastRequestStartedAt = now()
@@ -571,10 +596,14 @@ export function createPubMedClient(options: PubMedClientOptions = {}): PubMedCli
     }
   }
 
-  const perform = async (url: string, signal?: AbortSignal): Promise<TransportResult> => {
+  const perform = async (
+    url: string,
+    intervalMs: number,
+    signal?: AbortSignal
+  ): Promise<TransportResult> => {
     let retryCount = 0
     for (;;) {
-      await pace(signal)
+      await pace(intervalMs, signal)
       const result = await attempt(url, signal)
       if (result.kind === 'failure') {
         return { kind: 'failure', errorCode: result.errorCode, retryCount }
@@ -596,6 +625,16 @@ export function createPubMedClient(options: PubMedClientOptions = {}): PubMedCli
       const diagnostics: ResearchDiagnostic[] = []
       const pmids: string[] = []
       const seenPmids = new Set<string>()
+      // The configured key is the default; a per-request key wins so one client can serve every
+      // config without being rebuilt when the user changes the setting.
+      const requestKey = request.apiKey?.trim()
+      const effectiveKey = requestKey === undefined || requestKey.length === 0 ? apiKey : requestKey
+      const effectiveSuffix = effectiveKey === undefined
+        ? ''
+        : `&api_key=${encodeURIComponent(effectiveKey)}`
+      const effectiveIntervalMs = effectiveKey === undefined
+        ? MIN_REQUEST_INTERVAL_MS
+        : KEYED_REQUEST_INTERVAL_MS
 
       for (const rawQuery of request.searchQueries.slice(0, RESEARCH_LIMITS.maxQueries)) {
         if (typeof rawQuery !== 'string') continue
@@ -603,7 +642,7 @@ export function createPubMedClient(options: PubMedClientOptions = {}): PubMedCli
         if (query.length === 0 || query.length > RESEARCH_LIMITS.maxQueryLength) continue
         let transport: TransportResult
         try {
-          transport = await perform(esearchUrl(query, contactEmail), signal)
+          transport = await perform(esearchUrl(query, contactEmail, effectiveSuffix), effectiveIntervalMs, signal)
         } catch (error) {
           if (isCancellation(error)) throw error
           diagnostics.push(diagnostic('pubmed-esearch', 'failed', {
@@ -655,7 +694,7 @@ export function createPubMedClient(options: PubMedClientOptions = {}): PubMedCli
 
       let efetch: TransportResult
       try {
-        efetch = await perform(efetchUrl(pmids, contactEmail), signal)
+        efetch = await perform(efetchUrl(pmids, contactEmail, effectiveSuffix), effectiveIntervalMs, signal)
       } catch (error) {
         if (isCancellation(error)) throw error
         efetch = { kind: 'failure', errorCode: UNAVAILABLE_ERROR, retryCount: 0 }

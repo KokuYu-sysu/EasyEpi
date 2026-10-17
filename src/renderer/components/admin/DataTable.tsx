@@ -50,6 +50,7 @@ export function DataTable({
   const [searchTerm, setSearchTerm] = useState('')
   const [sort, setSort] = useState<{ key: string; order: 'asc' | 'desc' } | null>(null)
   const [columnWidths, setColumnWidths] = useState<Record<string, number>>({})
+  const tableWidth = 56 + 160 + columns.reduce((width, column) => width + (columnWidths[column.key] ?? 160), 0)
   const totalPages = Math.max(1, Math.ceil(total / pageSize))
   const pageIds = data.map((record) => String(record[rowIdKey]))
   const selectedOnPage = pageIds.filter((id) => selectedIds.includes(id))
@@ -81,7 +82,7 @@ export function DataTable({
   }
 
   return (
-    <div className="grid gap-[var(--space-4)]">
+    <div className="grid min-w-0 grid-cols-[minmax(0,1fr)] gap-[var(--space-4)]">
       <form
         className="flex items-end gap-[var(--space-2)]"
         onSubmit={(event) => {
@@ -101,11 +102,14 @@ export function DataTable({
       </form>
 
       <div className="min-w-0 overflow-x-auto rounded-[var(--radius-2)] border border-[var(--color-border-default)]">
-        <table className="w-full min-w-[48rem] table-fixed border-collapse text-left">
+        <table
+          className="min-w-full table-fixed border-collapse text-left"
+          style={{ width: tableWidth }}
+        >
           <caption className="sr-only">项目调查记录</caption>
           <thead className="bg-[var(--color-surface-sunken)]">
             <tr>
-              <th className="p-[var(--space-3)]" scope="col">
+              <th className="p-[var(--space-3)]" scope="col" style={{ width: 56 }}>
                 <input
                   aria-label="选择本页全部记录"
                   type="checkbox"
@@ -125,14 +129,19 @@ export function DataTable({
                   key={column.key}
                   className="relative p-[var(--space-3)]"
                   scope="col"
-                  style={columnWidths[column.key] === undefined ? undefined : { width: columnWidths[column.key] }}
+                  style={{ width: columnWidths[column.key] ?? 160 }}
+                  title={column.label}
                 >
                   {column.sortable ? (
-                    <button type="button" onClick={() => toggleSort(column.key)}>
+                    <button
+                      type="button"
+                      className="block w-full truncate text-left"
+                      onClick={() => toggleSort(column.key)}
+                    >
                       {column.label}
                       {sort?.key === column.key ? (sort.order === 'asc' ? ' ↑' : ' ↓') : ''}
                     </button>
-                  ) : column.label}
+                  ) : <span className="block truncate">{column.label}</span>}
                   <button
                     type="button"
                     aria-label={`调整${column.label}列宽`}
@@ -141,7 +150,7 @@ export function DataTable({
                   />
                 </th>
               ))}
-              <th className="p-[var(--space-3)]" scope="col">操作</th>
+              <th className="whitespace-nowrap p-[var(--space-3)]" scope="col" style={{ width: 160 }}>操作</th>
             </tr>
           </thead>
           <tbody>
@@ -175,7 +184,7 @@ export function DataTable({
                       {displayValue(record[column.key])}
                     </td>
                   ))}
-                  <td className="p-[var(--space-3)]">
+                  <td className="whitespace-nowrap p-[var(--space-3)]">
                     <div className="flex gap-[var(--space-2)]">
                       <Button size="sm" variant="secondary" onClick={() => onEdit(record)}>编辑</Button>
                       <ConfirmDialog

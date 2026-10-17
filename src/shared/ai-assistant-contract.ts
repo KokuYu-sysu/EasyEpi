@@ -48,6 +48,11 @@ export interface AIProviderConfigUpdate {
   model: string
   /** Undefined preserves the stored key; null or an empty string clears it. */
   apiKey?: string | null
+  /**
+   * Optional NCBI E-utilities key. It is independent of the chat provider, so it survives a Base URL
+   * change and is carried with the same semantics as `apiKey`.
+   */
+  ncbiApiKey?: string | null
 }
 
 export interface AIProviderConfigView {
@@ -55,9 +60,13 @@ export interface AIProviderConfigView {
   model: string
   hasApiKey: boolean
   maskedApiKey: string | null
+  /** Optional in the view: only a mask is ever sent to the renderer, never the plaintext key. */
+  hasNcbiApiKey?: boolean
+  maskedNcbiApiKey?: string | null
 }
 
 export const AI_MASKED_API_KEY = '••••••••'
+export const AI_MASKED_NCBI_API_KEY = AI_MASKED_API_KEY
 
 export type AIProviderConfigErrorCode =
   | 'INVALID_AI_CONFIG'
@@ -382,6 +391,7 @@ export interface AIConfigUpdateRequest {
   baseUrl: string
   model: string
   apiKey?: string | null
+  ncbiApiKey?: string | null
 }
 
 export interface AISessionCreateRequest {
@@ -612,7 +622,7 @@ function requestObject(value: unknown): Record<string, unknown> {
 
 export function parseAIConfigUpdateRequest(value: unknown): AIConfigUpdateRequest {
   const input = requestObject(value)
-  exactKeys(input, ['baseUrl', 'model'], ['apiKey'])
+  exactKeys(input, ['baseUrl', 'model'], ['apiKey', 'ncbiApiKey'])
   const baseUrl = safeString(input.baseUrl, 2_048)
   const model = safeString(input.model, 200)
   const apiKey = input.apiKey
@@ -620,10 +630,16 @@ export function parseAIConfigUpdateRequest(value: unknown): AIConfigUpdateReques
     (typeof apiKey !== 'string' || apiKey.length > 8_192 || apiKey.includes('\0'))) {
     throw new Error('INVALID_AI_REQUEST')
   }
+  const ncbiApiKey = input.ncbiApiKey
+  if (ncbiApiKey !== undefined && ncbiApiKey !== null &&
+    (typeof ncbiApiKey !== 'string' || ncbiApiKey.length > 200 || ncbiApiKey.includes('\0'))) {
+    throw new Error('INVALID_AI_REQUEST')
+  }
   return {
     baseUrl,
     model,
-    ...(apiKey === undefined ? {} : { apiKey })
+    ...(apiKey === undefined ? {} : { apiKey }),
+    ...(ncbiApiKey === undefined ? {} : { ncbiApiKey })
   }
 }
 
@@ -731,7 +747,9 @@ const MAX_RESPONSE_COLLECTION = 10_000
 const MAX_RESPONSE_STRING = 2_000_000
 const DANGEROUS_KEYS = new Set(['__proto__', 'prototype', 'constructor'])
 const SENSITIVE_KEY_PARTS = ['apikey', 'password', 'path', 'stack', 'recovery', 'secret', 'credential']
-const SAFE_SENSITIVE_KEYS = new Set(['hasApiKey', 'maskedApiKey'])
+const SAFE_SENSITIVE_KEYS = new Set([
+  'hasApiKey', 'maskedApiKey', 'hasNcbiApiKey', 'maskedNcbiApiKey'
+])
 
 function invalidResponse(): never {
   throw new Error('INVALID_AI_RESPONSE')
@@ -1375,13 +1393,20 @@ export function parseAIConfigResponse(value: unknown): AIConfigIpcResult {
   return parseKnownResponse<AIConfigIpcResult>(value, ['config'], (result) => {
     const config = responseKeys(result.config, [
       'baseUrl', 'model', 'hasApiKey', 'maskedApiKey'
-    ])
+    ], ['hasNcbiApiKey', 'maskedNcbiApiKey'])
     responseString(config.baseUrl, 2_048)
     responseString(config.model, 200, true)
     if (typeof config.hasApiKey !== 'boolean') invalidResponse()
     if (config.hasApiKey) {
       if (config.maskedApiKey !== AI_MASKED_API_KEY) invalidResponse()
     } else if (config.maskedApiKey !== null) invalidResponse()
+    // The optional NCBI key is masked exactly like the chat key; its plaintext never reaches here.
+    if (config.hasNcbiApiKey !== undefined) {
+      if (typeof config.hasNcbiApiKey !== 'boolean') invalidResponse()
+      if (config.hasNcbiApiKey) {
+        if (config.maskedNcbiApiKey !== AI_MASKED_API_KEY) invalidResponse()
+      } else if (config.maskedNcbiApiKey !== null) invalidResponse()
+    } else if (config.maskedNcbiApiKey !== undefined) invalidResponse()
   })
 }
 

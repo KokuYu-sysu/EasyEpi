@@ -10,6 +10,8 @@ import type { PubMedClient } from './pubmed.client'
 
 export interface LiteratureSearchRequest {
   plan: ResearchPlan
+  /** Carries the optional NCBI API key through to the E-utilities requests. */
+  config?: { ncbiApiKey?: string }
   signal?: AbortSignal
 }
 
@@ -156,6 +158,10 @@ export function createAILiteratureService(
   return {
     async search(request) {
       const diagnostics: ResearchDiagnostic[] = []
+      const configuredKey = request.config?.ncbiApiKey?.trim()
+      const ncbiApiKey = configuredKey === undefined || configuredKey.length === 0
+        ? undefined
+        : configuredKey
       if (request.plan.domain !== 'medical') {
         diagnostics.push({ stage: 'literature', protocol: 'pubmed-esearch', outcome: 'skipped' })
         return { sources: [], diagnostics }
@@ -167,7 +173,8 @@ export function createAILiteratureService(
           const result = await dependencies.pubmed.search({
             searchQueries: buildPubMedQueries(request.plan),
             meshTerms: request.plan.meshTerms,
-            keywords: request.plan.keywords
+            keywords: request.plan.keywords,
+            ...(ncbiApiKey === undefined ? {} : { apiKey: ncbiApiKey })
           }, request.signal)
           pubmedSources = result.sources
           diagnostics.push(...result.diagnostics)
@@ -190,6 +197,26 @@ export function createAILiteratureService(
             request.signal
           )
           preprintSources = result.sources
+          diagnostics.push(...result.diagnostics)
+        } catch (error) {
+          if (error instanceof Error && error.message === 'AI_CANCELLED') throw error
+          diagnostics.push({
+            stage: 'literature', protocol: 'europepmc', outcome: 'failed', errorCode: 'AI_RESEARCH_SOURCE_INVALID'
+          })
+        }
+      }
+
+      // PubMed E-utilities is the only stage that depends on reaching NCBI. When it comes back empty —
+      // blocked, throttled, or genuinely no match — ask Europe PMC for the same MEDLINE record set,
+      // which is served from a different host. Without this, an unreachable NCBI leaves the
+      // questionnaire with nothing but preprints.
+      if (pubmedSources.length === 0 && dependencies.europePmc?.searchMedline !== undefined) {
+        try {
+          const result = await dependencies.europePmc.searchMedline(
+            { queries: buildPubMedQueries(request.plan) },
+            request.signal
+          )
+          if (result.sources.length > 0) pubmedSources = result.sources
           diagnostics.push(...result.diagnostics)
         } catch (error) {
           if (error instanceof Error && error.message === 'AI_CANCELLED') throw error

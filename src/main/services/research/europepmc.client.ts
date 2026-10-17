@@ -34,6 +34,8 @@ const RETRY_DELAYS_MS = [500, 1_000] as const
 
 const MAX_RECORD_PUBLICATION_TYPES = 20
 const MAX_DOI_LENGTH = 300
+const MAX_PMID_LENGTH = 32
+const PMID_PATTERN = /^\d{1,12}$/
 const MAX_URL_LENGTH = 2_048
 const MIN_YEAR = 1800
 const MAX_YEAR = 2200
@@ -47,8 +49,20 @@ export interface EuropePmcSearchResult {
   diagnostics: ResearchDiagnostic[]
 }
 
+/**
+ * Europe PMC indexes both preprint servers and MEDLINE. `PPR` is the preprint source; `MED` is the
+ * MEDLINE/PubMed record set, which makes it a reachable stand-in for PubMed E-utilities when the NCBI
+ * host is blocked or throttled from the user's network.
+ */
+export type EuropePmcSource = 'PPR' | 'MED'
+
 export interface EuropePmcClient {
   searchPreprints(request: EuropePmcSearchRequest, signal?: AbortSignal): Promise<EuropePmcSearchResult>
+  /**
+   * MEDLINE records through Europe PMC. Optional on the interface so existing test doubles stay
+   * valid; `createEuropePmcClient` always provides it.
+   */
+  searchMedline?(request: EuropePmcSearchRequest, signal?: AbortSignal): Promise<EuropePmcSearchResult>
 }
 
 export interface EuropePmcClientOptions {
@@ -61,13 +75,45 @@ export interface EuropePmcClientOptions {
 }
 
 /**
- * Pure query builder. The caller-supplied text is wrapped in a title/abstract phrase search limited
- * to the preprint source, and returned as `URLSearchParams` so the quotes, spaces, and ampersands in
- * the query are encoded exactly once by the URL serializer.
+ * Turns one caller-supplied query into a Europe PMC title/abstract clause.
+ *
+ * The previous form wrapped the *entire* query in one phrase search —
+ * `(TITLE_ABS:"chronic disease AND aged AND China")` — which searches for those words in that order
+ * as literal text and matches nothing. Since the planner is asked for Boolean queries, that silently
+ * emptied Europe PMC: measured against the live API the old form returns 0 hits where the correct
+ * form returns 6017.
+ *
+ * `AND` now separates terms, each becoming its own `TITLE_ABS` clause. An explicitly quoted phrase
+ * keeps its phrase semantics; an unquoted multi-word term is conjoined word by word, which is the
+ * recall-friendly reading and is what a title/abstract search wants.
  */
-export function buildEuropePmcQuery(query: string): URLSearchParams {
+function titleAbstractClause(query: string): string {
+  const parts = query
+    .split(/\s+AND\s+/i)
+    .map((part) => part.trim())
+    .filter((part) => part.length > 0)
+
+  const clauses: string[] = []
+  for (const part of parts) {
+    const quoted = /^".*"$/.test(part) && part.length > 2
+    if (quoted) {
+      clauses.push(`TITLE_ABS:${part}`)
+      continue
+    }
+    const words = part.replaceAll(/^"|"$/g, '').split(/\s+/).filter((word) => word.length > 0)
+    if (words.length === 0) continue
+    clauses.push(words.map((word) => `TITLE_ABS:"${word}"`).join(' AND '))
+  }
+
+  // A query that produced nothing usable falls back to its own text as a phrase, so a caller can
+  // never inject an empty or dangling clause into the expression.
+  if (clauses.length === 0) return `TITLE_ABS:"${query.replaceAll('"', '')}"`
+  return clauses.join(' AND ')
+}
+
+export function buildEuropePmcQuery(query: string, source: EuropePmcSource = EUROPEPMC_PREPRINT_SOURCE): URLSearchParams {
   const parameters = new URLSearchParams()
-  parameters.set('query', `(TITLE_ABS:"${query}") AND SRC:${EUROPEPMC_PREPRINT_SOURCE}`)
+  parameters.set('query', `(${titleAbstractClause(query)}) AND SRC:${source}`)
   parameters.set('format', 'json')
   parameters.set('resultType', 'core')
   parameters.set('sort', 'P_PDATE_D desc')
@@ -75,14 +121,21 @@ export function buildEuropePmcQuery(query: string): URLSearchParams {
   return parameters
 }
 
-export function buildEuropePmcSearchUrl(query: string, pageSize: number): string {
-  const parameters = buildEuropePmcQuery(query)
+export function buildEuropePmcSearchUrl(
+  query: string,
+  pageSize: number,
+  source: EuropePmcSource = EUROPEPMC_PREPRINT_SOURCE
+): string {
+  const parameters = buildEuropePmcQuery(query, source)
   parameters.set('pageSize', String(pageSize))
   return `${EUROPEPMC_SEARCH_ORIGIN}?${parameters.toString()}`
 }
 
-export function buildEuropePmcArticleUrl(id: string): string {
-  return `https://europepmc.org/article/${EUROPEPMC_PREPRINT_SOURCE}/${id}`
+export function buildEuropePmcArticleUrl(
+  id: string,
+  source: EuropePmcSource = EUROPEPMC_PREPRINT_SOURCE
+): string {
+  return `https://europepmc.org/article/${source}/${id}`
 }
 
 class EuropePmcPayloadTooLargeError extends Error {
@@ -368,19 +421,29 @@ function buildAbstract(value: unknown): string {
  * quality signal, so the DOI resolver is preferred, then any HTTPS publisher link, then the
  * canonical Europe PMC article page. An HTTP-only record therefore degrades to the fallback.
  */
-function buildUrl(id: string, doi: string | undefined, record: Record<string, unknown>): string | undefined {
+function buildUrl(
+  id: string,
+  doi: string | undefined,
+  record: Record<string, unknown>,
+  source: EuropePmcSource
+): string | undefined {
   if (doi !== undefined) {
     const resolver = toHttpsUrl(`https://doi.org/${doi}`)
     if (resolver !== undefined) return resolver
+  }
+  // A MEDLINE record without a DOI should still link to its PubMed page rather than to a preprint URL.
+  const pmid = textField(field(record, 'pmid'), MAX_PMID_LENGTH)
+  if (source === 'MED' && pmid !== undefined && PMID_PATTERN.test(pmid)) {
+    return `https://pubmed.ncbi.nlm.nih.gov/${pmid}/`
   }
   for (const entry of asArray(asRecord(field(record, 'fullTextUrlList'))?.fullTextUrl)) {
     const candidate = toHttpsUrl(asRecord(entry)?.url)
     if (candidate !== undefined) return candidate
   }
-  return toHttpsUrl(buildEuropePmcArticleUrl(id))
+  return toHttpsUrl(buildEuropePmcArticleUrl(id, source))
 }
 
-function toCandidate(value: unknown): PreprintCandidate | undefined {
+function toCandidate(value: unknown, source: EuropePmcSource): PreprintCandidate | undefined {
   const record = asRecord(value)
   if (record === undefined) return undefined
   const id = textField(field(record, 'id'), 128)
@@ -393,12 +456,13 @@ function toCandidate(value: unknown): PreprintCandidate | undefined {
 
   const authorString = textField(field(record, 'authorString'), 8_192)
   const doi = toDoi(field(record, 'doi'))
-  const url = buildUrl(id, doi, record)
+  const url = buildUrl(id, doi, record, source)
   if (url === undefined) return undefined
 
   const journal = textField(field(record, 'journalTitle'), RESEARCH_LIMITS.maxJournalLength)
   const year = toYear(field(record, 'pubYear'))
   const server = detectServer(record)
+  const pmid = textField(field(record, 'pmid'), MAX_PMID_LENGTH)
 
   return {
     sourceId,
@@ -411,11 +475,16 @@ function toCandidate(value: unknown): PreprintCandidate | undefined {
     ...(server === undefined ? {} : { server }),
     ...(journal === undefined ? {} : { journal }),
     ...(year === undefined ? {} : { year }),
-    ...(doi === undefined ? {} : { doi })
+    ...(doi === undefined ? {} : { doi }),
+    ...(pmid === undefined || !PMID_PATTERN.test(pmid) ? {} : { pmid })
   }
 }
 
-function parsePage(payload: unknown, maxSources: number): { candidates: PreprintCandidate[]; outcome: ResearchOutcome } {
+function parsePage(
+  payload: unknown,
+  maxSources: number,
+  source: EuropePmcSource
+): { candidates: PreprintCandidate[]; outcome: ResearchOutcome } {
   const root = asRecord(payload)
   if (root === undefined) return { candidates: [], outcome: 'invalid' }
   const resultList = asRecord(field(root, 'resultList'))
@@ -424,7 +493,7 @@ function parsePage(payload: unknown, maxSources: number): { candidates: Preprint
   const candidates: PreprintCandidate[] = []
   for (const record of records) {
     if (candidates.length >= maxSources) break
-    const candidate = toCandidate(record)
+    const candidate = toCandidate(record, source)
     if (candidate === undefined) continue
     candidates.push(candidate)
   }
@@ -473,6 +542,19 @@ export function createEuropePmcClient(options: EuropePmcClientOptions = {}): Eur
 
   return {
     async searchPreprints(request, signal) {
+      return searchWithSource(request, signal, EUROPEPMC_PREPRINT_SOURCE)
+    },
+    async searchMedline(request, signal) {
+      return searchWithSource(request, signal, 'MED')
+    }
+  }
+
+  async function searchWithSource(
+    request: EuropePmcSearchRequest,
+    signal: AbortSignal | undefined,
+    source: EuropePmcSource
+  ): Promise<EuropePmcSearchResult> {
+    {
       const queries: string[] = []
       for (const query of request.queries) {
         const trimmed = query.trim()
@@ -492,7 +574,7 @@ export function createEuropePmcClient(options: EuropePmcClientOptions = {}): Eur
         // The retry budget belongs to the query, so a later query is never punished for an earlier
         // one having spent it.
         state.retryCount = 0
-        const response = await requestPage(buildEuropePmcSearchUrl(query, pageSize), transport, state)
+        const response = await requestPage(buildEuropePmcSearchUrl(query, pageSize, source), transport, state)
         if (response.errorCode === 'AI_CANCELLED') {
           throw new ResearchContractError('AI_CANCELLED')
         }
@@ -509,7 +591,7 @@ export function createEuropePmcClient(options: EuropePmcClientOptions = {}): Eur
           continue
         }
 
-        const page = parsePage(response.payload, maxSources)
+        const page = parsePage(response.payload, maxSources, source)
         let added = 0
         for (const candidate of page.candidates) {
           if (sources.length >= maxSources) break

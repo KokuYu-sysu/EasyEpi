@@ -87,6 +87,24 @@ export function knowledgeOnlyEvidence(plan: ResearchPlan): ResearchEvidence {
 }
 
 /** Explains what each retrieval layer did, so a thin result is diagnosable instead of mysterious. */
+/**
+ * Renders one diagnostic as a short, user-visible clause. Without the code, a note like
+ * "联网搜索失败" is a dead end for everyone: the user cannot act on it and cannot report it.
+ */
+function describeDiagnostic(diagnostic: ResearchDiagnostic): string {
+  const parts: string[] = [diagnostic.protocol]
+  if (diagnostic.status !== undefined) parts.push(`HTTP ${diagnostic.status}`)
+  if (diagnostic.errorCode !== undefined && diagnostic.errorCode.length > 0) {
+    parts.push(diagnostic.errorCode)
+  } else {
+    parts.push(diagnostic.outcome)
+  }
+  if (diagnostic.retryCount !== undefined && diagnostic.retryCount > 0) {
+    parts.push(`重试 ${diagnostic.retryCount} 次`)
+  }
+  return parts.join(' / ')
+}
+
 export function retrievalNotes(
   plan: ResearchPlan,
   literatureCount: number,
@@ -94,25 +112,30 @@ export function retrievalNotes(
   diagnostics: readonly ResearchDiagnostic[]
 ): string[] {
   const notes: string[] = []
+  const literatureFailure = diagnostics.find((item) =>
+    item.stage === 'literature' && (item.outcome === 'failed' || item.outcome === 'invalid'))
+  const webDiagnostic = diagnostics.find((item) => item.stage === 'web_search')
+
   if (plan.domain !== 'medical') {
     notes.push('非医学类问卷：未执行文献检索，仅使用联网搜索。')
   } else if (literatureCount === 0) {
-    const failed = diagnostics.some((item) =>
-      item.stage === 'literature' && (item.outcome === 'failed' || item.outcome === 'invalid'))
-    notes.push(failed
-      ? 'PubMed / Europe PMC 检索未成功，可能为网络或接口限制。'
-      : 'PubMed / Europe PMC 未返回可用记录，已改用更宽的关键词检索仍无结果。')
+    notes.push(literatureFailure === undefined
+      ? 'PubMed 与 Europe PMC 均未返回可用记录，已改用更宽的关键词检索仍无结果。'
+      : `PubMed / Europe PMC 检索未成功（${describeDiagnostic(literatureFailure)}）。`)
   } else {
     notes.push(`文献检索返回 ${literatureCount} 条记录。`)
   }
+
   if (webStatus === 'searched') {
     notes.push('联网搜索已返回可引用的权威来源。')
   } else if (webStatus === 'unsupported') {
     notes.push('当前模型不支持内置联网搜索，未能补充网络来源。')
   } else if (webStatus === 'empty') {
     notes.push('联网搜索已执行，但未返回带结构化引用的来源。')
+  } else if (webDiagnostic === undefined) {
+    notes.push('联网搜索未执行，未能补充网络来源。')
   } else {
-    notes.push('联网搜索失败，未能补充网络来源。')
+    notes.push(`联网搜索失败（${describeDiagnostic(webDiagnostic)}），未能补充网络来源。`)
   }
   return notes
 }
@@ -151,6 +174,9 @@ export function createAIResearchPipeline(
         stage('literature')
         const result = await dependencies.literature.search({
           plan,
+          config: { ...(request.config.ncbiApiKey === undefined
+            ? {}
+            : { ncbiApiKey: request.config.ncbiApiKey }) },
           ...(request.signal === undefined ? {} : { signal: request.signal })
         })
         literatureSources = result.sources
