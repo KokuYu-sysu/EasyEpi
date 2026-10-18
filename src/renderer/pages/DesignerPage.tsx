@@ -24,6 +24,7 @@ import {
 } from '@renderer/components/qnaire/QuestionEditDialog'
 import { ConditionRuleEditor } from '@renderer/components/qnaire/ConditionRuleEditor'
 import { QuestionnairePreview } from '@renderer/components/qnaire/QuestionnairePreview'
+import { QuestionnaireExportDialog } from '@renderer/components/qnaire/QuestionnaireExportDialog'
 import {
   QUESTION_TYPE_LABELS,
   type QuestionDef,
@@ -281,6 +282,7 @@ export function DesignerPage({ store: injectedStore }: DesignerPageProps) {
                 预览问卷
               </Button>
               <Button onClick={handleSave}>保存问卷</Button>
+              <QuestionnaireExportDialog disabled={questions.length === 0 || isLoading} />
               <Button
                 onClick={() => setShowCompletionDialog(true)}
                 disabled={questions.length === 0 || keyCount === 0}

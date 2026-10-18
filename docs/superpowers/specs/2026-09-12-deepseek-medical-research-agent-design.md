@@ -20,13 +20,20 @@ Executed against the final commit on the `codex/easyepi-0.8.0` worktree:
 | Packaged unpacked | `pnpm test:e2e:packaged` with `EASYEPI_EXECUTABLE` on `release/win-unpacked/EasyEpi.exe` | 1 passed, 5 intentionally skipped |
 | Artifacts | `pnpm build:win` | `EasyEpi-0.8.0-setup-x64.exe`, `EasyEpi-0.8.0-portable-x64.exe`, setup blockmap |
 
-Artifacts copied to `D:\EasyEpi\release` from commit `e8410e2` plus the timeout and mirror fixes:
+Artifacts in `D:\EasyEpi\release` from the PubMed-availability, Europe PMC query and web-search-negotiation changes:
+
+| File | Size | SHA-256 |
+| --- | --- | --- |
+| `EasyEpi-0.8.0-setup-x64.exe` | 104,960,827 | `EEA271A8DAE1FDA1F2A80DB9B96171FD7467148FF42DB7B114786937F136D356` |
+| `EasyEpi-0.8.0-portable-x64.exe` | 104,742,858 | `741D14F2EAF67F93825895932FAED01A267F289B70AF2FB2160EB8C620EE16B8` |
+| `EasyEpi-0.8.0-setup-x64.exe.blockmap` | 110,902 | `44DD6258D58BCFD083D90ECA3AF003C50D8A80B8C1911F85D305C09013041BED` |
+
+Earlier artifacts from the timeout and stream-bound fixes:
 
 | File | Size | SHA-256 |
 | --- | --- | --- |
 | `EasyEpi-0.8.0-setup-x64.exe` | 104,959,731 | `FFDED1832716F3803A1230A577E387333EA83DE4EC131444CCA44C525B0D172C` |
 | `EasyEpi-0.8.0-portable-x64.exe` | 104,741,756 | `8EEF8E3AC156BB4AE28314798057E70728F3DB14376CB063CB6C91C627B0523F` |
-| `EasyEpi-0.8.0-setup-x64.exe.blockmap` | 110,864 | `2A043EAC5383F9A1C335B1009ED11BB5BFAF793990DCE827347D09FEBBEEE391` |
 
 ## Request Deadlines
 
@@ -105,6 +112,99 @@ Not verified end to end: a real DeepSeek call. The build machine has no outbound
 Responses `web_search` request shape and the planner's tolerance are proven only against injected
 transports and the provider contracts recovered from the local `openai` SDK and DeepSeek model
 catalogue.
+
+## PubMed Availability
+
+Real-world testing reported that PubMed never contributed a record while Europe PMC returned several,
+all preprints. The cause was a guard, not the query or the network:
+
+**`parseXmlDocument` threw on any document type declaration.** Every real PubMed EFetch response opens
+with the NLM doctype:
+
+```xml
+<!DOCTYPE PubmedArticleSet PUBLIC "-//NLM//DTD PubMedArticle, 1st January 2024//EN" "https://dtd.nlm.nih.gov/ncbi/pubmed/out/pubmed_240101.dtd">
+```
+
+So every real response was rejected, the literature stage degraded to empty, and only Europe PMC's JSON
+preprints survived. Unit fixtures never carried a doctype, so the contradiction — a documented policy
+that refused every genuine input — was never exercised.
+
+The guard now refuses only what is actually dangerous. The declaration itself is inert: `saxes` is a
+pure parser and never fetches an external DTD. An **internal subset** is not inert, because that is
+where `<!ENTITY>` declarations live and those are what enable entity-expansion attacks, so a doctype
+containing `[` or `ENTITY` is still refused. Tests now pin all three real-world doctype spellings as
+accepted and both entity forms as refused.
+
+Three related changes make NCBI retrieval dependable rather than merely possible:
+
+- **Optional NCBI API key.** Settings gained an optional `NCBI API Key（可选）` field, encrypted with
+  the same secure storage as the DeepSeek key and carried through config schema v4. When present it is
+  sent as `api_key` on both E-utilities calls, and request pacing moves from NCBI's anonymous 3/s to
+  its keyed 10/s — pacing at the anonymous rate while holding a key leaves most of the allowance
+  unused and makes a throttle more likely, since the unidentified request is the one NCBI throttles
+  first. The key is never logged and never appears in any view or diagnostic.
+- **Europe PMC MEDLINE fallback.** PubMed E-utilities is the only literature stage that depends on
+  reaching `eutils.ncbi.nlm.nih.gov`. When PubMed returns nothing, the same queries are re-issued to
+  Europe PMC restricted to `SRC:MED`, which serves the MEDLINE record set from a different host, and
+  those records carry their `pmid` and link to their PubMed page. Without this, an unreachable NCBI
+  leaves the questionnaire with nothing but preprints.
+- **The retrieval note names the failure.** `retrievalNotes` now reports the protocol, HTTP status and
+  error code for each failing stage, so a note reads `联网搜索失败（responses / HTTP 400 /
+  AI_PROVIDER_ERROR）` instead of a bare `联网搜索失败`. The bare form was a dead end for everyone: the
+  user could neither act on it nor report it.
+
+### A second defect: Europe PMC searched Boolean queries as one phrase
+
+Verification against the live APIs exposed an independent bug in the Europe PMC query builder. It
+wrapped the *entire* caller query in a single phrase search:
+
+```
+(TITLE_ABS:"chronic disease AND aged AND China") AND SRC:MED
+```
+
+That searches for those literal words in that order, so it matches nothing — and because the planner is
+instructed to emit Boolean queries, this silently emptied Europe PMC in the same way the doctype guard
+emptied PubMed. Measured live:
+
+| Query shape | `hitCount` |
+| --- | --- |
+| `(TITLE_ABS:"chronic disease AND aged AND China") AND SRC:MED` (old) | **0** |
+| `(TITLE_ABS:"chronic") AND (TITLE_ABS:"disease") AND (TITLE_ABS:"aged") AND SRC:MED` | **6017** |
+
+`AND` now separates terms, each becoming its own `TITLE_ABS` clause. An explicitly quoted phrase keeps
+its phrase semantics; an unquoted multi-word term is conjoined word by word, which is the
+recall-friendly reading for a title/abstract search.
+
+### Live verification
+
+Both defects were confirmed and fixed against the real services, using the shipped bundles in
+`out/main/` rather than fixtures:
+
+| Check | Result |
+| --- | --- |
+| `esearch.fcgi` for `chronic disease AND aged AND China` with an NCBI key | `count=41052`, 5 PMIDs |
+| Real `efetch.fcgi` response | opens with `<!DOCTYPE PubmedArticleSet PUBLIC "-//NLM//DTD PubMedArticle, 1st January 2025//EN" …>`, no `ENTITY` |
+| Shipped `createPubMedClient` against live E-utilities | **20 sources, all `kind: pubmed`, all with `pmid`, journal, year, DOI, authors and abstract** |
+| Shipped `createAILiteratureService` against live PubMed + Europe PMC | **20 sources, 20 with `pmid`, 20 with `journal`** |
+| Shipped `searchMedline` (`SRC:MED`) against live Europe PMC | 10 records, all with `pmid` — was **0** before the query fix |
+| Shipped `searchPreprints` (`SRC:PPR`) against live Europe PMC | 10 records — was **0** before the query fix |
+| `POST https://api.deepseek.com/responses` unauthenticated | **401** (endpoint exists; a 404 is ruled out, so `AI_RESEARCH_UNSUPPORTED` is not the cause of the web-search failure) |
+
+The build machine does have network egress through a local intercepting NAT (`198.18.0.0/15`), so these
+live checks are reproducible with `node` against `out/main/services/research/*.js`. The one thing they
+cannot cover is an authenticated call to DeepSeek's hosted `web_search`, which needs the user's own
+DeepSeek API key.
+
+## Web Search Negotiation
+
+The hosted-search request is sent in up to two shapes per endpoint. `full` is the documented form;
+`minimal` drops the optional `instructions` and `tool_choice` fields a provider is most likely to
+reject outright, while keeping the tool and the input — the parts that actually perform the search. A
+400 or 422 that does not name the tool now triggers the `minimal` retry before the stage gives up,
+because a provider that refuses an optional field would otherwise be reported as a bare failure and
+never run a search at all. The refusal matcher also treats a rejection that names `tools` or
+`tool_choice` without the string `web_search` as an unsupported tool rather than a generic provider
+error, so the honest "this model cannot search" message is reachable.
 
 ## Problem
 
@@ -487,7 +587,7 @@ The assistant message never claims a search happened unless evidence was actuall
 evidence was used, the disclaimer is emitted together with the per-stage retrieval notes:
 
 > 【本次未检索到外部证据】已根据该主题的常规流行病学要素与当前对话生成问卷；未使用或核验任何外部来源，请务必人工核对。
-> 检索情况：PubMed / Europe PMC 未返回可用记录… 当前模型不支持内置联网搜索…
+> 检索情况：PubMed 与 Europe PMC 均未返回可用记录… 联网搜索失败（responses / HTTP 400 / AI_PROVIDER_ERROR）…
 
 ## Progress and Public Surface
 

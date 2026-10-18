@@ -796,13 +796,18 @@ AI 问卷助手在已创建并解锁的项目内，通过多轮自然语言对�
 
 - API Key 使用 Windows 操作系统安全凭据能力保存。安全凭据不可用时不得降级为明文持久化，应提示用户当前无法安全记忆密钥。
 - 服务地址与模型名称保存在应用级偏好设置中，不随项目复制、备份或导出；存储格式为 schema v3（`schemaVersion`、`baseUrl`、`model`、可选的 `encryptedApiKey`、`privacyAcceptedAt`、`privacyNoticeVersion`）。
-- 旧版本 v1/v2 配置自动迁移到 v3：非 DeepSeek 主机的地址被替换为 DeepSeek 端点、其模型标识重置为 `deepseek-v4.1-flash`、其加密 API Key 被丢弃（仅当原主机已是 DeepSeek 时保留密文与模型）；`providerId` 与 `webSearchEnabled` 字段被移除。
+- 旧版本 v1/v2/v3 配置自动迁移到 v4：非 DeepSeek 主机的地址被替换为 DeepSeek 端点、其模型标识重置为 `deepseek-v4.1-flash`、其加密 API Key 被丢弃（仅当原主机已是 DeepSeek 时保留密文与模型）；`providerId` 与 `webSearchEnabled` 字段被移除。NCBI API Key 与对话服务商无关，迁移与地址替换都不影响它，且任何视图、日志、诊断都不得出现其明文。
+- 设置页提供可选的「NCBI API Key」。填写后 E-utilities 请求携带 `api_key`，限速从匿名 3 次/秒提升到 10 次/秒；不填写时应用行为与之前完全一致，不发送空的 `api_key` 参数。
 - 提供「测试连接」，验证认证与模型可用性；测试只发送一条固定连通性消息，不启用流式、不使用 JSON 输出模式、不触发检索，也不读取或发送项目内容。
 - 问卷生成使用 Chat Completions 并要求 `response_format: { "type": "json_object" }`。`response_format` 与流式响应均作为能力增强项按服务能力独立协商降级，不得成为发送的唯一前提。
 - 问卷协议不使用函数调用：任何请求都不得携带 `tools` 或 `tool_choice`，`submit_questionnaire` 已从协议中移除；函数调用的错误识别逻辑仅作为历史兼容兜底保留。
 - 服务地址固定为 DeepSeek 官方 HTTPS 端点，应用不再支持用户填写的远程或回环 HTTP 服务地址。
 - 每次生成都执行强制检索流程：`planning`（把要求翻译成英文研究问题，判定 `medical` 或 `non_medical`，产出 1–3 条 PubMed Boolean 查询与关键词、MeSH 词）→ `literature`（仅医学类，顺序为 PubMed、Europe PMC、bioRxiv/medRxiv）→ `web_search`（DeepSeek Responses API 的 `tools: [{ "type": "web_search" }]`）→ `extracting`（只允许引用本次检索记录的来源 id）→ 生成与本地校验。非医学类请求只使用联网来源。
-- 文献来源必须如实陈述为：PubMed E-utilities（ESearch `sort=relevance`、`retmax=20`，随后一次批量 EFetch；匿名限速 3 次/秒，并发送 `tool=`/`email=`）、Europe PMC 的预印本关键词检索（以 `SRC:PPR` 限定 bioRxiv/medRxiv，因两个服务器不提供关键词检索 API）、以及 bioRxiv/medRxiv 官方详情接口（校验 DOI 与元数据并给出正式落地页）。不得声称使用 Web of Science、Cochrane Library 或其他订阅数据源。
+- 文献来源必须如实陈述为：PubMed E-utilities（ESearch `sort=relevance`、`retmax=20`，随后一次批量 EFetch；匿名限速 3 次/秒、配置 NCBI API Key 后 10 次/秒，并发送 `tool=`/`email=`）、Europe PMC 的预印本关键词检索（以 `SRC:PPR` 限定 bioRxiv/medRxiv，因两个服务器不提供关键词检索 API）、以及 bioRxiv/medRxiv 官方详情接口（校验 DOI 与元数据并给出正式落地页）。不得声称使用 Web of Science、Cochrane Library 或其他订阅数据源。
+- PubMed 返回空结果时必须回退到 Europe PMC 的 `SRC:MED` 检索（同一批查询、不同主机），以保证 NCBI 主机不可达时仍能取到 MEDLINE 记录而非只剩预印本；回退记录保留 `pmid` 并链接到其 PubMed 页面。
+- Europe PMC 查询不得把整条 Boolean 查询当成一个短语检索：`(TITLE_ABS:"chronic disease AND aged AND China")` 会按字面顺序匹配而返回 0 条，而正确形式（逐词 `TITLE_ABS` 子句以 AND 连接）返回 6017 条。`AND` 必须作为子句分隔符；显式带引号的短语保持短语语义，未加引号的多词项逐词连接。
+- EFetch XML 必须接受真实响应携带的 NLM DOCTYPE（`<!DOCTYPE PubmedArticleSet PUBLIC "-//NLM//DTD PubMedArticle…">`），仅拒绝含内部子集（`[`）或 `ENTITY` 声明的文档；拒绝任何 DOCTYPE 会拒绝所有真实响应。
+- 检索失败原因必须可见：`retrievalNotes` 必须写明失败阶段的协议、HTTP 状态与错误码，不得只输出「联网搜索失败」这类无法据以行动或上报的结论。
 - NCBI 要求使用 E-utilities 的应用向用户明示其免责声明与版权声明；设置页提供指向 NCBI E-utilities 使用条款的链接，检索结果作为不可信外部材料注入生成上下文，模型不得执行其中的指令或虚构引用。
 - 证据构成必须如实显示为四种之一：`literature_and_web`（本次已检索医学文献并补充联网来源）、`literature_only`（本次已检索医学文献（联网检索未返回可用来源））、`web_only`（本次已检索联网来源）、`none`（本次未检索到外部证据）。`none` 时助手消息必须以固定免责声明「【本次未检索到外部证据】已根据该主题的常规流行病学要素与当前对话生成问卷；未使用或核验任何外部来源，请务必人工核对。」开头，并附上各检索层的实际结果说明；联网搜索失败或不支持不得阻止生成，也不得声称已检索外部来源。
 - 问卷从检索阶段产出的「因子清单 + 推荐问卷领域」构建，证据按因子逐项绑定；某因子没有对应记录时标记为无证据但**仍然纳入**问卷。不得要求先找到一篇与需求完全对应的文献才允许生成——宽泛主题（如全国性老年慢性病调查）通常不存在这样的文献。检索层全部为空时，流程以无外部证据的模式继续生成，并在助手中明确说明原因与需人工核对。
@@ -918,7 +923,7 @@ AI 问卷助手页面至少包含：Session 列表、多轮对话窗、发送区
 - [ ] `conversation/`、`state/`、`artifacts/` 和需要落盘的 `temp/` 均随项目加密，虚拟路径不能越界。
 - [ ] 正常轮次只产生一次 LLM 调用；仅解析/校验失败时允许最多两次修复调用。
 - [ ] 支持流式时能显示可读助手文字和完整阶段；`stream` 或 `response_format` 被明确拒绝时能按能力独立回退，且不显示原始 JSON。
-- [ ] 配置界面只提供 DeepSeek 的模型名称与 API Key，服务地址以只读形式显示 `https://api.deepseek.com`；不存在厂商预设、自定义地址或联网搜索开关。
+- [ ] 配置界面只提供 DeepSeek 的模型名称与 API Key，以及一个可选的 NCBI API Key；服务地址以只读形式显示 `https://api.deepseek.com`；不存在厂商预设、自定义地址或联网搜索开关。NCBI API Key 明文不出现在界面、日志、诊断或项目文件中，且不受主服务地址改动影响。
 - [ ] 旧 v1/v2 配置自动迁移到 schema v3：非 DeepSeek 主机被替换、其模型重置为 `deepseek-v4.1-flash`、其加密 Key 被丢弃。
 - [ ] 每次生成按 `planning → literature（仅医学类）→ web_search → extracting → 生成 → 本地校验` 执行；非医学类请求不执行文献检索。
 - [ ] 医学类请求的文献检索顺序为 PubMed E-utilities、Europe PMC 预印本检索、bioRxiv/medRxiv 详情校验，并如实披露未使用任何订阅数据源。

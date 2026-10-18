@@ -42,6 +42,7 @@ import type {
   AdminDeleteRecordsRequest
 } from './admin-contract'
 import type { ExportCsvRequest, ExportCsvResult } from './export-contract'
+import type { QuestionnaireExportRequest, QuestionnaireExportResult } from './questionnaire-export-contract'
 import type {
   BaselineExportRequest,
   BaselineExportResult,
@@ -141,6 +142,7 @@ export interface DesktopApi {
     restore(request: ProjectRestoreRequest): Promise<ProjectResult>
   }
   qnaire: {
+    exportDocument(request: QuestionnaireExportRequest): Promise<QuestionnaireExportResult>
     getData(): Promise<QuestionnaireDef>
     addQuestion(question: QuestionDef): Promise<{ ok: boolean; question: QuestionDef }>
     updateQuestion(id: string, patch: Partial<QuestionDef>): Promise<{ ok: boolean }>

@@ -6,8 +6,8 @@
 
 - Windows 10/11 x64；准备两个使用不同密码的测试项目 A、B，并能正常创建、打开和解锁。
 - 准备一个可用的 DeepSeek API Key，并确认账号与所选模型已开通 Responses API 的内置联网搜索能力。应用只使用 DeepSeek：服务地址固定为 `https://api.deepseek.com`，问卷生成与检索规划走 Chat Completions（读取 `choices[0].message.content` 字符串），联网搜索走 Responses API。
-- 设置页只有模型名称、API Key 和只读的服务地址；没有厂商预设、没有自定义地址输入框、也没有“内置联网搜索”开关。模型默认为 `deepseek-v4.1-flash`，也可填写 `deepseek-v4-pro`。连接测试固定发送一条连通性消息，始终不启用联网搜索。
-- 应用不接受用户提供的服务地址：主进程会把任何非 DeepSeek 主机改写为 `https://api.deepseek.com`。全局配置文件 `ai-provider-config.json` 使用 schema v3（`schemaVersion: 3`、`baseUrl`、`model`、可选的 `encryptedApiKey`、`privacyAcceptedAt`、`privacyNoticeVersion`）；旧 v1/v2 文件自动迁移：非 DeepSeek 主机被替换为 DeepSeek 端点、模型重置为 `deepseek-v4.1-flash`、`encryptedApiKey` 仅在原主机已是 DeepSeek 时保留，`providerId` 与 `webSearchEnabled` 不再写入。
+- 设置页只有模型名称、API Key、可选的 NCBI API Key 和只读的服务地址；没有厂商预设、没有自定义地址输入框、也没有“内置联网搜索”开关。模型默认为 `deepseek-v4.1-flash`，也可填写 `deepseek-v4-pro`。连接测试固定发送一条连通性消息，始终不启用联网搜索。NCBI API Key 是可选项：留空时 E-utilities 请求不带 `api_key` 且按匿名 3 次/秒限速；填写后请求带 `api_key` 并按 10 次/秒限速。
+- 应用不接受用户提供的服务地址：主进程会把任何非 DeepSeek 主机改写为 `https://api.deepseek.com`。全局配置文件 `ai-provider-config.json` 使用 schema v4（`schemaVersion: 4`、`baseUrl`、`model`、可选的 `encryptedApiKey`、可选的 `encryptedNcbiApiKey`、`privacyAcceptedAt`、`privacyNoticeVersion`）；旧 v1/v2/v3 文件自动迁移：非 DeepSeek 主机被替换为 DeepSeek 端点、模型重置为 `deepseek-v4.1-flash`、`encryptedApiKey` 仅在原主机已是 DeepSeek 时保留，而 `encryptedNcbiApiKey` 与对话服务商无关，始终保留；`providerId` 与 `webSearchEnabled` 不再写入。
 - 推荐模型至少能遵循多轮指令、输出单个 JSON 对象、返回完整问卷候选并在收到本地校验错误后修正。响应根必须包含 `kind`、`assistantMessage`、`rollingSummary`、`options`、`questionnaire`。问卷协议不使用函数调用：请求不携带 `tools` 或 `tool_choice`，`submit_questionnaire` 已移除；`response_format` 和流式响应仍按能力协商降级。
 - 准备可查看并计数请求的 HTTPS 调试代理或受控故障注入测试构建，以及可按脚本返回 400/401/403/404/429、延迟、断连和指定响应内容的 stub。由于服务地址固定，生产构建无法指向本地服务，故障注入只能通过注入 transport 的测试构建，或经系统信任、可拦截 `api.deepseek.com` 的 HTTPS 代理完成。代理必须脱敏 `Authorization`，测试捕获文件不得进入提交或正式日志。
 - 使用独立测试项目目录和独立 Electron userData。打包版默认 userData 通常位于 `%APPDATA%\EasyEpi`，最终以实际启动参数/环境为准。

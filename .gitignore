@@ -5,6 +5,7 @@ out/
 release/
 coverage/
 test-results/
+/tests/
 playwright-report/
 .tmp/
 *.log

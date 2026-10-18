@@ -1,7 +1,9 @@
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
+import { writeFile } from 'node:fs/promises'
+import { existsSync } from 'node:fs'
 
-import { app, BrowserWindow, ipcMain, Menu, safeStorage, session } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, Menu, safeStorage, session } from 'electron'
 
 import { registerPreferencesIpc } from './preferences-ipc'
 import { createPreferencesStore } from './preferences-store'
@@ -22,6 +24,9 @@ import { createRecordIpcState, registerRecordIpc } from './ipc/record.ipc'
 import { registerEpiDataIpcHandlers } from './ipc/epidata.ipc'
 import { registerAdminIpcHandlers } from './ipc/admin.ipc'
 import { registerExportIpcHandlers } from './ipc/export.ipc'
+import { registerQuestionnaireExportIpc } from './ipc/questionnaire-export.ipc'
+import { exportQuestionnaireDocument } from './services/questionnaire-export.service'
+import { printQuestionnairePdf } from './services/questionnaire-pdf'
 import { registerBaselineIpcHandlers } from './ipc/baseline.ipc'
 import { AdminSessionService } from './services/admin-session.service'
 import { DataService } from './services/data.service'
@@ -55,6 +60,7 @@ let disposeRecordIpc: (() => void) | undefined
 let disposeEpiDataIpc: (() => void) | undefined
 let disposeAdminIpc: (() => void) | undefined
 let disposeExportIpc: (() => void) | undefined
+let disposeQuestionnaireExportIpc: (() => void) | undefined
 let disposeBaselineIpc: (() => void) | undefined
 
 app.setAppUserModelId(APP_ID)
@@ -183,6 +189,40 @@ void app.whenReady().then(() => {
     packagedRendererUrl,
     developmentUrl
   )
+  disposeQuestionnaireExportIpc = registerQuestionnaireExportIpc(
+    ipcMain, projectState,
+    {
+      exportDocument: (questionnaire, format, assertCurrent) => exportQuestionnaireDocument(
+        questionnaire, format,
+        {
+          choosePath: async (defaultPath, selectedFormat) => {
+            const options = {
+              title: '导出问卷', defaultPath,
+              filters: [{ name: selectedFormat === 'pdf' ? 'PDF 文档' : 'Word 文档', extensions: [selectedFormat] }]
+            }
+            const result = mainWindow
+              ? await dialog.showSaveDialog(mainWindow, options)
+              : await dialog.showSaveDialog(options)
+            return result.canceled ? undefined : result.filePath
+          },
+          printPdf: printQuestionnairePdf,
+          fileExists: existsSync,
+          confirmOverwrite: async (filePath) => {
+            const options = {
+              type: 'question' as const, title: '确认覆盖问卷文档',
+              message: '修正扩展名后的文件已存在，是否覆盖？', detail: filePath,
+              buttons: ['取消', '覆盖'], defaultId: 0, cancelId: 0, noLink: true
+            }
+            const result = mainWindow
+              ? await dialog.showMessageBox(mainWindow, options)
+              : await dialog.showMessageBox(options)
+            return result.response === 1
+          },
+          writeFile
+        }, assertCurrent
+      )
+    }, packagedRendererUrl, developmentUrl
+  )
   disposeBaselineIpc = registerBaselineIpcHandlers(
     ipcMain,
     projectState,
@@ -250,6 +290,8 @@ app.on('will-quit', () => {
   disposeAdminIpc?.()
   disposeAdminIpc = undefined
   disposeExportIpc?.()
+  disposeQuestionnaireExportIpc?.()
+  disposeQuestionnaireExportIpc = undefined
   disposeExportIpc = undefined
   disposeBaselineIpc?.()
   disposeBaselineIpc = undefined

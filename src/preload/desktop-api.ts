@@ -98,6 +98,10 @@ import {
   type ExportCsvResult
 } from '@shared/export-contract'
 import {
+  QUESTIONNAIRE_EXPORT_CHANNEL, parseQuestionnaireExportRequest,
+  type QuestionnaireExportRequest, type QuestionnaireExportResult
+} from '@shared/questionnaire-export-contract'
+import {
   BASELINE_EXPORT_CHANNEL,
   BASELINE_GENERATE_CHANNEL,
   parseBaselineExportRequest,
@@ -253,6 +257,7 @@ export interface DesktopInvoke {
   (channel: typeof ADMIN_UPDATE_RECORD_CHANNEL, request: AdminUpdateRecordRequest): Promise<unknown>
   (channel: typeof ADMIN_DELETE_RECORDS_CHANNEL, request: AdminDeleteRecordsRequest): Promise<unknown>
   (channel: typeof EXPORT_CSV_CHANNEL, request: ExportCsvRequest): Promise<unknown>
+  (channel: typeof QUESTIONNAIRE_EXPORT_CHANNEL, request: QuestionnaireExportRequest): Promise<unknown>
   (channel: typeof BASELINE_GENERATE_CHANNEL, request: BaselineGenerateRequest): Promise<unknown>
   (channel: typeof BASELINE_EXPORT_CHANNEL, request: BaselineExportRequest): Promise<unknown>
   (channel: typeof QUALITY_GET_SUMMARY_CHANNEL): Promise<unknown>
@@ -371,6 +376,8 @@ export function createDesktopApi(
   })
 
   const qnaire = Object.freeze({
+    exportDocument: async (request: QuestionnaireExportRequest) =>
+      (await invoke(QUESTIONNAIRE_EXPORT_CHANNEL, parseQuestionnaireExportRequest(request))) as QuestionnaireExportResult,
     getData: async () => parseQuestionnaireDef(await invoke(QNAIRE_GET_DATA_CHANNEL)),
     addQuestion: async (question: QuestionDef) =>
       (await invoke(QNAIRE_ADD_QUESTION_CHANNEL, question)) as {

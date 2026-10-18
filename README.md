@@ -36,6 +36,10 @@ AI 问卷助手的LLM选用 DeepSeek：服务地址固定为 `https://api.deepse
 
 ![Condition Question](public/images/ConditionQuestion.png)
 
+在问卷设计页点击 `问卷导出`，可将当前空白问卷保存为 PDF 或可编辑的 Word（`.docx`）。固定长度题按设定长度绘制空白格，自由填空题保留下划线；单选使用圆形标记，多选使用正方形标记。Key 题干加粗，条件题前注明来源题号、触发条件及显示、跳过或必填动作。
+
+导出不包含录入记录或默认答案。固定长度题每题最多导出 1000 格，整份问卷最多 10000 格，超出时会提示调整，不截断内容。保存时会自动修正扩展名；修正后的文件已存在时，会再次确认是否覆盖。
+
 ### EpiData问卷导入
 
 支持Epidata问卷格式`.qes`的导入：
@@ -86,7 +90,14 @@ AI 问卷助手的LLM选用 DeepSeek：服务地址固定为 `https://api.deepse
 
 ![New Variable](public/images/NewVariable.png)
 
+### 问卷导出：
 
+v1.0.0版本支持问卷导出功能，详情页面在问卷设计，支持`pdf`和`doc`两种格式输出：
+![Export buttion](public/images/export.png)
+
+输出pdf的浏览如下：
+
+![Export pdf](public/images/exportques.png)
 
 ### 其他特性：
 
@@ -108,7 +119,7 @@ AI设置：API输入与模型选择
 
 ## 其余信息
 
-版本号： 0.9.0
+版本号： 1.0.0
 
 制作人： Jiahao Lin
 
